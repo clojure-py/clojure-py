@@ -461,7 +461,6 @@ The spec is "done" when all of the following pass on CPython 3.14t:
    - Fallback is called once on miss; fallback-registered impl is used on retry.
    - Fallback guard prevents infinite recursion.
    - `extend-type` bumps the epoch; existing `MethodTable` references see the new impl via cache re-read on next dispatch.
-   - Concurrent `extend-type` + dispatch under `ThreadPoolExecutor(max_workers=32)` with no data races (tested with 3.14t's warning mode + TSan via `RUSTFLAGS`).
 
 3. **IFn round-trip**:
    - PyO3-defined `IFn` is callable from Python (`obj(1, 2, 3)`), routes to right `invokeN`.
@@ -499,6 +498,10 @@ The spec is "done" when all of the following pass on CPython 3.14t:
    - `(with-meta (symbol "foo") {:a 1})` equals `symbol("foo")` (meta is not part of equality).
    - Meta mutation on one doesn't affect the other.
 
+8. **Concurrency correctness of Rust-only primitives** (Loom model-checking, via `cargo test --features loom`): exhaustive interleaving coverage for `MethodCache` (concurrent `insert` + dispatch + epoch bump), the `Keyword` intern table (concurrent `or_insert_with`), the `Var` root atomic (concurrent `alter-var-root` CAS loop), and the `BINDING_STACK` push/pop under a cross-thread `bound-fn` snapshot. Each primitive gets a Loom test that validates no torn reads, no lost updates, and no race where a live dispatch sees a half-constructed `MethodTable`.
+
+9. **Integration stress test** (Python-level, pytest): the concurrent `extend-type` + dispatch scenario from bullet 2 runs under `ThreadPoolExecutor(max_workers=32)` for a fixed wall-clock budget (~10s), asserting no exceptions, no inconsistent dispatch results, and no deadlocks. This is a smoke test — it doesn't catch rare races but catches gross ones.
+
 ---
 
 ## 12. Non-Goals / Follow-on Specs
@@ -515,3 +518,5 @@ Each of these is a separate spec, in roughly this order:
 8. **Cranelift JIT**.
 
 This spec leaves explicit hooks for #1 (`#[defrecord]` reserved), #6 (`InlineCacheSlot` shape in §4.3), and #5 (thread-safe Var + binding stack already correct for STM integration).
+
+**Deferred infrastructure: TSan CI.** A TSan-instrumented CPython 3.14t + TSan-instrumented `clojure_core` nightly CI job is the intended long-term concurrency safety net, but is out of scope for the first spec's blocking test bar. Reason: requires a custom CPython build with `--with-thread-sanitizer`, nightly Rust, and a dedicated CI job; the infrastructure work would dominate the spec. Loom (§11 bullet 8) + pytest stress (§11 bullet 9) are the blocking correctness bar; TSan is a follow-on nightly job to be stood up once the project has enough code under it to justify the setup cost.
