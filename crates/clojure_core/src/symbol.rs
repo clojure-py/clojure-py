@@ -56,7 +56,7 @@ impl Symbol {
         self.hash_cache
     }
 
-    fn __repr__(&self) -> String {
+    pub fn __repr__(&self) -> String {
         match &self.ns {
             Some(n) => format!("{}/{}", n, self.name),
             None => self.name.to_string(),
