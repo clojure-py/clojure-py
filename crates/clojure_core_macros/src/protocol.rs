@@ -79,7 +79,82 @@ pub fn method_infos(item: &ItemTrait) -> Vec<MethodInfo> {
         .collect()
 }
 
-/// Stub — Task 15 fills this in with real codegen.
-pub fn expand(_args: ProtocolArgs, item: ItemTrait) -> TokenStream {
-    quote! { #item }
+pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
+    let trait_ident = &item.ident;
+    let methods = method_infos(&item);
+
+    let (ns_lit, name_part_lit): (Option<String>, String) = match args.name.split_once('/') {
+        Some((n, m)) => (Some(n.to_string()), m.to_string()),
+        None => (None, args.name.clone()),
+    };
+
+    let ns_expr: proc_macro2::TokenStream = match ns_lit {
+        Some(n) => quote! { Some(::std::sync::Arc::from(#n)) },
+        None => quote! { None },
+    };
+
+    let via_md = args.via_metadata;
+
+    let method_key_strings: Vec<String> = methods.iter().map(|m| m.ident.to_string()).collect();
+
+    let register_fn_ident = quote::format_ident!("__register_proto_{}", trait_ident);
+
+    // Per-method ProtocolMethod bindings emitted as a repetition.
+    let method_bindings: Vec<proc_macro2::TokenStream> = method_key_strings.iter().map(|mname| {
+        quote! {
+            {
+                let pm = ::clojure_core::ProtocolMethod {
+                    protocol: proto_py.clone_ref(py),
+                    key: ::std::sync::Arc::from(#mname),
+                };
+                let pm_py = ::pyo3::Py::new(py, pm)?;
+                m.add(#mname, pm_py)?;
+            }
+        }
+    }).collect();
+
+    let method_key_push = method_key_strings.iter().map(|mname| {
+        quote! { v.push(::std::sync::Arc::from(#mname)); }
+    });
+
+    quote! {
+        #item
+
+        #[allow(non_snake_case)]
+        fn #register_fn_ident(
+            py: ::pyo3::Python<'_>,
+            m: &::pyo3::Bound<'_, ::pyo3::types::PyModule>,
+        ) -> ::pyo3::PyResult<()> {
+            use ::pyo3::prelude::*;
+            let sym = ::clojure_core::Symbol::new(
+                #ns_expr,
+                ::std::sync::Arc::from(#name_part_lit),
+            );
+            let sym_py = ::pyo3::Py::new(py, sym)?;
+            let proto = ::clojure_core::Protocol {
+                name: sym_py,
+                method_keys: {
+                    let mut v: ::smallvec::SmallVec<[::std::sync::Arc<str>; 8]> =
+                        ::smallvec::SmallVec::new();
+                    #(#method_key_push)*
+                    v
+                },
+                cache: ::std::sync::Arc::new(::clojure_core::MethodCache::new()),
+                fallback: ::parking_lot::RwLock::new(None),
+                via_metadata: #via_md,
+            };
+            let proto_py = ::pyo3::Py::new(py, proto)?;
+            m.add(stringify!(#trait_ident), proto_py.clone_ref(py))?;
+
+            #(#method_bindings)*
+
+            Ok(())
+        }
+
+        ::inventory::submit! {
+            ::clojure_core::registry::ProtocolRegistration {
+                build_and_register: #register_fn_ident,
+            }
+        }
+    }
 }

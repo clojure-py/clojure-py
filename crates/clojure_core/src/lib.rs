@@ -4,6 +4,7 @@ mod dispatch;
 mod exceptions;
 mod keyword;
 mod protocol;
+pub mod registry;
 mod symbol;
 
 pub use clojure_core_macros::{implements, protocol};
@@ -18,5 +19,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     symbol::register(py, m)?;
     keyword::register(py, m)?;
     protocol::register(py, m)?;
+    registry::register_all(py, m)?;
     Ok(())
 }
