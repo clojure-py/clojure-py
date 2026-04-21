@@ -9,6 +9,7 @@ name = "clojure_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+clojure_core_macros = { path = "../clojure_core_macros" }
 pyo3 = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
