@@ -97,7 +97,7 @@ license = "EPL-1.0"
 repository = "https://github.com/tbaldridge/clojure-py"
 
 [workspace.dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py314"] }
+pyo3 = { version = "0.28", features = ["extension-module"] }
 dashmap = "6"
 parking_lot = "0.12"
 inventory = "0.3"
