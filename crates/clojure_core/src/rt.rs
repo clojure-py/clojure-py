@@ -178,3 +178,21 @@ pub fn empty(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     let args = PyTuple::new(py, &[] as &[PyObject])?;
     crate::dispatch::dispatch(py, proto, &EMPTY_KEY, coll, args)
 }
+
+// --- Python-exposed wrappers for helpers that aren't already ProtocolMethods. ---
+//
+// Most of `rt::*` (seq, first, next_, count, empty, equiv, hash_eq, conj, peek, pop)
+// is already accessible from Python via the ProtocolMethod bound at `clojure._core.<name>`.
+// `rest` is different: there is no IRest protocol (ISeq exposes `more`, not `rest`),
+// and `rt::rest` is the nil-safe Clojure-level semantic. Expose it as a pyfunction.
+
+#[pyfunction]
+#[pyo3(name = "rest")]
+pub fn py_rest(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    rest(py, coll)
+}
+
+pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(py_rest, m)?)?;
+    Ok(())
+}

@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 mod associative;
 mod binding;
 mod bound_fn;
+mod collections;
 mod counted;
 mod dispatch;
 mod exceptions;
@@ -61,8 +62,10 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     registry::install_all_extends(py, m)?;
     ilookup::install_builtin_fallback(py, m)?;
     rt::init(py, m)?;
+    rt::register(py, m)?;
     ifn::install_builtin_fallback(py, m)?;
     iequiv::install_builtin_fallback(py, m)?;
     ihasheq::install_builtin_fallback(py, m)?;
+    collections::register(py, m)?;
     Ok(())
 }
