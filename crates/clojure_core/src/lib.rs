@@ -7,6 +7,7 @@ mod exceptions;
 mod ifn;
 mod ilookup;
 mod keyword;
+mod namespace;
 pub(crate) mod pmap;
 mod protocol;
 pub mod registry;
@@ -30,6 +31,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     keyword::register(py, m)?;
     protocol::register(py, m)?;
     var::register(py, m)?;
+    namespace::register(py, m)?;
     binding::register(py, m)?;
     bound_fn::register(py, m)?;
     registry::register_all(py, m)?;
