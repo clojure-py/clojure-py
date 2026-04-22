@@ -83,10 +83,29 @@ pub fn create_ns(py: Python<'_>, sym: Py<Symbol>) -> PyResult<PyObject> {
     let module_type = types_mod.getattr("ModuleType")?;
     let clj_ns_cls = clojure_namespace_class(py)?.bind(py);
 
+    // Placeholder children that we'll re-wire onto the new ClojureNamespace.
+    let mut saved_children: Vec<(String, PyObject)> = Vec::new();
+
     // Case 2 / 3 detection at the terminal name.
     if let Ok(existing) = modules.get_item(&dotted_name) {
         if is_clojure_namespace(py, &existing)? {
             return Ok(existing.unbind());  // Case 2: idempotent
+        }
+        // Case 3: snapshot module-valued attributes on the placeholder before dropping it.
+        // Every auto-parented child lives on the placeholder's __dict__ as a setattr,
+        // and those same children are ALSO in sys.modules under their own dotted names.
+        // We only need to preserve the attribute wiring — the sys.modules entries are
+        // untouched by the delete-one-key operation below.
+        let existing_dict = existing.getattr("__dict__")?;
+        let existing_dict = existing_dict.downcast::<PyDict>()?;
+        for (k, v) in existing_dict.iter() {
+            // Skip Python's own module machinery attributes (they'll be recreated by
+            // ModuleType.__init__ when we construct the new namespace).
+            let key: String = k.extract()?;
+            if key.starts_with("__") && key.ends_with("__") {
+                continue;
+            }
+            saved_children.push((key, v.unbind()));
         }
         modules.del_item(&dotted_name)?;  // Case 3: replace placeholder
     }
@@ -106,6 +125,10 @@ pub fn create_ns(py: Python<'_>, sym: Py<Symbol>) -> PyResult<PyObject> {
             // ClojureNamespace(running_name)
             let m = clj_ns_cls.call1((running.as_str(),))?;
             populate_dunders(py, &m, &running)?;
+            // Re-apply any child attributes from a replaced placeholder.
+            for (child_name, child_obj) in saved_children.drain(..) {
+                m.setattr(child_name.as_str(), child_obj)?;
+            }
             modules.set_item(&running, &m)?;
             m
         } else if let Ok(existing) = modules.get_item(&running) {
