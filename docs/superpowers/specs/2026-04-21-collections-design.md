@@ -145,7 +145,7 @@ pub trait IPersistentCollection {
     fn count(&self, py: Python<'_>) -> PyResult<usize>;
     fn cons(&self, py: Python<'_>, x: PyObject) -> PyResult<PyObject>;
     fn empty(&self, py: Python<'_>) -> PyResult<PyObject>;
-    fn equiv(&self, py: Python<'_>, other: PyObject) -> PyResult<bool>;
+    // Equality lives on IEquiv, not duplicated here.
 }
 ```
 
