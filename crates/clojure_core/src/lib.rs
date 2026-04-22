@@ -32,6 +32,7 @@ mod namespace;
 mod ns_ops;
 pub(crate) mod binding_pmap;
 mod protocol;
+mod reader;
 pub mod registry;
 pub mod rt;
 mod sequential;
@@ -69,5 +70,6 @@ pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     ihasheq::install_builtin_fallback(py, m)?;
     collections::register(py, m)?;
     seqs::register(py, m)?;
+    reader::register(py, m)?;
     Ok(())
 }
