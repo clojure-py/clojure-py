@@ -381,25 +381,47 @@ impl Counted for PersistentHashMap {
 impl IEquiv for PersistentHashMap {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
         let other_b = other.bind(py);
-        let Ok(other_m) = other_b.downcast::<PersistentHashMap>() else {
-            return Ok(false);
-        };
-        let a = this.bind(py).get();
-        let b = other_m.get();
-        if a.count != b.count { return Ok(false); }
-        // For every key in a, look up in b and check equiv.
-        // Since we don't have a key-iterator exposed to Rust yet (it's behind __iter__),
-        // we iterate via the internal node structure. Simpler: use __iter__ via Python.
-        let iter = this.bind(py).try_iter()?;
-        for item in iter {
-            let k = item?.unbind();
-            let av = a.val_at_default_internal(py, k.clone_ref(py), py.None())?;
-            let bv = b.val_at_default_internal(py, k, py.None())?;
-            if !crate::rt::equiv(py, av, bv)? {
-                return Ok(false);
+
+        // Handle PersistentHashMap-to-PersistentHashMap comparison.
+        if let Ok(other_m) = other_b.downcast::<PersistentHashMap>() {
+            let a = this.bind(py).get();
+            let b = other_m.get();
+            if a.count != b.count { return Ok(false); }
+            // For every key in a, look up in b and check equiv.
+            // Since we don't have a key-iterator exposed to Rust yet (it's behind __iter__),
+            // we iterate via the internal node structure. Simpler: use __iter__ via Python.
+            let iter = this.bind(py).try_iter()?;
+            for item in iter {
+                let k = item?.unbind();
+                let av = a.val_at_default_internal(py, k.clone_ref(py), py.None())?;
+                let bv = b.val_at_default_internal(py, k, py.None())?;
+                if !crate::rt::equiv(py, av, bv)? {
+                    return Ok(false);
+                }
             }
+            return Ok(true);
         }
-        Ok(true)
+
+        // Handle cross-type comparison with PersistentArrayMap.
+        if let Ok(other_am) = other_b.downcast::<crate::collections::parraymap::PersistentArrayMap>() {
+            let a = this.bind(py).get();
+            let b = other_am.get();
+            if (a.count as usize) != b.entries.len() { return Ok(false); }
+            // For every key in our (hash) map, look up in the array map and check equiv.
+            let iter = this.bind(py).try_iter()?;
+            for item in iter {
+                let k = item?.unbind();
+                let av = a.val_at_default_internal(py, k.clone_ref(py), py.None())?;
+                // Use the ArrayMap's public val_at_default_internal.
+                let bv = b.val_at_default_internal(py, k, py.None())?;
+                if !crate::rt::equiv(py, av, bv)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 }
 
