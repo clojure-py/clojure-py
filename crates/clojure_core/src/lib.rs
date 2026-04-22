@@ -24,5 +24,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     protocol::register(py, m)?;
     registry::register_all(py, m)?;
     registry::install_all_extends(py, m)?;
+    ifn::install_builtin_fallback(py, m)?;
     Ok(())
 }
