@@ -282,6 +282,102 @@ pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()>
     Ok(())
 }
 
+#[pymethods]
+impl Var {
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, pyo3::types::PyAny>) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).eq(other)
+    }
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).hash()
+    }
+    fn __bool__(&self, py: Python<'_>) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).is_truthy()
+    }
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).str()?.extract()
+    }
+    fn __add__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__add__", (other,))?.unbind())
+    }
+    fn __radd__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__radd__", (other,))?.unbind())
+    }
+    fn __sub__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__sub__", (other,))?.unbind())
+    }
+    fn __rsub__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__rsub__", (other,))?.unbind())
+    }
+    fn __mul__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__mul__", (other,))?.unbind())
+    }
+    fn __rmul__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__rmul__", (other,))?.unbind())
+    }
+    fn __truediv__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__truediv__", (other,))?.unbind())
+    }
+    fn __floordiv__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__floordiv__", (other,))?.unbind())
+    }
+    fn __mod__(&self, py: Python<'_>, other: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method1("__mod__", (other,))?.unbind())
+    }
+    fn __neg__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).call_method0("__neg__")?.unbind())
+    }
+    fn __lt__(&self, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).lt(&other)
+    }
+    fn __le__(&self, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).le(&other)
+    }
+    fn __gt__(&self, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).gt(&other)
+    }
+    fn __ge__(&self, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).ge(&other)
+    }
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).len()
+    }
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).try_iter()?.unbind().into_any())
+    }
+    fn __contains__(&self, py: Python<'_>, item: PyObject) -> PyResult<bool> {
+        let r = self.deref_raw(py)?;
+        r.bind(py).contains(&item)
+    }
+    fn __getitem__(&self, py: Python<'_>, key: PyObject) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).get_item(&key)?.unbind())
+    }
+    fn __getattr__(&self, py: Python<'_>, name: String) -> PyResult<PyObject> {
+        let r = self.deref_raw(py)?;
+        Ok(r.bind(py).getattr(name.as_str())?.unbind())
+    }
+}
+
 use crate::ifn::IFn;
 use clojure_core_macros::implements;
 
