@@ -158,3 +158,34 @@ print(pr_str(data))
 **Deferred** (tracked in `docs/superpowers/plans/2026-04-21-reader-plan.md`):
 syntax-quote, reader conditionals, tagged literals, fn-literal, regex,
 namespaced maps, numeric suffixes, auto-resolved keywords, shebang, EDN-only mode.
+
+## Evaluator
+
+Tree-walking evaluator that runs Clojure forms from the reader:
+
+```python
+from clojure._core import eval_string
+
+# Define a recursive function:
+eval_string("(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))")
+eval_string("(fact 10)")
+# => 3628800
+
+# Closures:
+eval_string("(defn make-adder [n] (fn [x] (+ x n)))")
+eval_string("(def add5 (make-adder 5))")
+eval_string("(add5 37)")
+# => 42
+
+# Data manipulation:
+eval_string('(:name {:name "alice" :age 30})')
+# => "alice"
+```
+
+**Special forms:** `quote`, `if`, `do`, `let` / `let*`, `fn` / `fn*`, `def`, `var`.
+
+**Hardcoded macros:** `defn`, `when`, `when-not`, `cond`, `or`, `and`.
+
+**Pre-populated `clojure.core`:** arithmetic (`+`, `-`, `*`, `/`, `inc`, `dec`), comparison (`=`, `<`, `>`, `<=`, `>=`), logical (`not`, `nil?`), collections (`list`, `vector`, `hash-map`, `hash-set`), seq ops (`count`, `first`, `rest`, `next`, `seq`, `cons`), and `str`.
+
+**Deferred** (tracked in the evaluator plan): `loop`/`recur`, `try`/`catch`/`throw`, Python interop (`.method`, `new`), multi-arity fn, destructuring, user-defined `defmacro`, `letfn`, tail-call optimization, multimethods, records/deftype.

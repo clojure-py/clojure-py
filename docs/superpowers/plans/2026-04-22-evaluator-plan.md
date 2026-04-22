@@ -71,3 +71,39 @@ Macroexpansion layer runs before special-form dispatch.
 - Create: `tests/test_eval_fuzz.py` (hypothesis — arithmetic expression round-trip)
 
 **Deliverables:** `(def fact (fn [n] (if (= n 0) 1 (* n (fact (- n 1))))))`, `(fact 10) == 3628800`. Fuzz: `eval_string(pr_str(read_string(src)))` idempotent for generated arithmetic.
+
+---
+
+## Execution Status
+
+All 5 phases landed. **Full test suite passing.**
+
+| Phase | Description | Commit |
+|---|---|---|
+| E1 | Scaffolding + atom eval + quote/if/do/let | `466a5b4` |
+| E2 | Fn + invocation + closures + ns resolution | `fbcaff0` |
+| E3 | def + var + clojure.core shims | `d3246ca` |
+| E4 | Hardcoded macros (defn/when/when-not/cond/or/and) + reader-fuzz fix | `aa41a77` |
+| E5 | Integration tests + hypothesis fuzz + README | (this commit) |
+
+**Deferred** (explicit non-goals — future specs):
+
+- `loop`/`recur` with TCO
+- `try`/`catch`/`throw`/`finally`
+- Python interop (`.method`, `(new Class)`, `(py/fn args)`)
+- Multi-arity `fn` / overloads
+- Destructuring in `let` / `fn` params
+- User-defined `defmacro`
+- `letfn`
+- Trampoline TCO
+- Multimethods (`defmulti`, `defmethod`)
+- Records / `deftype` / `reify`
+- `core.clj` bootstrap (full Clojure stdlib on top of the shims)
+
+**What works end-to-end:**
+
+- Recursive function definitions (factorial, fibonacci) via Var resolution
+- Closures capturing enclosing env
+- Higher-order functions (compose, make-adder)
+- Data manipulation (vectors, maps, keyword-as-fn, seq ops)
+- All hardcoded macros nest correctly within each other
