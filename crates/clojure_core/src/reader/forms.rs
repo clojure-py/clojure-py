@@ -14,6 +14,106 @@ use pyo3::types::{PyAny, PyTuple};
 
 type PyObject = Py<PyAny>;
 
+// ---------------------------------------------------------------------------
+// Reader macros (Phase R4)
+// ---------------------------------------------------------------------------
+
+/// `'form` → `(quote form)`. Caller has NOT consumed the leading `'`.
+pub fn quote_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
+    let quote_ch = src.advance();
+    debug_assert_eq!(quote_ch, Some('\''));
+    let form = dispatch::read_one(src, py)?;
+    let quote_sym = crate::symbol::Symbol::new(None, std::sync::Arc::from("quote"));
+    let quote_sym_py: PyObject = Py::new(py, quote_sym)?.into_any();
+    let args = PyTuple::new(py, &[quote_sym_py, form])?;
+    crate::collections::plist::list_(py, args)
+}
+
+/// `@form` → `(deref form)`. Caller has NOT consumed the leading `@`.
+pub fn deref_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
+    let at = src.advance();
+    debug_assert_eq!(at, Some('@'));
+    let form = dispatch::read_one(src, py)?;
+    let deref_sym = crate::symbol::Symbol::new(None, std::sync::Arc::from("deref"));
+    let deref_sym_py: PyObject = Py::new(py, deref_sym)?.into_any();
+    let args = PyTuple::new(py, &[deref_sym_py, form])?;
+    crate::collections::plist::list_(py, args)
+}
+
+/// `#'sym` → `(var sym)`. Caller has consumed `#` only; the next char is `'`.
+pub fn var_quote_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
+    let quote_ch = src.advance();
+    debug_assert_eq!(quote_ch, Some('\''));
+    let form = dispatch::read_one(src, py)?;
+    let var_sym = crate::symbol::Symbol::new(None, std::sync::Arc::from("var"));
+    let var_sym_py: PyObject = Py::new(py, var_sym)?.into_any();
+    let args = PyTuple::new(py, &[var_sym_py, form])?;
+    crate::collections::plist::list_(py, args)
+}
+
+/// `^meta form` or `#^meta form` — read meta then target; attach meta to
+/// target. Caller has already consumed the `^` (for bare form) or the `#^`
+/// pair (for the dispatch form).
+pub fn meta_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
+    let start_line = src.line();
+    let start_col = src.column();
+    let meta_raw = dispatch::read_one(src, py)?;
+    let meta_map = normalize_meta(py, meta_raw, start_line, start_col)?;
+    let target = dispatch::read_one(src, py)?;
+    attach_meta(py, target, meta_map)
+}
+
+/// `#_ form next` — discard `form`, then read and return `next`. Caller has
+/// already consumed `#_`.
+pub fn discard_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
+    let _discarded = dispatch::read_one(src, py)?;
+    dispatch::read_one(src, py)
+}
+
+fn normalize_meta(
+    py: Python<'_>,
+    meta_raw: PyObject,
+    line: u32,
+    col: u32,
+) -> PyResult<PyObject> {
+    let b = meta_raw.bind(py);
+    // If it's already a map, return as-is.
+    if b.downcast::<crate::collections::phashmap::PersistentHashMap>().is_ok()
+        || b.downcast::<crate::collections::parraymap::PersistentArrayMap>().is_ok()
+    {
+        return Ok(meta_raw);
+    }
+    // Keyword → {kw true}
+    if b.downcast::<crate::keyword::Keyword>().is_ok() {
+        let true_py: PyObject =
+            pyo3::types::PyBool::new(py, true).to_owned().unbind().into_any();
+        let pair = PyTuple::new(py, &[meta_raw, true_py])?;
+        return crate::collections::parraymap::array_map(py, pair);
+    }
+    // String or Symbol → {:tag <meta>}
+    if b.downcast::<pyo3::types::PyString>().is_ok()
+        || b.downcast::<crate::symbol::Symbol>().is_ok()
+    {
+        let tag_kw = crate::keyword::keyword(py, "tag", None)?;
+        let tag_py: PyObject = tag_kw.into_any();
+        let pair = PyTuple::new(py, &[tag_py, meta_raw])?;
+        return crate::collections::parraymap::array_map(py, pair);
+    }
+    Err(errors::make(
+        "Metadata must be a map, keyword, string, or symbol",
+        line,
+        col,
+    ))
+}
+
+fn attach_meta(py: Python<'_>, target: PyObject, meta_map: PyObject) -> PyResult<PyObject> {
+    let bound = target.bind(py);
+    match bound.call_method1("with_meta", (meta_map,)) {
+        Ok(new_target) => Ok(new_target.unbind()),
+        Err(_) => Ok(target),
+    }
+}
+
 /// Read a list: caller has NOT yet consumed the opening '('.
 pub fn list_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
     let start_line = src.line();

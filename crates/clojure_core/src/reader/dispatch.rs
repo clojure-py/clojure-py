@@ -70,7 +70,13 @@ pub fn read_one(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
             line,
             col,
         )),
-        '\'' | '@' | '^' | '`' | '~' => Err(errors::make(
+        '\'' => forms::quote_reader(src, py),
+        '@' => forms::deref_reader(src, py),
+        '^' => {
+            src.advance(); // consume '^'
+            forms::meta_reader(src, py)
+        }
+        '`' | '~' => Err(errors::make(
             format!("Reader macro '{}' not yet implemented", ch),
             line,
             col,
@@ -88,9 +94,15 @@ fn dispatch_hash_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObje
     let col = src.column();
     match src.peek() {
         Some('{') => forms::set_reader(src, py),
-        Some('\'') => Err(errors::make("var-quote reader not yet implemented", line, col)),
-        Some('_') => Err(errors::make("discard reader not yet implemented", line, col)),
-        Some('^') => Err(errors::make("meta reader not yet implemented", line, col)),
+        Some('\'') => forms::var_quote_reader(src, py),
+        Some('_') => {
+            src.advance(); // consume '_'
+            forms::discard_reader(src, py)
+        }
+        Some('^') => {
+            src.advance(); // consume '^'
+            forms::meta_reader(src, py)
+        }
         Some(c) => Err(errors::make(
             format!("Unsupported dispatch macro: #{}", c),
             line,
