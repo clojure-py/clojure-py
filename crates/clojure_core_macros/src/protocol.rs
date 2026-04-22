@@ -103,7 +103,7 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
     let method_bindings: Vec<proc_macro2::TokenStream> = method_key_strings.iter().map(|mname| {
         quote! {
             {
-                let pm = ::clojure_core::ProtocolMethod {
+                let pm = crate::ProtocolMethod {
                     protocol: proto_py.clone_ref(py),
                     key: ::std::sync::Arc::from(#mname),
                 };
@@ -126,12 +126,12 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
             m: &::pyo3::Bound<'_, ::pyo3::types::PyModule>,
         ) -> ::pyo3::PyResult<()> {
             use ::pyo3::prelude::*;
-            let sym = ::clojure_core::Symbol::new(
+            let sym = crate::Symbol::new(
                 #ns_expr,
                 ::std::sync::Arc::from(#name_part_lit),
             );
             let sym_py = ::pyo3::Py::new(py, sym)?;
-            let proto = ::clojure_core::Protocol {
+            let proto = crate::Protocol {
                 name: sym_py,
                 method_keys: {
                     let mut v: ::smallvec::SmallVec<[::std::sync::Arc<str>; 8]> =
@@ -139,7 +139,7 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
                     #(#method_key_push)*
                     v
                 },
-                cache: ::std::sync::Arc::new(::clojure_core::MethodCache::new()),
+                cache: ::std::sync::Arc::new(crate::MethodCache::new()),
                 fallback: ::parking_lot::RwLock::new(None),
                 via_metadata: #via_md,
             };
@@ -152,7 +152,7 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
         }
 
         ::inventory::submit! {
-            ::clojure_core::registry::ProtocolRegistration {
+            crate::registry::ProtocolRegistration {
                 build_and_register: #register_fn_ident,
             }
         }

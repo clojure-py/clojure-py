@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod dispatch;
 mod exceptions;
+mod ifn;
 mod keyword;
 mod protocol;
 pub mod registry;
@@ -9,6 +10,7 @@ mod symbol;
 
 pub use clojure_core_macros::{implements, protocol};
 pub use exceptions::{ArityException, IllegalArgumentException, IllegalStateException};
+pub use ifn::IFn;
 pub use keyword::Keyword;
 pub use protocol::{MethodCache, Protocol, ProtocolMethod};
 pub use symbol::Symbol;
