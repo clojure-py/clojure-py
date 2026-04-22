@@ -15,6 +15,7 @@ use crate::ihasheq::IHashEq;
 use crate::imeta::IMeta;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_set::IPersistentSet;
+use crate::iseqable::ISeqable;
 use crate::itransient_associative::ITransientAssociative;
 use crate::itransient_collection::ITransientCollection;
 use crate::itransient_map::ITransientMap;
@@ -332,6 +333,24 @@ impl IPersistentSet for PersistentHashSet {
     }
     fn get(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
         this.bind(py).get().get_internal(py, k)
+    }
+}
+
+#[implements(ISeqable)]
+impl ISeqable for PersistentHashSet {
+    fn seq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let entries = s.impl_map.bind(py).get().collect_entries(py);
+        if entries.is_empty() {
+            return Ok(py.None());
+        }
+        let mut tail: PyObject = crate::collections::plist::empty_list(py).into_any();
+        // entries are (k, k) pairs; yield the key (== value) for each.
+        for (k, _) in entries.into_iter().rev() {
+            let cons = crate::seqs::cons::Cons::new(k, tail);
+            tail = Py::new(py, cons)?.into_any();
+        }
+        Ok(tail)
     }
 }
 

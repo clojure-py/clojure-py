@@ -16,6 +16,7 @@ use crate::ilookup::ILookup;
 use crate::imeta::IMeta;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_map::IPersistentMap;
+use crate::iseqable::ISeqable;
 use crate::itransient_associative::ITransientAssociative;
 use crate::itransient_collection::ITransientCollection;
 use crate::itransient_map::ITransientMap;
@@ -504,6 +505,25 @@ impl Associative for PersistentHashMap {
     }
     fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
         <PersistentHashMap as IPersistentMap>::assoc(this, py, k, v)
+    }
+}
+
+#[implements(ISeqable)]
+impl ISeqable for PersistentHashMap {
+    fn seq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        if s.count == 0 {
+            return Ok(py.None());
+        }
+        let entries = s.collect_entries(py);
+        let mut tail: PyObject = crate::collections::plist::empty_list(py).into_any();
+        for (k, v) in entries.into_iter().rev() {
+            let me = crate::collections::map_entry::MapEntry::new(k, v);
+            let me_py: PyObject = Py::new(py, me)?.into_any();
+            let cons = crate::seqs::cons::Cons::new(me_py, tail);
+            tail = Py::new(py, cons)?.into_any();
+        }
+        Ok(tail)
     }
 }
 
