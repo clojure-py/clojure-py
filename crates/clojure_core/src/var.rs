@@ -397,92 +397,114 @@ use clojure_core_macros::implements;
 
 #[implements(IFn)]
 impl IFn for Var {
-    fn invoke0(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke0(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[])
     }
-    fn invoke1(&self, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0])
     }
-    fn invoke2(&self, py: Python<'_>, a0: PyObject, a1: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke2(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1])
     }
-    fn invoke3(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke3(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2])
     }
-    fn invoke4(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke4(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3])
     }
-    fn invoke5(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke5(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4])
     }
-    fn invoke6(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke6(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5])
     }
-    fn invoke7(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke7(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6])
     }
-    fn invoke8(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke8(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7])
     }
-    fn invoke9(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke9(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8])
     }
-    fn invoke10(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke10(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9])
     }
-    fn invoke11(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke11(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10])
     }
-    fn invoke12(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke12(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11])
     }
-    fn invoke13(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke13(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12])
     }
-    fn invoke14(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke14(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13])
     }
-    fn invoke15(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke15(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14])
     }
-    fn invoke16(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke16(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15])
     }
-    fn invoke17(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke17(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16])
     }
-    fn invoke18(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke18(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17])
     }
-    fn invoke19(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject, a18: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke19(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject, a18: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18])
     }
-    fn invoke20(&self, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject, a18: PyObject, a19: PyObject) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke20(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject, a18: PyObject, a19: PyObject) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         crate::rt::invoke_n(py, root, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19])
     }
-    fn invoke_variadic(&self, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
-        let root = self.deref_raw(py)?;
+    fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let root = self_ref.deref_raw(py)?;
         let items: Vec<PyObject> = (0..args.len()).map(|i| -> PyResult<_> {
             Ok(args.get_item(i)?.unbind())
         }).collect::<PyResult<_>>()?;
