@@ -1677,3 +1677,55 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 Each phase's detailed tasks will be written before the phase is dispatched to a subagent, using the same pattern as Phases 0–5: file list, bite-sized steps with complete code, verification commands, commit template.
 
 ---
+
+---
+
+## Execution Status (end of session 2026-04-21)
+
+**Completed phases** (14 commits landed):
+
+| Phase | Description | Commit |
+|---|---|---|
+| 0 | Protocol method signature migration (`this: Py<Self>`) | `c2402bf`, `7401b58` |
+| 1 | Declare 21 new protocols | `17b788e` |
+| 2 | IEquiv + IHashEq built-in Python fallbacks | `fe83d07` |
+| — | Drop `equiv` from IPC (collision fix) | `0a9649c` |
+| 3 | rt helpers: seq/first/next/rest/count/empty/equiv/hash_eq | `53e8c62` |
+| 4 | Rename pmap.rs → binding_pmap.rs | `99f5be2` |
+| 5 | PersistentList + EmptyList + IPC.conj rename + rt::rest expose | `71a93a7` |
+| — | `#[implements]` macro wraps return values via `IntoPyObject` | `010e2d6` |
+| 6A | PersistentVector core (HAMT + tail) | `7b3ee12` |
+| 6B | PersistentVector protocol impls + `__call__` | `ffd9d1e` |
+| — | Indexed + IPersistentVector take `i: PyObject` (macro arg-type limitation) | `0be61d2` |
+| 6C | TransientVector with edit-token structural mutation | `9ef58b7` |
+| 7 | MapEntry | `3015f95` |
+| 8A | PersistentHashMap core (HAMT + nil-key slot) | `e57b2c2` |
+| 8B | PersistentHashMap protocol impls + `__call__` | `65aeac7` |
+| 8C | TransientHashMap with edit-token HAMT mutation | `732d099` |
+| 9 | PersistentArrayMap + TransientArrayMap (auto-promote to PHashMap at 8 entries) | `bce4354` |
+| 10 | PersistentHashSet + TransientHashSet | `4c87166` |
+| 12A | Cons + LazySeq + VectorSeq + `(seq vector)` | `59f6cec` |
+
+**Test count:** 312 passing on CPython 3.14t free-threaded.
+
+**Remaining phases** (deferred for a future session):
+
+| Phase | Description | Priority |
+|---|---|---|
+| 11 | Additional rt helpers (conj, assoc, dissoc, nth, contains, transient, *_bang variants) for Rust-side use. Python-side already has ProtocolMethods. | Low — cleanup |
+| 12B | ISeqable on maps/sets/array-map (yielding seqs of keys / MapEntries) | Medium — completes seq-over-everything |
+| 12C | ChunkedCons/ChunkedSeq (32-at-a-time vector iteration, perf optimization) | Low — VectorSeq already works |
+| 12D | IteratorSeq (wraps Python iterator into ISeq) | Medium — Python interop |
+| 13 | `hypothesis` property-based fuzzing — random op sequences vs Python built-in references | **High — catches rare HAMT bugs** |
+| 14 | Rust `proptest` for HAMT node invariants | Medium — internal soundness |
+| 15 | Loom for transient edit token + stress test + README update | Medium |
+
+**Plan convention findings** (applicable to all future collection work):
+
+1. **Traits with `Py<Self>` methods need `Sized` as supertrait** — `pub trait X: Sized`.
+2. **`#[implements]` macro** wraps return value via `IntoPyObjectExt::into_py_any` → any `IntoPyObject`-convertible type works.
+3. **Non-`PyObject` args** (e.g., `i: usize`, `bool`) aren't supported by the macro. Declare the trait method with `i: PyObject` and extract inside.
+4. **Name collisions on protocol method top-level bindings**: when two protocols declare methods with the same name, the last-registered wins the `clojure._core.X` binding. If collisions matter, pick one canonical protocol (we did: `conj` → IPC, `count` → Counted, `equiv` → IEquiv, `val_at` → ILookup, `get` → IPersistentSet). Test imports use the canonical name.
+5. **`__call__` pymethod is separate from IFn impl** — IFn dispatch via protocol doesn't automatically make a pyclass callable from Python's `obj(...)` syntax. Add a `__call__` pymethod that delegates to the IFn impl.
+6. **TransientVector/Map pop_bang root-collapse**: after the shrink, re-stamp the new root with `ensure_editable` so subsequent mutations can reuse in-place.
+7. **Lock scope in HAMT `without`**: never hold a node's internal `Mutex` across a recursive `without` call or a `rt::` dispatch — it deadlocks.
