@@ -22,6 +22,7 @@ pub fn lookup(head: &PyObject, py: Python<'_>) -> Option<&'static str> {
         "if" => Some("if"),
         "do" => Some("do"),
         "let" | "let*" => Some("let"),
+        "fn" | "fn*" => Some("fn"),
         _ => None,
     }
 }
@@ -39,6 +40,7 @@ pub fn dispatch(
         "if" => if_form(py, &args, env),
         "do" => do_form(py, &args, env),
         "let" => let_form(py, &args, env),
+        "fn" => fn_form(py, &args, env),
         _ => Err(errors::err(format!("Unknown special form: {}", name))),
     }
 }
@@ -144,4 +146,48 @@ fn let_form(py: Python<'_>, args: &[PyObject], env: &Env) -> PyResult<PyObject> 
     // Body forms after the binding vector.
     let body = &args[1..];
     do_form(py, body, &cur_env)
+}
+
+/// (fn [params...] body...) or (fn name [params...] body...).
+fn fn_form(py: Python<'_>, args: &[PyObject], env: &Env) -> PyResult<PyObject> {
+    if args.is_empty() {
+        return Err(errors::err("fn requires at least a parameter vector"));
+    }
+    let (name, params_form, body_slice) = {
+        // First arg may be an optional symbol name.
+        let b = args[0].bind(py);
+        if let Ok(sym) = b.downcast::<Symbol>() {
+            let nm = sym.get().name.to_string();
+            if args.len() < 2 {
+                return Err(errors::err("fn with name requires a parameter vector"));
+            }
+            (Some(nm), args[1].clone_ref(py), &args[2..])
+        } else {
+            (None, args[0].clone_ref(py), &args[1..])
+        }
+    };
+    let pb = params_form.bind(py);
+    let pv = pb.downcast::<PersistentVector>().map_err(|_| {
+        errors::err("fn parameters must be a vector")
+    })?;
+    let mut param_names: Vec<String> = Vec::with_capacity(pv.get().cnt as usize);
+    for i in 0..(pv.get().cnt as usize) {
+        let f = pv.get().nth_internal_pub(py, i)?;
+        let fb = f.bind(py);
+        let s = fb.downcast::<Symbol>().map_err(|_| {
+            errors::err("fn parameter must be a Symbol")
+        })?;
+        param_names.push(s.get().name.to_string());
+    }
+    let body: Vec<PyObject> = body_slice.iter().map(|o| o.clone_ref(py)).collect();
+    let fn_val = crate::eval::fn_value::Fn {
+        captured_locals: parking_lot::RwLock::new(
+            env.locals.iter().map(|(k, v)| (k.clone(), v.clone_ref(py))).collect(),
+        ),
+        current_ns: env.current_ns.clone_ref(py),
+        param_names,
+        body,
+        name,
+    };
+    Ok(Py::new(py, fn_val)?.into_any())
 }

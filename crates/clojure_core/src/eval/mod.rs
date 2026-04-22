@@ -2,6 +2,8 @@
 
 pub mod env;
 pub mod errors;
+pub mod fn_value;
+pub mod invoke;
 pub mod resolve;
 pub mod special_forms;
 
@@ -67,16 +69,15 @@ pub fn eval(py: Python<'_>, form: PyObject, env: &Env) -> PyResult<PyObject> {
         return Ok(crate::collections::phashset::hash_set(py, tup)?.into_any());
     }
 
-    // PersistentList: special form OR invocation. E1 only handles special forms.
+    // PersistentList: special form OR invocation.
     if let Ok(pl) = b.downcast::<crate::collections::plist::PersistentList>() {
         let head = pl.get().head.clone_ref(py);
         // Check special form.
         if let Some(name) = special_forms::lookup(&head, py) {
             return special_forms::dispatch(py, name, form, env);
         }
-        return Err(errors::err(
-            "Function invocation not yet supported (Phase E2); only special forms in E1",
-        ));
+        // Plain invocation.
+        return invoke::eval_invocation(py, form, env);
     }
 
     // EmptyList evals to itself.
@@ -114,6 +115,7 @@ pub fn py_eval_string(py: Python<'_>, source: &str) -> PyResult<PyObject> {
 
 pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(py, m)?;
+    fn_value::register(py, m)?;
     m.add_function(wrap_pyfunction!(py_eval, m)?)?;
     m.add_function(wrap_pyfunction!(py_eval_string, m)?)?;
     Ok(())
