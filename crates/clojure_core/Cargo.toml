@@ -20,3 +20,6 @@ fxhash = { workspace = true }
 
 [features]
 loom = []
+
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
