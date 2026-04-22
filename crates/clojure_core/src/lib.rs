@@ -6,6 +6,7 @@ mod bound_fn;
 pub mod collections;
 mod counted;
 mod dispatch;
+mod eval;
 mod exceptions;
 mod ieditable_collection;
 mod iequiv;
@@ -73,5 +74,6 @@ pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     seqs::register(py, m)?;
     reader::register(py, m)?;
     printer::register(py, m)?;
+    eval::register(py, m)?;
     Ok(())
 }
