@@ -288,6 +288,72 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // --- Misc ---
 
+    // --- Bytecode-compiler helpers ---
+
+    // `(bind-root var value)` — used by compiled `def` forms.
+    intern_fn(py, &core_ns, "bind-root", |args, py| {
+        if args.len() != 2 {
+            return Err(IllegalArgumentException::new_err(
+                "bind-root requires 2 args: var and value",
+            ));
+        }
+        let var_any = args.get_item(0)?;
+        let var = var_any.downcast::<crate::var::Var>().map_err(|_| {
+            IllegalArgumentException::new_err("bind-root: first arg must be a Var")
+        })?;
+        let value = args.get_item(1)?.unbind();
+        var.call_method1("bind_root", (value,))?;
+        Ok(var.clone().unbind().into_any())
+    })?;
+
+    // `(_set-macro! var)` — tags a Var with `:macro true` metadata. Used
+    // by `defmacro` expansions.
+    intern_fn(py, &core_ns, "_set-macro!", |args, py| {
+        if args.len() != 1 {
+            return Err(IllegalArgumentException::new_err(
+                "_set-macro! requires 1 arg: the Var",
+            ));
+        }
+        let var_any = args.get_item(0)?;
+        let var = var_any.downcast::<crate::var::Var>().map_err(|_| {
+            IllegalArgumentException::new_err("_set-macro!: arg must be a Var")
+        })?;
+        var.get().set_macro_flag(py)?;
+        Ok(var.clone().unbind().into_any())
+    })?;
+
+    // `(_make-closure template capture1 capture2 ...)` — used by compiled `fn*`.
+    // Pops a FnTemplate + N captures; returns a runtime Fn.
+    intern_fn(py, &core_ns, "_make-closure", |args, py| {
+        if args.len() < 1 {
+            return Err(IllegalArgumentException::new_err(
+                "_make-closure requires at least a template",
+            ));
+        }
+        let template_any = args.get_item(0)?;
+        let template = template_any
+            .downcast::<crate::compiler::method::FnTemplate>()
+            .map_err(|_| {
+                IllegalArgumentException::new_err(
+                    "_make-closure: first arg must be an FnTemplate",
+                )
+            })?;
+        let t = template.get();
+        let mut captures: Vec<PyObject> = Vec::with_capacity(args.len() - 1);
+        for i in 1..args.len() {
+            captures.push(args.get_item(i)?.unbind());
+        }
+        let fn_val = crate::eval::fn_value::Fn {
+            name: t.name.clone(),
+            current_ns: t.current_ns.clone_ref(py),
+            captures,
+            methods: t.methods.clone(),
+            variadic: t.variadic.clone(),
+            pool: t.pool.clone(),
+        };
+        Ok(Py::new(py, fn_val)?.into_any())
+    })?;
+
     intern_fn(py, &core_ns, "str", |args, py| {
         let mut out = String::new();
         for i in 0..args.len() {

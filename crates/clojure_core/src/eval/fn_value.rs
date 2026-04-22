@@ -1,58 +1,84 @@
-//! Fn — a closure value. Captures env at creation; applies on invocation.
+//! `Fn` — a compiled Clojure function value.
+//!
+//! Holds a shared `FnPool` + one `CompiledMethod` per arity + captured
+//! closure values. Dispatch on arity picks the right method; overflow goes
+//! to `variadic` (packed into a seq for the rest-arg slot).
+//!
+//! Python sees the same `clojure._core.Fn` pyclass as before — `IFn::invokeN`
+//! and `__call__` preserve the existing surface. The body is executed via
+//! `vm::run` instead of the old tree walker.
 
-use crate::eval::env::Env;
+use crate::compiler::method::CompiledMethod;
+use crate::compiler::pool::FnPool;
 use crate::eval::errors;
 use crate::ifn::IFn;
 use clojure_core_macros::implements;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
+use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
 
 #[pyclass(module = "clojure._core", name = "Fn", frozen)]
 pub struct Fn {
-    pub captured_locals: parking_lot::RwLock<std::collections::HashMap<String, PyObject>>,
-    pub current_ns: PyObject,
-    pub param_names: Vec<String>,
-    pub body: Vec<PyObject>,   // each form in the body; eval'd in sequence like (do ...)
     pub name: Option<String>,
+    pub current_ns: PyObject,
+    pub captures: Vec<PyObject>,
+    pub methods: Vec<CompiledMethod>,
+    pub variadic: Option<CompiledMethod>,
+    pub pool: Arc<FnPool>,
 }
 
 impl Fn {
-    /// Build the env for invocation: captured locals + param bindings.
-    fn make_call_env(&self, py: Python<'_>, args: &[PyObject]) -> PyResult<Env> {
-        if args.len() != self.param_names.len() {
-            let fname = self.name.as_deref().unwrap_or("<anonymous>");
-            return Err(errors::err(format!(
-                "Wrong number of args ({}) passed to fn {} (expected {})",
-                args.len(),
-                fname,
-                self.param_names.len()
-            )));
+    /// Find the method matching `n_args`; fall through to `variadic` if
+    /// no fixed arity matches and the variadic's required count is ≤ n_args.
+    fn dispatch_method(&self, n_args: usize) -> PyResult<(&CompiledMethod, bool)> {
+        for m in &self.methods {
+            if m.arity as usize == n_args { return Ok((m, false)); }
         }
-        let mut locals: std::collections::HashMap<String, PyObject> = self
-            .captured_locals
-            .read()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone_ref(py)))
-            .collect();
-        for (name, val) in self.param_names.iter().zip(args.iter()) {
-            locals.insert(name.clone(), val.clone_ref(py));
+        if let Some(v) = &self.variadic {
+            if n_args >= v.arity as usize {
+                return Ok((v, true));
+            }
         }
-        Ok(Env {
-            locals,
-            current_ns: self.current_ns.clone_ref(py),
-        })
+        Err(errors::err(format!(
+            "Wrong number of args ({}) passed to {}",
+            n_args,
+            self.name.as_deref().unwrap_or("<anonymous>")
+        )))
     }
 
     fn apply(&self, py: Python<'_>, args: &[PyObject]) -> PyResult<PyObject> {
-        let env = self.make_call_env(py, args)?;
-        let mut result: PyObject = py.None();
-        for form in &self.body {
-            result = crate::eval::eval(py, form.clone_ref(py), &env)?;
+        let (method, is_variadic_call) = self.dispatch_method(args.len())?;
+        if is_variadic_call {
+            // Pack overflow (args[arity..]) into a seq; that becomes the
+            // value in slot `arity`.
+            let required = method.arity as usize;
+            let mut frame_args: Vec<PyObject> = args[..required]
+                .iter()
+                .map(|a| a.clone_ref(py))
+                .collect();
+            let rest: Vec<PyObject> = args[required..]
+                .iter()
+                .map(|a| a.clone_ref(py))
+                .collect();
+            let rest_seq = build_rest_seq(py, rest)?;
+            frame_args.push(rest_seq);
+            crate::vm::run(py, method, &self.pool, &self.captures, &frame_args)
+        } else {
+            crate::vm::run(py, method, &self.pool, &self.captures, args)
         }
-        Ok(result)
     }
+}
+
+/// Package variadic overflow args as a seq — uses PersistentList since
+/// that's our canonical seq type for reader-produced lists.
+fn build_rest_seq(py: Python<'_>, items: Vec<PyObject>) -> PyResult<PyObject> {
+    if items.is_empty() {
+        return Ok(py.None());
+    }
+    let tup = PyTuple::new(py, &items)?;
+    crate::collections::plist::list_(py, tup)
 }
 
 #[pymethods]

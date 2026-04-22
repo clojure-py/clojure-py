@@ -32,6 +32,7 @@ mod keyword;
 mod namespace;
 mod ns_ops;
 pub(crate) mod binding_pmap;
+mod compiler;
 mod printer;
 mod protocol;
 mod reader;
@@ -42,6 +43,7 @@ mod seqs;
 mod symbol;
 mod test_protocols;
 mod var;
+mod vm;
 
 pub use clojure_core_macros::{implements, protocol};
 pub use exceptions::{ArityException, IllegalArgumentException, IllegalStateException};
@@ -74,6 +76,7 @@ pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     seqs::register(py, m)?;
     reader::register(py, m)?;
     printer::register(py, m)?;
+    compiler::register(py, m)?;
     eval::register(py, m)?;
     Ok(())
 }

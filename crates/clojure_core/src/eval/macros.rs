@@ -3,7 +3,6 @@
 //! Built in with the compiler; user-defined defmacro is a future spec.
 
 use crate::collections::plist;
-use crate::eval::env::Env;
 use crate::eval::errors;
 use crate::symbol::Symbol;
 use pyo3::prelude::*;
@@ -20,6 +19,7 @@ pub fn lookup_builtin_macro(head: &PyObject, py: Python<'_>) -> Option<&'static 
     if s.ns.is_some() { return None; }
     match s.name.as_ref() {
         "defn" => Some("defn"),
+        "defmacro" => Some("defmacro"),
         "when" => Some("when"),
         "when-not" => Some("when-not"),
         "cond" => Some("cond"),
@@ -30,12 +30,13 @@ pub fn lookup_builtin_macro(head: &PyObject, py: Python<'_>) -> Option<&'static 
 }
 
 /// Expand a macro call into a form that eval can then evaluate.
-pub fn expand(py: Python<'_>, name: &str, list: PyObject, _env: &Env) -> PyResult<PyObject> {
+pub fn expand(py: Python<'_>, name: &str, list: PyObject) -> PyResult<PyObject> {
     let items = list_items(py, list)?;
     // items[0] is the macro symbol itself.
     let args = &items[1..];
     match name {
         "defn" => expand_defn(py, args),
+        "defmacro" => expand_defmacro(py, args),
         "when" => expand_when(py, args),
         "when-not" => expand_when_not(py, args),
         "cond" => expand_cond(py, args),
@@ -71,6 +72,66 @@ fn sym(py: Python<'_>, name: &str) -> PyResult<PyObject> {
 fn make_list(py: Python<'_>, items: &[PyObject]) -> PyResult<PyObject> {
     let tup = PyTuple::new(py, items)?;
     crate::collections::plist::list_(py, tup)
+}
+
+/// (defmacro name params body...)
+/// →
+/// (do (def name (fn name [&form &env p1 p2 ...] body...))
+///     (_set-macro! (var name))
+///     (var name))
+///
+/// The `&form` and `&env` params are prepended so the macro can see the
+/// full original form and a (currently empty) locals map during expansion.
+fn expand_defmacro(py: Python<'_>, args: &[PyObject]) -> PyResult<PyObject> {
+    if args.len() < 2 {
+        return Err(errors::err("defmacro requires a name and a parameter vector"));
+    }
+    let name_form = args[0].clone_ref(py);
+    let params_form = args[1].clone_ref(py);
+    let body = &args[2..];
+
+    // Prepend &form and &env to the params vector.
+    let form_sym = sym(py, "&form")?;
+    let env_sym = sym(py, "&env")?;
+    let params_b = params_form.bind(py);
+    let params_vec = params_b
+        .downcast::<crate::collections::pvector::PersistentVector>()
+        .map_err(|_| errors::err("defmacro parameters must be a vector"))?;
+    let pv_ref = params_vec.get();
+    let mut new_params: Vec<PyObject> = Vec::with_capacity(2 + pv_ref.cnt as usize);
+    new_params.push(form_sym);
+    new_params.push(env_sym);
+    for i in 0..(pv_ref.cnt as usize) {
+        new_params.push(pv_ref.nth_internal_pub(py, i)?);
+    }
+    let params_tup = PyTuple::new(py, &new_params)?;
+    let new_params_vec =
+        crate::collections::pvector::vector(py, params_tup)?.into_any();
+
+    // (fn name [&form &env ...params] body...)
+    let mut fn_items: Vec<PyObject> = Vec::with_capacity(3 + body.len());
+    fn_items.push(sym(py, "fn")?);
+    fn_items.push(name_form.clone_ref(py));
+    fn_items.push(new_params_vec);
+    for b in body {
+        fn_items.push(b.clone_ref(py));
+    }
+    let fn_form = make_list(py, &fn_items)?;
+
+    // (def name fn_form)
+    let def_form = make_list(py, &[sym(py, "def")?, name_form.clone_ref(py), fn_form])?;
+
+    // (var name)
+    let var_form = make_list(py, &[sym(py, "var")?, name_form.clone_ref(py)])?;
+
+    // (_set-macro! (var name))
+    let set_macro_form = make_list(
+        py,
+        &[sym(py, "_set-macro!")?, var_form.clone_ref(py)],
+    )?;
+
+    // (do def-form set-macro-form (var name))
+    make_list(py, &[sym(py, "do")?, def_form, set_macro_form, var_form])
 }
 
 /// (defn name params body...) → (def name (fn name params body...))

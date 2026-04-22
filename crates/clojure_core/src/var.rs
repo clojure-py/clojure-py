@@ -223,6 +223,53 @@ impl Var {
 }
 
 impl Var {
+    /// Read the `:macro` bit from metadata. Returns `false` on any error
+    /// (safe default during compile-time dispatch).
+    pub fn is_macro(&self, py: Python<'_>) -> bool {
+        let guard = self.meta.read();
+        let meta = match guard.as_ref() {
+            Some(m) => m.clone_ref(py),
+            None => return false,
+        };
+        drop(guard);
+        let kw = match crate::keyword::keyword(py, "macro", None) {
+            Ok(k) => k.into_any(),
+            Err(_) => return false,
+        };
+        let val = match crate::rt::get(py, meta, kw, py.None()) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if val.is_none(py) { return false; }
+        if let Ok(b) = val.bind(py).downcast::<pyo3::types::PyBool>() {
+            return b.is_true();
+        }
+        true
+    }
+
+    /// Tag this Var as a macro — `(alter-meta! v assoc :macro true)`. If
+    /// meta is currently nil, installs `{:macro true}` as a fresh arraymap.
+    pub fn set_macro_flag(&self, py: Python<'_>) -> PyResult<()> {
+        let kw = crate::keyword::keyword(py, "macro", None)?.into_any();
+        let true_py: PyObject = pyo3::types::PyBool::new(py, true)
+            .to_owned()
+            .unbind()
+            .into_any();
+        let existing = self.meta.read().as_ref().map(|o| o.clone_ref(py));
+        let new_meta: PyObject = match existing {
+            Some(m) => m
+                .bind(py)
+                .call_method1("assoc", (kw, true_py))?
+                .unbind(),
+            None => {
+                let tup = pyo3::types::PyTuple::new(py, &[kw, true_py])?;
+                crate::collections::parraymap::array_map(py, tup)?
+            }
+        };
+        *self.meta.write() = Some(new_meta);
+        Ok(())
+    }
+
     /// Like `deref`, but callable from Rust code without a `Py<Self>`.
     /// Returns the root, or IllegalStateException if unbound.
     fn deref_raw(&self, py: Python<'_>) -> PyResult<PyObject> {
