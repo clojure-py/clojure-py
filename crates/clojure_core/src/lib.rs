@@ -31,6 +31,7 @@ mod keyword;
 mod namespace;
 mod ns_ops;
 pub(crate) mod binding_pmap;
+mod printer;
 mod protocol;
 mod reader;
 pub mod registry;
@@ -71,5 +72,6 @@ pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     collections::register(py, m)?;
     seqs::register(py, m)?;
     reader::register(py, m)?;
+    printer::register(py, m)?;
     Ok(())
 }
