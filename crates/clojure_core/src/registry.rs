@@ -15,3 +15,18 @@ pub fn register_all(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     Ok(())
 }
+
+/// Per-type-extension registration. Collected alongside ProtocolRegistrations;
+/// installed AFTER all protocols exist (so lookup by protocol name works).
+pub struct ExtendRegistration {
+    pub install: fn(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()>,
+}
+
+inventory::collect!(ExtendRegistration);
+
+pub fn install_all_extends(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    for r in inventory::iter::<ExtendRegistration> {
+        (r.install)(py, m)?;
+    }
+    Ok(())
+}

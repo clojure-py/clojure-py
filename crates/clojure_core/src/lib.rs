@@ -22,5 +22,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     keyword::register(py, m)?;
     protocol::register(py, m)?;
     registry::register_all(py, m)?;
+    registry::install_all_extends(py, m)?;
     Ok(())
 }
