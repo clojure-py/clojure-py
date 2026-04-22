@@ -109,7 +109,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                                 let py = args.py();
                                 let self_any = args.get_item(0)?;
                                 let self_bound = self_any.downcast::<#self_ty>()?;
-                                let this: &#self_ty = self_bound.get();
+                                let this: ::pyo3::Py<#self_ty> = self_bound.clone().unbind();
                                 let rest_items: ::std::vec::Vec<::pyo3::Py<::pyo3::types::PyAny>> =
                                     (1..args.len()).map(|i| -> ::pyo3::PyResult<_> {
                                         Ok(args.get_item(i)?.unbind())
@@ -140,7 +140,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                                 let py = args.py();
                                 let self_any = args.get_item(0)?;
                                 let self_bound = self_any.downcast::<#self_ty>()?;
-                                let this: &#self_ty = self_bound.get();
+                                let this: ::pyo3::Py<#self_ty> = self_bound.clone().unbind();
                                 #(#arg_extractions)*
                                 <#self_ty as #proto_ident>::#ident(this, py #(, #arg_idents)*)
                             },
