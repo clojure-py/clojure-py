@@ -8,6 +8,7 @@ mod ifn;
 mod ilookup;
 mod keyword;
 mod namespace;
+mod ns_ops;
 pub(crate) mod pmap;
 mod protocol;
 pub mod registry;
@@ -32,6 +33,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     protocol::register(py, m)?;
     var::register(py, m)?;
     namespace::register(py, m)?;
+    ns_ops::register(py, m)?;
     binding::register(py, m)?;
     bound_fn::register(py, m)?;
     registry::register_all(py, m)?;

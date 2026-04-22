@@ -27,7 +27,7 @@ pub struct Var {
 #[pymethods]
 impl Var {
     #[new]
-    fn new(py: Python<'_>, ns: PyObject, sym: PyObject) -> PyResult<Self> {
+    pub fn new(py: Python<'_>, ns: PyObject, sym: PyObject) -> PyResult<Self> {
         Ok(Self {
             ns,
             sym,
