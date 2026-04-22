@@ -103,7 +103,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                     {
                         let f = ::pyo3::types::PyCFunction::new_closure(
                             py,
-                            Some(std::ffi::CString::new(#key).unwrap().as_c_str()),
+                            None,
                             None,
                             |args: &::pyo3::Bound<'_, ::pyo3::types::PyTuple>, _kw: ::std::option::Option<&::pyo3::Bound<'_, ::pyo3::types::PyDict>>| -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>> {
                                 let py = args.py();
@@ -134,7 +134,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                     {
                         let f = ::pyo3::types::PyCFunction::new_closure(
                             py,
-                            Some(std::ffi::CString::new(#key).unwrap().as_c_str()),
+                            None,
                             None,
                             |args: &::pyo3::Bound<'_, ::pyo3::types::PyTuple>, _kw: ::std::option::Option<&::pyo3::Bound<'_, ::pyo3::types::PyDict>>| -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>> {
                                 let py = args.py();
