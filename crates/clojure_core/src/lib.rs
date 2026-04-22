@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 mod associative;
 mod binding;
 mod bound_fn;
-mod collections;
+pub mod collections;
 mod counted;
 mod dispatch;
 mod exceptions;
@@ -49,7 +49,7 @@ pub use symbol::Symbol;
 pub use var::Var;
 
 #[pymodule]
-fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     exceptions::register(py, m)?;
     symbol::register(py, m)?;
     keyword::register(py, m)?;

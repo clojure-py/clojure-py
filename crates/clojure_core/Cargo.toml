@@ -18,6 +18,15 @@ once_cell = { workspace = true }
 smallvec = { workspace = true }
 fxhash = { workspace = true }
 
+[dev-dependencies]
+proptest = "1.5"
+# For Rust-level integration tests (e.g. proptest_hamt), we need a linked
+# Python interpreter. Pull in pyo3 with auto-initialize so test binaries
+# can spin up CPython. The lib/cdylib builds still get `extension-module`
+# via the pyo3/extension-module pass-through feature (see pyproject.toml);
+# running `cargo test` without that feature links CPython directly.
+pyo3 = { version = "0.28", features = ["auto-initialize", "multiple-pymethods"] }
+
 [features]
 loom = []
 
