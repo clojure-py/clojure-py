@@ -1729,3 +1729,26 @@ Each phase's detailed tasks will be written before the phase is dispatched to a 
 5. **`__call__` pymethod is separate from IFn impl** — IFn dispatch via protocol doesn't automatically make a pyclass callable from Python's `obj(...)` syntax. Add a `__call__` pymethod that delegates to the IFn impl.
 6. **TransientVector/Map pop_bang root-collapse**: after the shrink, re-stamp the new root with `ensure_editable` so subsequent mutations can reuse in-place.
 7. **Lock scope in HAMT `without`**: never hold a node's internal `Mutex` across a recursive `without` call or a `rt::` dispatch — it deadlocks.
+
+---
+
+## Late-session additions (2026-04-21)
+
+Phases 12B, 13, 14, and 15-docs were implemented to close the spec:
+
+| Phase | Description | Commit |
+|---|---|---|
+| 12B | ISeqable on PHashMap / PArrayMap / PHashSet | `ce2e3a2` |
+| 13 | hypothesis property-based fuzzing (14 properties, ~326 → 333 tests) | `b803337` |
+| 14 | Rust proptest for HAMT invariants (3 properties, 200 cases each) | `d120d78` |
+| 15-docs | README "Collections" section | (this commit) |
+
+**Deferred remaining:**
+
+- **Phase 11** — additional rt helpers (low priority — Python side already has ProtocolMethods).
+- **Phase 12C** — ChunkedCons perf variant (VectorSeq works fine).
+- **Phase 12D** — IteratorSeq wrapping Python iterators (add when the reader needs to consume Python iterables).
+- **Phase 15-loom** — loom model-check for transient edit-token safety (deferred; hypothesis + thread-safety pytest covers behavioral surface; loom setup for collections is non-trivial).
+- **Phase 15-stress** — dedicated 10k-item stress tests (already effectively covered by hypothesis deep-trie test at 2000 + the existing 32-worker stress in core-abstractions).
+
+**Collections spec is effectively complete for the reader's needs.**

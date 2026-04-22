@@ -80,6 +80,57 @@ tests/                                  # pytest suite
 docs/superpowers/{specs,plans}/         # design + implementation documents
 ```
 
+## Collections
+
+Main-line Clojure persistent collections, all protocol-routed:
+
+- `PersistentList` + `EmptyList` singleton
+- `PersistentVector` (32-way HAMT + tail optimization) + `TransientVector`
+- `PersistentArrayMap` (flat-array small-map, auto-promotes to hash-map past 8 entries) + `TransientArrayMap`
+- `PersistentHashMap` (32-way HAMT) + `TransientHashMap`
+- `PersistentHashSet` (wraps HashMap) + `TransientHashSet`
+- `Cons`, `LazySeq`, `VectorSeq` seq types
+- `MapEntry` for map iteration
+
+Python examples:
+
+```python
+from clojure._core import (
+    vector, hash_map, hash_set, keyword,
+    transient, persistent_bang, assoc_bang,
+    cons, lazy_seq, first, rest, seq,
+)
+
+# HAMT vector, O(log32 n) ops:
+v = vector(*range(1000)).conj(1001).assoc_n(500, "mid")
+
+# Transient batch build:
+t = transient(hash_map())
+for i in range(5000):
+    assoc_bang(t, keyword(f"k{i}"), i)
+m = persistent_bang(t)
+assert m(keyword("k42")) == 42
+
+# Lazy infinite seq:
+def ints(i): return cons(i, lazy_seq(lambda: ints(i + 1)))
+xs = ints(0)
+# Take first 10 without realizing the tail:
+first_ten = [first(xs := (xs if i == 0 else rest(xs))) for i in range(10)]
+```
+
+### Testing
+
+- 333 pytest tests including property-based fuzzing via `hypothesis`
+- 3 Rust `proptest` properties on HAMT internals
+- 4 Loom model-checks for core-abstractions concurrency primitives (method-cache, intern, CAS, bound-fn)
+
+Run the fuzz tests:
+
+```bash
+pytest tests/test_collections_fuzz.py -v
+cargo test --test proptest_hamt --release
+```
+
 ## Design notes
 
 The extension targets **free-threaded CPython 3.14t specifically**. It is not ABI3-compatible; there is no abi3 level that includes the free-threaded build. The project exists to exercise no-GIL Python — every shared-mutable primitive (method cache, keyword intern table, var root, binding stack, namespace mappings) is lock-free, atomic, or explicitly locked with correctness verified under loom.
