@@ -7,6 +7,8 @@
 use crate::associative::Associative;
 use crate::collections::phashmap_node::{fold_hash_i64, MNode};
 use crate::counted::Counted;
+use crate::exceptions::IllegalStateException;
+use crate::ieditable_collection::IEditableCollection;
 use crate::iequiv::IEquiv;
 use crate::ifn::IFn;
 use crate::ihasheq::IHashEq;
@@ -14,11 +16,14 @@ use crate::ilookup::ILookup;
 use crate::imeta::IMeta;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_map::IPersistentMap;
+use crate::itransient_associative::ITransientAssociative;
+use crate::itransient_collection::ITransientCollection;
+use crate::itransient_map::ITransientMap;
 use clojure_core_macros::implements;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
@@ -357,6 +362,7 @@ pub fn hash_map(py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<Py<Persist
 pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PersistentHashMap>()?;
     m.add_class::<PersistentHashMapKeyIter>()?;
+    m.add_class::<TransientHashMap>()?;
     m.add_function(wrap_pyfunction!(hash_map, m)?)?;
     Ok(())
 }
@@ -581,5 +587,227 @@ impl IFn for PersistentHashMap {
                 "Wrong number of args ({n}) passed to: PersistentHashMap"
             ))),
         }
+    }
+}
+
+// ============================================================================
+// TransientHashMap (Phase 8C)
+// ============================================================================
+//
+// Mutable-in-place variant of PersistentHashMap. Each transient carries an
+// `edit` token (an Arc<AtomicUsize>) shared with every node it has taken
+// ownership of. Operations mutate nodes whose edit matches (fast path) and
+// clone otherwise.
+//
+// Safety:
+//   - `alive: AtomicBool` guards against use-after-`persistent!`.
+//   - `owner_thread` pins the creating thread. Cross-thread use raises
+//     IllegalStateException.
+
+/// Hash-based owner-thread identity. Reuses the approach from TransientVector.
+fn current_thread_id() -> usize {
+    use std::hash::{Hash, Hasher};
+    let tid = std::thread::current().id();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tid.hash(&mut h);
+    h.finish() as usize
+}
+
+#[pyclass(module = "clojure._core", name = "TransientHashMap", frozen)]
+pub struct TransientHashMap {
+    state: parking_lot::Mutex<TransientHashMapState>,
+    alive: AtomicBool,
+    owner_thread: AtomicUsize,
+    edit: Arc<AtomicUsize>,
+}
+
+struct TransientHashMapState {
+    count: u32,
+    root: Option<Arc<MNode>>,
+    has_null: bool,
+    null_value: Option<PyObject>,
+}
+
+impl TransientHashMap {
+    fn check_alive_and_owner(&self) -> PyResult<()> {
+        if !self.alive.load(Ordering::Acquire) {
+            return Err(IllegalStateException::new_err(
+                "Transient used after persistent!",
+            ));
+        }
+        let owner = self.owner_thread.load(Ordering::Acquire);
+        if owner != current_thread_id() {
+            return Err(IllegalStateException::new_err(
+                "Transient used by non-owner thread",
+            ));
+        }
+        Ok(())
+    }
+
+    fn from_persistent(py: Python<'_>, m: &PersistentHashMap) -> Self {
+        let edit = Arc::new(AtomicUsize::new(1));
+        let editable_root = m.root.as_ref().map(|r| r.ensure_editable(&edit));
+        Self {
+            state: parking_lot::Mutex::new(TransientHashMapState {
+                count: m.count,
+                root: editable_root,
+                has_null: m.has_null,
+                null_value: m.null_value.read().as_ref().map(|o| o.clone_ref(py)),
+            }),
+            alive: AtomicBool::new(true),
+            owner_thread: AtomicUsize::new(current_thread_id()),
+            edit,
+        }
+    }
+}
+
+#[pymethods]
+impl TransientHashMap {
+    fn __len__(&self) -> PyResult<usize> {
+        self.check_alive_and_owner()?;
+        Ok(self.state.lock().count as usize)
+    }
+
+    fn assoc_bang(slf: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<Py<Self>> {
+        {
+            let this = slf.bind(py).get();
+            this.check_alive_and_owner()?;
+            let mut st = this.state.lock();
+            if k.is_none(py) {
+                let had = st.has_null;
+                st.has_null = true;
+                st.null_value = Some(v);
+                if !had {
+                    st.count += 1;
+                }
+                drop(st);
+                return Ok(slf);
+            }
+            let h = fold_hash_i64(crate::rt::hash_eq(py, k.clone_ref(py))?);
+            let (new_root, added) = match st.root.as_ref() {
+                Some(r) => r.assoc_editable(py, &this.edit, 0, h, k, v)?,
+                None => {
+                    let empty = Arc::new(MNode::Bitmap(
+                        crate::collections::phashmap_node::BitmapIndexedNode {
+                            inner: parking_lot::Mutex::new(
+                                crate::collections::phashmap_node::BitmapIndexedInner {
+                                    bitmap: 0,
+                                    array: Vec::new(),
+                                },
+                            ),
+                            edit: Some(Arc::clone(&this.edit)),
+                        },
+                    ));
+                    empty.assoc_editable(py, &this.edit, 0, h, k, v)?
+                }
+            };
+            st.root = Some(new_root);
+            if added {
+                st.count += 1;
+            }
+            drop(st);
+        }
+        Ok(slf)
+    }
+
+    fn dissoc_bang(slf: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<Py<Self>> {
+        {
+            let this = slf.bind(py).get();
+            this.check_alive_and_owner()?;
+            let mut st = this.state.lock();
+            if k.is_none(py) {
+                if st.has_null {
+                    st.has_null = false;
+                    st.null_value = None;
+                    st.count -= 1;
+                }
+                drop(st);
+                return Ok(slf);
+            }
+            let Some(root) = st.root.as_ref().cloned() else {
+                drop(st);
+                return Ok(slf);
+            };
+            let h = fold_hash_i64(crate::rt::hash_eq(py, k.clone_ref(py))?);
+            let had = root.contains_key(py, 0, h, k.clone_ref(py))?;
+            let new_root = root.without_editable(py, &this.edit, 0, h, k)?;
+            st.root = new_root;
+            if had {
+                st.count -= 1;
+            }
+            drop(st);
+        }
+        Ok(slf)
+    }
+
+    fn conj_bang(slf: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<Py<Self>> {
+        // conj on a map transient: x is MapEntry or [k v].
+        let (k, v) = {
+            let x_b = x.bind(py);
+            if let Ok(me) = x_b.downcast::<crate::collections::map_entry::MapEntry>() {
+                (me.get().key.clone_ref(py), me.get().val.clone_ref(py))
+            } else {
+                (x_b.get_item(0)?.unbind(), x_b.get_item(1)?.unbind())
+            }
+        };
+        Self::assoc_bang(slf, py, k, v)
+    }
+
+    fn persistent_bang(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<PersistentHashMap>> {
+        let this = slf.bind(py).get();
+        this.check_alive_and_owner()?;
+        let st = this.state.lock();
+        let phm = PersistentHashMap {
+            count: st.count,
+            root: st.root.as_ref().map(Arc::clone),
+            has_null: st.has_null,
+            null_value: parking_lot::RwLock::new(
+                st.null_value.as_ref().map(|o| o.clone_ref(py)),
+            ),
+            hash_cache: std::sync::atomic::AtomicI64::new(0),
+            meta: parking_lot::RwLock::new(None),
+        };
+        drop(st);
+        this.alive.store(false, Ordering::Release);
+        Py::new(py, phm)
+    }
+}
+
+// --- Protocol impls ---
+
+#[implements(IEditableCollection)]
+impl IEditableCollection for PersistentHashMap {
+    fn as_transient(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let t = TransientHashMap::from_persistent(py, s);
+        Ok(Py::new(py, t)?.into_any())
+    }
+}
+
+#[implements(ITransientCollection)]
+impl ITransientCollection for TransientHashMap {
+    fn conj_bang(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
+        let r = TransientHashMap::conj_bang(this, py, x)?;
+        Ok(r.into_any())
+    }
+    fn persistent_bang(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let r = TransientHashMap::persistent_bang(this, py)?;
+        Ok(r.into_any())
+    }
+}
+
+#[implements(ITransientAssociative)]
+impl ITransientAssociative for TransientHashMap {
+    fn assoc_bang(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        let r = TransientHashMap::assoc_bang(this, py, k, v)?;
+        Ok(r.into_any())
+    }
+}
+
+#[implements(ITransientMap)]
+impl ITransientMap for TransientHashMap {
+    fn dissoc_bang(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let r = TransientHashMap::dissoc_bang(this, py, k)?;
+        Ok(r.into_any())
     }
 }
