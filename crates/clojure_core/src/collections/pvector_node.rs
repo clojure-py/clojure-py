@@ -60,4 +60,24 @@ impl VNode {
         let g = self.array.lock();
         std::array::from_fn(|i| g[i].clone())
     }
+
+    /// Clone this node, stamping it with the given edit token. Used by
+    /// TransientVector to obtain a mutable-in-place node at the start of
+    /// batch operations (Phase 6C).
+    pub fn editable_clone(&self, edit: Arc<AtomicUsize>) -> Arc<VNode> {
+        let arr = self.clone_array();
+        Arc::new(VNode {
+            edit: Some(edit),
+            array: Mutex::new(arr),
+        })
+    }
+
+    /// Return this node as-is if its edit token matches (so in-place mutation
+    /// is safe), else a fresh clone stamped with the given edit token.
+    pub fn ensure_editable(self: &Arc<Self>, edit: &Arc<AtomicUsize>) -> Arc<VNode> {
+        match &self.edit {
+            Some(e) if Arc::ptr_eq(e, edit) => Arc::clone(self),
+            _ => self.editable_clone(Arc::clone(edit)),
+        }
+    }
 }

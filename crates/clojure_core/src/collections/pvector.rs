@@ -8,6 +8,7 @@ use crate::collections::pvector_node::{VNode, VSlot};
 use crate::counted::Counted;
 use crate::exceptions::IllegalStateException;
 use crate::iequiv::IEquiv;
+use crate::ieditable_collection::IEditableCollection;
 use crate::ifn::IFn;
 use crate::ihasheq::IHashEq;
 use crate::imeta::IMeta;
@@ -15,12 +16,16 @@ use crate::indexed::Indexed;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_stack::IPersistentStack;
 use crate::ipersistent_vector::IPersistentVector;
+use crate::itransient_associative::ITransientAssociative;
+use crate::itransient_collection::ITransientCollection;
+use crate::itransient_vector::ITransientVector;
 use crate::sequential::Sequential;
 use clojure_core_macros::implements;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 type PyObject = Py<PyAny>;
 
@@ -545,7 +550,9 @@ pub fn vector(py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<Py<Persisten
 pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PersistentVector>()?;
     m.add_class::<PersistentVectorIter>()?;
+    m.add_class::<TransientVector>()?;
     m.add_function(wrap_pyfunction!(vector, m)?)?;
+    m.add_function(wrap_pyfunction!(transient_fn, m)?)?;
     Ok(())
 }
 
@@ -810,4 +817,413 @@ impl IFn for PersistentVector {
             ))),
         }
     }
+}
+
+// ============================================================================
+// TransientVector (Phase 6C)
+// ============================================================================
+//
+// Mutable-in-place variant of PersistentVector. Each transient carries an
+// `edit` token (a unique Arc<AtomicUsize>) and stamps every node it has
+// taken ownership of with that token. Operations mutate nodes whose edit
+// matches (fast-path), and clone otherwise (defensive path, preserves any
+// previously-published persistent snapshots).
+//
+// Safety:
+//   - `alive: AtomicBool` guards against use-after-`persistent!`.
+//   - `owner_thread` records the creating thread's id; ops from other threads
+//     raise IllegalStateException. Matches clojure-jvm's ensureEditable check.
+
+/// Hash-based owner-thread identity. Only equality is required; we use
+/// std::thread::current().id() hashed to a usize.
+fn current_thread_id() -> usize {
+    use std::hash::{Hash, Hasher};
+    let tid = std::thread::current().id();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tid.hash(&mut h);
+    h.finish() as usize
+}
+
+#[pyclass(module = "clojure._core", name = "TransientVector", frozen)]
+pub struct TransientVector {
+    state: parking_lot::Mutex<TransientVectorState>,
+    alive: AtomicBool,
+    owner_thread: AtomicUsize,
+    edit: Arc<AtomicUsize>,
+}
+
+struct TransientVectorState {
+    cnt: u32,
+    shift: u32,
+    root: Arc<VNode>,
+    /// Mutable tail (Vec instead of Arc<[_]>). Capacity is kept at BRANCH so
+    /// conj_bang pushes don't need to reallocate until a trie flush.
+    tail: Vec<PyObject>,
+}
+
+impl TransientVector {
+    fn check_alive_and_owner(&self) -> PyResult<()> {
+        if !self.alive.load(Ordering::Acquire) {
+            return Err(IllegalStateException::new_err(
+                "Transient used after persistent!",
+            ));
+        }
+        let owner = self.owner_thread.load(Ordering::Acquire);
+        if owner != current_thread_id() {
+            return Err(IllegalStateException::new_err(
+                "Transient used by non-owner thread",
+            ));
+        }
+        Ok(())
+    }
+
+    fn from_persistent(py: Python<'_>, v: &PersistentVector) -> Self {
+        let edit = Arc::new(AtomicUsize::new(1));
+        let mut tail: Vec<PyObject> = v.tail.iter().map(|o| o.clone_ref(py)).collect();
+        if tail.capacity() < BRANCH {
+            tail.reserve(BRANCH - tail.len());
+        }
+        Self {
+            state: parking_lot::Mutex::new(TransientVectorState {
+                cnt: v.cnt,
+                shift: v.shift,
+                root: v.root.editable_clone(Arc::clone(&edit)),
+                tail,
+            }),
+            alive: AtomicBool::new(true),
+            owner_thread: AtomicUsize::new(current_thread_id()),
+            edit,
+        }
+    }
+}
+
+fn t_tail_off(st: &TransientVectorState) -> usize {
+    if (st.cnt as usize) < BRANCH {
+        0
+    } else {
+        ((st.cnt as usize - 1) >> BITS) << BITS
+    }
+}
+
+/// Transient counterpart of `new_path`: builds a chain of empty nodes, each
+/// stamped with `edit`, terminating at `node` at level 0.
+fn new_path_editable(level: u32, node: Arc<VNode>, edit: &Arc<AtomicUsize>) -> Arc<VNode> {
+    if level == 0 {
+        return node;
+    }
+    let mut slots: [VSlot; 32] = std::array::from_fn(|_| VSlot::Empty);
+    slots[0] = VSlot::Branch(new_path_editable(level - BITS, node, edit));
+    Arc::new(VNode {
+        edit: Some(Arc::clone(edit)),
+        array: parking_lot::Mutex::new(slots),
+    })
+}
+
+/// Push tail (as a leaf-carrying VNode) into the trie with in-place mutation
+/// where edit tokens permit. `cnt` is the transient's count *before* the conj
+/// that triggered the flush (mirrors Java's `cnt - 1` subidx arithmetic).
+fn push_tail_editable(
+    level: u32,
+    parent: &Arc<VNode>,
+    tail_node: Arc<VNode>,
+    edit: &Arc<AtomicUsize>,
+    cnt: usize,
+) -> Arc<VNode> {
+    let subidx = ((cnt - 1) >> level) & MASK;
+    let new_parent = parent.ensure_editable(edit);
+    let new_child = if level == BITS {
+        tail_node
+    } else {
+        let existing = {
+            let g = parent.array.lock();
+            match &g[subidx] {
+                VSlot::Branch(b) => Some(Arc::clone(b)),
+                _ => None,
+            }
+        };
+        match existing {
+            Some(child) => push_tail_editable(level - BITS, &child, tail_node, edit, cnt),
+            None => new_path_editable(level - BITS, tail_node, edit),
+        }
+    };
+    new_parent.array.lock()[subidx] = VSlot::Branch(new_child);
+    new_parent
+}
+
+/// Path-copy-or-mutate assoc for transients. Descends the trie, ensuring each
+/// node on the path is editable before setting the leaf.
+fn do_assoc_editable(
+    level: u32,
+    node: &Arc<VNode>,
+    i: usize,
+    x: PyObject,
+    edit: &Arc<AtomicUsize>,
+) -> Arc<VNode> {
+    let new_node = node.ensure_editable(edit);
+    if level == 0 {
+        new_node.array.lock()[i & MASK] = VSlot::Leaf(x);
+    } else {
+        let subidx = (i >> level) & MASK;
+        let child_opt: Option<Arc<VNode>> = {
+            let g = new_node.array.lock();
+            match &g[subidx] {
+                VSlot::Branch(b) => Some(Arc::clone(b)),
+                _ => None,
+            }
+        };
+        if let Some(child) = child_opt {
+            let new_child = do_assoc_editable(level - BITS, &child, i, x, edit);
+            new_node.array.lock()[subidx] = VSlot::Branch(new_child);
+        }
+    }
+    new_node
+}
+
+#[pymethods]
+impl TransientVector {
+    fn __len__(&self) -> PyResult<usize> {
+        self.check_alive_and_owner()?;
+        Ok(self.state.lock().cnt as usize)
+    }
+
+    fn conj_bang(slf: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<Py<Self>> {
+        {
+            let this = slf.bind(py).get();
+            this.check_alive_and_owner()?;
+            let mut st = this.state.lock();
+            let tail_room = (st.cnt as usize) - t_tail_off(&st);
+            if tail_room < BRANCH {
+                st.tail.push(x);
+                st.cnt += 1;
+            } else {
+                // Tail is full. Flush it into the trie as a leaf-carrying VNode.
+                let tail_leaves: [VSlot; 32] = std::array::from_fn(|j| {
+                    if j < st.tail.len() {
+                        VSlot::Leaf(st.tail[j].clone_ref(py))
+                    } else {
+                        VSlot::Empty
+                    }
+                });
+                let tail_node = Arc::new(VNode {
+                    edit: Some(Arc::clone(&this.edit)),
+                    array: parking_lot::Mutex::new(tail_leaves),
+                });
+                let mut new_root = Arc::clone(&st.root);
+                let mut new_shift = st.shift;
+                if ((st.cnt as usize) >> BITS) > (1usize << st.shift) {
+                    // Root overflow — grow one level.
+                    let mut slots: [VSlot; 32] = std::array::from_fn(|_| VSlot::Empty);
+                    slots[0] = VSlot::Branch(new_root);
+                    slots[1] = VSlot::Branch(new_path_editable(st.shift, tail_node, &this.edit));
+                    new_root = Arc::new(VNode {
+                        edit: Some(Arc::clone(&this.edit)),
+                        array: parking_lot::Mutex::new(slots),
+                    });
+                    new_shift += BITS;
+                } else {
+                    let cnt_now = st.cnt as usize;
+                    new_root = push_tail_editable(new_shift, &new_root, tail_node, &this.edit, cnt_now);
+                }
+                st.root = new_root;
+                st.shift = new_shift;
+                // Start a fresh tail containing the new element.
+                let mut new_tail: Vec<PyObject> = Vec::with_capacity(BRANCH);
+                new_tail.push(x);
+                st.tail = new_tail;
+                st.cnt += 1;
+            }
+            drop(st);
+        }
+        Ok(slf)
+    }
+
+    fn assoc_bang(slf: Py<Self>, py: Python<'_>, i: PyObject, x: PyObject) -> PyResult<Py<Self>> {
+        let idx = {
+            let this = slf.bind(py).get();
+            this.check_alive_and_owner()?;
+            let idx = i.bind(py).extract::<i64>().map_err(|_| {
+                crate::exceptions::IllegalArgumentException::new_err("index must be integer")
+            })?;
+            if idx < 0 {
+                return Err(pyo3::exceptions::PyIndexError::new_err("negative index"));
+            }
+            idx as usize
+        };
+        // Handle the append case *outside* the state lock so conj_bang can re-acquire.
+        {
+            let this = slf.bind(py).get();
+            let cnt = this.state.lock().cnt as usize;
+            if idx == cnt {
+                drop(this);
+                return Self::conj_bang(slf, py, x);
+            }
+            if idx > cnt {
+                return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                    "index {idx} out of bounds for transient vector of length {cnt}"
+                )));
+            }
+        }
+        let this = slf.bind(py).get();
+        let mut st = this.state.lock();
+        if idx >= t_tail_off(&st) {
+            let off = idx - t_tail_off(&st);
+            st.tail[off] = x;
+        } else {
+            let new_root = do_assoc_editable(st.shift, &st.root, idx, x, &this.edit);
+            st.root = new_root;
+        }
+        drop(st);
+        Ok(slf)
+    }
+
+    fn pop_bang(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        {
+            let this = slf.bind(py).get();
+            this.check_alive_and_owner()?;
+            let mut st = this.state.lock();
+            if st.cnt == 0 {
+                return Err(IllegalStateException::new_err("Can't pop empty vector"));
+            }
+            if st.cnt == 1 {
+                st.cnt = 0;
+                st.tail.clear();
+            } else if (st.cnt as usize - t_tail_off(&st)) > 1 {
+                st.tail.pop();
+                st.cnt -= 1;
+            } else {
+                // Tail has exactly one element — pull second-to-last chunk out of trie
+                // into the new tail, then collapse the trie.
+                let cnt_before = st.cnt as usize;
+                let shift_before = st.shift;
+                // Build a throwaway persistent snapshot to reuse `array_for`.
+                let snapshot_tail: Arc<[PyObject]> = Arc::from(
+                    st.tail
+                        .iter()
+                        .map(|o| o.clone_ref(py))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+                let snapshot = PersistentVector {
+                    cnt: st.cnt,
+                    shift: st.shift,
+                    root: Arc::clone(&st.root),
+                    tail: snapshot_tail,
+                    meta: RwLock::new(None),
+                };
+                let new_tail_arc = snapshot.array_for(py, cnt_before - 2)?;
+
+                let new_root_opt = pop_tail(cnt_before, shift_before, &st.root);
+                let mut new_root = new_root_opt.unwrap_or_else(empty_root);
+                let mut new_shift = shift_before;
+
+                // Collapse a single-child root (mirrors persistent pop's collapse).
+                if new_shift > BITS {
+                    let collapse_child = {
+                        let g = new_root.array.lock();
+                        let slot1_empty = matches!(&g[1], VSlot::Empty);
+                        if slot1_empty {
+                            match &g[0] {
+                                VSlot::Branch(b) => Some(Arc::clone(b)),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(child) = collapse_child {
+                        new_root = child;
+                        new_shift -= BITS;
+                    }
+                }
+                // Ensure the new root is editable for this transient.
+                let new_root_stamped = new_root.ensure_editable(&this.edit);
+
+                st.root = new_root_stamped;
+                st.shift = new_shift;
+                st.tail = new_tail_arc.iter().map(|o| o.clone_ref(py)).collect();
+                if st.tail.capacity() < BRANCH {
+                    let extra = BRANCH - st.tail.len();
+                    st.tail.reserve(extra);
+                }
+                st.cnt -= 1;
+            }
+            drop(st);
+        }
+        Ok(slf)
+    }
+
+    fn persistent_bang(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<PersistentVector>> {
+        let this = slf.bind(py).get();
+        this.check_alive_and_owner()?;
+        let st = this.state.lock();
+        let pv = PersistentVector {
+            cnt: st.cnt,
+            shift: st.shift,
+            root: Arc::clone(&st.root),
+            tail: Arc::from(
+                st.tail.iter().map(|o| o.clone_ref(py)).collect::<Vec<_>>().into_boxed_slice(),
+            ),
+            meta: RwLock::new(None),
+        };
+        drop(st);
+        this.alive.store(false, Ordering::Release);
+        Py::new(py, pv)
+    }
+}
+
+// --- Protocol impls ---
+
+#[implements(IEditableCollection)]
+impl IEditableCollection for PersistentVector {
+    fn as_transient(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let t = TransientVector::from_persistent(py, s);
+        Ok(Py::new(py, t)?.into_any())
+    }
+}
+
+#[implements(ITransientCollection)]
+impl ITransientCollection for TransientVector {
+    fn conj_bang(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
+        let r = TransientVector::conj_bang(this, py, x)?;
+        Ok(r.into_any())
+    }
+    fn persistent_bang(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let r = TransientVector::persistent_bang(this, py)?;
+        Ok(r.into_any())
+    }
+}
+
+#[implements(ITransientAssociative)]
+impl ITransientAssociative for TransientVector {
+    fn assoc_bang(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        let r = TransientVector::assoc_bang(this, py, k, v)?;
+        Ok(r.into_any())
+    }
+}
+
+#[implements(ITransientVector)]
+impl ITransientVector for TransientVector {
+    fn pop_bang(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let r = TransientVector::pop_bang(this, py)?;
+        Ok(r.into_any())
+    }
+}
+
+// --- `transient` module-level function (clojure.core/transient alias) ---
+
+#[pyfunction]
+#[pyo3(name = "transient")]
+pub fn transient_fn(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    // Dispatch through IEditableCollection (so any implementer works).
+    let proto_any = py.import("clojure._core")?.getattr("IEditableCollection")?;
+    let proto: Py<crate::Protocol> = proto_any.downcast::<crate::Protocol>()?.clone().unbind();
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    crate::dispatch::dispatch(
+        py,
+        &proto,
+        &std::sync::Arc::from("as_transient"),
+        coll,
+        args,
+    )
 }
