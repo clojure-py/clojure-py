@@ -16,6 +16,7 @@ use crate::indexed::Indexed;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_stack::IPersistentStack;
 use crate::ipersistent_vector::IPersistentVector;
+use crate::iseqable::ISeqable;
 use crate::itransient_associative::ITransientAssociative;
 use crate::itransient_collection::ITransientCollection;
 use crate::itransient_vector::ITransientVector;
@@ -112,6 +113,12 @@ impl PersistentVector {
     fn nth_internal(&self, py: Python<'_>, i: usize) -> PyResult<PyObject> {
         let arr = self.array_for(py, i)?;
         Ok(arr[i & MASK].clone_ref(py))
+    }
+
+    /// Public wrapper around `nth_internal` for use by sibling modules
+    /// (e.g. `seqs::vector_seq`). Semantics are identical to `nth_internal`.
+    pub fn nth_internal_pub(&self, py: Python<'_>, i: usize) -> PyResult<PyObject> {
+        self.nth_internal(py, i)
     }
 
     /// Append `x`, returning a new vector.
@@ -721,6 +728,21 @@ impl Associative for PersistentVector {
 
 #[implements(Sequential)]
 impl Sequential for PersistentVector {}
+
+#[implements(ISeqable)]
+impl ISeqable for PersistentVector {
+    fn seq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        if this.bind(py).get().cnt == 0 {
+            return Ok(py.None());
+        }
+        let vs = crate::seqs::vector_seq::VectorSeq {
+            vec: this,
+            i: 0,
+            meta: parking_lot::RwLock::new(None),
+        };
+        Ok(Py::new(py, vs)?.into_any())
+    }
+}
 
 #[implements(IFn)]
 impl IFn for PersistentVector {

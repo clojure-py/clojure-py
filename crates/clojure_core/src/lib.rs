@@ -35,6 +35,7 @@ mod protocol;
 pub mod registry;
 pub mod rt;
 mod sequential;
+mod seqs;
 mod symbol;
 mod test_protocols;
 mod var;
@@ -67,5 +68,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     iequiv::install_builtin_fallback(py, m)?;
     ihasheq::install_builtin_fallback(py, m)?;
     collections::register(py, m)?;
+    seqs::register(py, m)?;
     Ok(())
 }
