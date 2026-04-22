@@ -8,6 +8,7 @@ mod protocol;
 pub mod registry;
 pub mod rt;
 mod symbol;
+mod test_protocols;
 
 pub use clojure_core_macros::{implements, protocol};
 pub use exceptions::{ArityException, IllegalArgumentException, IllegalStateException};
