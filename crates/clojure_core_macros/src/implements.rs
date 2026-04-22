@@ -116,6 +116,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                                     }).collect::<::pyo3::PyResult<_>>()?;
                                 let rest_tup = ::pyo3::types::PyTuple::new(py, &rest_items)?;
                                 <#self_ty as #proto_ident>::#ident(this, py, rest_tup)
+                                    .and_then(|v| ::pyo3::IntoPyObjectExt::into_py_any(v, py))
                             },
                         )?;
                         impls.set_item(#key, f)?;
@@ -143,6 +144,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                                 let this: ::pyo3::Py<#self_ty> = self_bound.clone().unbind();
                                 #(#arg_extractions)*
                                 <#self_ty as #proto_ident>::#ident(this, py #(, #arg_idents)*)
+                                    .and_then(|v| ::pyo3::IntoPyObjectExt::into_py_any(v, py))
                             },
                         )?;
                         impls.set_item(#key, f)?;
