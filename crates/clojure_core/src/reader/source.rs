@@ -23,6 +23,18 @@ impl<'a> Source<'a> {
         self.input[self.pos..].chars().next()
     }
 
+    /// Peek the char after the one peek() would return. Used for 2-char
+    /// lookahead in cases like sign-followed-by-digit.
+    pub fn peek_second(&self) -> Option<char> {
+        if self.pushback.is_some() {
+            // pushback is the first char; the second is the start of input from pos.
+            return self.input[self.pos..].chars().next();
+        }
+        let mut iter = self.input[self.pos..].chars();
+        iter.next(); // skip first
+        iter.next()
+    }
+
     /// Consume and return the next char.
     pub fn advance(&mut self) -> Option<char> {
         if let Some(c) = self.pushback.take() {
