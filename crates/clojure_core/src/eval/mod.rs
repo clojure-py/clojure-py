@@ -5,6 +5,7 @@ pub mod env;
 pub mod errors;
 pub mod fn_value;
 pub mod invoke;
+pub mod macros;
 pub mod resolve;
 pub mod special_forms;
 
@@ -70,9 +71,14 @@ pub fn eval(py: Python<'_>, form: PyObject, env: &Env) -> PyResult<PyObject> {
         return Ok(crate::collections::phashset::hash_set(py, tup)?.into_any());
     }
 
-    // PersistentList: special form OR invocation.
+    // PersistentList: macro expansion OR special form OR invocation.
     if let Ok(pl) = b.downcast::<crate::collections::plist::PersistentList>() {
         let head = pl.get().head.clone_ref(py);
+        // Macroexpand first.
+        if let Some(macro_name) = macros::lookup_builtin_macro(&head, py) {
+            let expanded = macros::expand(py, macro_name, form.clone_ref(py), env)?;
+            return eval(py, expanded, env);
+        }
         // Check special form.
         if let Some(name) = special_forms::lookup(&head, py) {
             return special_forms::dispatch(py, name, form, env);

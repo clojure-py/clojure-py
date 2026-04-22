@@ -35,11 +35,11 @@ def keyword_strategy():
 
 
 def symbol_strategy():
-    """Symbol with ASCII-ish name."""
+    """Symbol with ASCII-ish name, excluding reserved reader words."""
     name = st.text(
         alphabet=st.characters(whitelist_categories=("Lu", "Ll")),
         min_size=1, max_size=6,
-    )
+    ).filter(lambda n: n not in ("true", "false", "nil"))
     return st.builds(lambda n: symbol(n), name)
 
 
