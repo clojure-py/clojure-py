@@ -1,0 +1,13 @@
+use clojure_core_macros::protocol;
+use pyo3::prelude::*;
+use pyo3::types::PyAny;
+
+type PyObject = Py<PyAny>;
+
+#[protocol(name = "clojure.core/IPersistentCollection", extend_via_metadata = false)]
+pub trait IPersistentCollection: Sized {
+    fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize>;
+    fn cons(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject>;
+    fn empty(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject>;
+    fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool>;
+}
