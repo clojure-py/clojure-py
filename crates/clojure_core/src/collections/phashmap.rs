@@ -4,7 +4,17 @@
 //! core struct and its pymethods; protocol trait impls follow in Phase 8B
 //! and the TransientHashMap variant in 8C.
 
+use crate::associative::Associative;
 use crate::collections::phashmap_node::{fold_hash_i64, MNode};
+use crate::counted::Counted;
+use crate::iequiv::IEquiv;
+use crate::ifn::IFn;
+use crate::ihasheq::IHashEq;
+use crate::ilookup::ILookup;
+use crate::imeta::IMeta;
+use crate::ipersistent_collection::IPersistentCollection;
+use crate::ipersistent_map::IPersistentMap;
+use clojure_core_macros::implements;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
@@ -291,6 +301,15 @@ impl PersistentHashMap {
             },
         )
     }
+
+    /// `(m k)` / `(m k default)` — map-as-IFn: behaves like lookup.
+    #[pyo3(signature = (key, default=None))]
+    fn __call__(&self, py: Python<'_>, key: PyObject, default: Option<PyObject>) -> PyResult<PyObject> {
+        match default {
+            Some(d) => self.val_at_default_internal(py, key, d),
+            None => self.val_at_internal(py, key),
+        }
+    }
 }
 
 #[pyclass(module = "clojure._core", name = "PersistentHashMapKeyIter")]
@@ -340,4 +359,227 @@ pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()>
     m.add_class::<PersistentHashMapKeyIter>()?;
     m.add_function(wrap_pyfunction!(hash_map, m)?)?;
     Ok(())
+}
+
+// --- Protocol impls (Phase 8B). ---
+
+#[implements(Counted)]
+impl Counted for PersistentHashMap {
+    fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize> {
+        Ok(this.bind(py).get().count as usize)
+    }
+}
+
+#[implements(IEquiv)]
+impl IEquiv for PersistentHashMap {
+    fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let other_b = other.bind(py);
+        let Ok(other_m) = other_b.downcast::<PersistentHashMap>() else {
+            return Ok(false);
+        };
+        let a = this.bind(py).get();
+        let b = other_m.get();
+        if a.count != b.count { return Ok(false); }
+        // For every key in a, look up in b and check equiv.
+        // Since we don't have a key-iterator exposed to Rust yet (it's behind __iter__),
+        // we iterate via the internal node structure. Simpler: use __iter__ via Python.
+        let iter = this.bind(py).try_iter()?;
+        for item in iter {
+            let k = item?.unbind();
+            let av = a.val_at_default_internal(py, k.clone_ref(py), py.None())?;
+            let bv = b.val_at_default_internal(py, k, py.None())?;
+            if !crate::rt::equiv(py, av, bv)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+#[implements(IHashEq)]
+impl IHashEq for PersistentHashMap {
+    fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
+        let s = this.bind(py).get();
+        // Commutative fold over (hash_eq(k) XOR hash_eq(v)) so insertion order doesn't matter.
+        let mut h: i64 = 0;
+        let iter = this.bind(py).try_iter()?;
+        for item in iter {
+            let k = item?.unbind();
+            let v = s.val_at_default_internal(py, k.clone_ref(py), py.None())?;
+            let kh = crate::rt::hash_eq(py, k)?;
+            let vh = crate::rt::hash_eq(py, v)?;
+            h = h.wrapping_add(kh ^ vh);
+        }
+        Ok(h)
+    }
+}
+
+#[implements(IMeta)]
+impl IMeta for PersistentHashMap {
+    fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+    }
+    fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let m = if meta.is_none(py) { None } else { Some(meta) };
+        Ok(Py::new(py, PersistentHashMap {
+            count: s.count,
+            root: s.root.as_ref().map(std::sync::Arc::clone),
+            has_null: s.has_null,
+            null_value: parking_lot::RwLock::new(s.null_value.read().as_ref().map(|o| o.clone_ref(py))),
+            hash_cache: std::sync::atomic::AtomicI64::new(0),
+            meta: parking_lot::RwLock::new(m),
+        })?.into_any())
+    }
+}
+
+#[implements(IPersistentCollection)]
+impl IPersistentCollection for PersistentHashMap {
+    fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize> {
+        Ok(this.bind(py).get().count as usize)
+    }
+    fn conj(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
+        // conj on a map takes a MapEntry or a 2-tuple-like [k v] and assocs.
+        let x_b = x.bind(py);
+        // Try MapEntry first.
+        if let Ok(me) = x_b.downcast::<crate::collections::map_entry::MapEntry>() {
+            let s = this.bind(py).get();
+            let k = me.get().key.clone_ref(py);
+            let v = me.get().val.clone_ref(py);
+            let new = s.assoc_internal(py, k, v)?;
+            return Ok(Py::new(py, new)?.into_any());
+        }
+        // Fallback: assume x is sequential with 2 elements (key, val).
+        let k = x_b.get_item(0)?.unbind();
+        let v = x_b.get_item(1)?.unbind();
+        let s = this.bind(py).get();
+        let new = s.assoc_internal(py, k, v)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+    fn empty(_this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        Ok(Py::new(py, PersistentHashMap::new_empty())?.into_any())
+    }
+}
+
+#[implements(IPersistentMap)]
+impl IPersistentMap for PersistentHashMap {
+    fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let new = s.assoc_internal(py, k, v)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+    fn without(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let new = s.without_internal(py, k)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+    fn contains_key(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool> {
+        this.bind(py).get().contains_key_internal(py, k)
+    }
+    fn entry_at(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        if !s.contains_key_internal(py, k.clone_ref(py))? {
+            return Ok(py.None());
+        }
+        let v = s.val_at_internal(py, k.clone_ref(py))?;
+        let me = crate::collections::map_entry::MapEntry::new(k, v);
+        Ok(Py::new(py, me)?.into_any())
+    }
+}
+
+#[implements(Associative)]
+impl Associative for PersistentHashMap {
+    fn contains_key(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool> {
+        this.bind(py).get().contains_key_internal(py, k)
+    }
+    fn entry_at(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        <PersistentHashMap as IPersistentMap>::entry_at(this, py, k)
+    }
+    fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        <PersistentHashMap as IPersistentMap>::assoc(this, py, k, v)
+    }
+}
+
+#[implements(ILookup)]
+impl ILookup for PersistentHashMap {
+    fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject> {
+        this.bind(py).get().val_at_default_internal(py, k, not_found)
+    }
+}
+
+#[implements(IFn)]
+impl IFn for PersistentHashMap {
+    fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (0) passed to: PersistentHashMap"))
+    }
+    fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
+        this.bind(py).get().val_at_internal(py, a0)
+    }
+    fn invoke2(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject) -> PyResult<PyObject> {
+        this.bind(py).get().val_at_default_internal(py, a0, a1)
+    }
+    fn invoke3(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (3) passed to: PersistentHashMap"))
+    }
+    fn invoke4(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (4) passed to: PersistentHashMap"))
+    }
+    fn invoke5(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (5) passed to: PersistentHashMap"))
+    }
+    fn invoke6(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (6) passed to: PersistentHashMap"))
+    }
+    fn invoke7(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (7) passed to: PersistentHashMap"))
+    }
+    fn invoke8(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (8) passed to: PersistentHashMap"))
+    }
+    fn invoke9(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (9) passed to: PersistentHashMap"))
+    }
+    fn invoke10(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (10) passed to: PersistentHashMap"))
+    }
+    fn invoke11(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (11) passed to: PersistentHashMap"))
+    }
+    fn invoke12(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (12) passed to: PersistentHashMap"))
+    }
+    fn invoke13(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (13) passed to: PersistentHashMap"))
+    }
+    fn invoke14(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (14) passed to: PersistentHashMap"))
+    }
+    fn invoke15(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (15) passed to: PersistentHashMap"))
+    }
+    fn invoke16(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (16) passed to: PersistentHashMap"))
+    }
+    fn invoke17(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (17) passed to: PersistentHashMap"))
+    }
+    fn invoke18(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (18) passed to: PersistentHashMap"))
+    }
+    fn invoke19(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (19) passed to: PersistentHashMap"))
+    }
+    fn invoke20(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject, _a19: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (20) passed to: PersistentHashMap"))
+    }
+    fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
+        match args.len() {
+            1 => Self::invoke1(this, py, args.get_item(0)?.unbind()),
+            2 => Self::invoke2(this, py, args.get_item(0)?.unbind(), args.get_item(1)?.unbind()),
+            n => Err(crate::exceptions::ArityException::new_err(format!(
+                "Wrong number of args ({n}) passed to: PersistentHashMap"
+            ))),
+        }
+    }
 }

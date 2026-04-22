@@ -18,8 +18,8 @@ type PyObject = Py<PyAny>;
 /// `IPersistentMap.valAt(key, notFound)`; the two-arg Clojure form `(get m k)`
 /// is spelled `val_at(coll, k, nil)` at the Rust level.
 #[protocol(name = "clojure.core/ILookup", extend_via_metadata = false)]
-pub trait ILookup {
-    fn val_at(&self, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject>;
+pub trait ILookup: Sized {
+    fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject>;
 }
 
 /// Install a fallback that, for any target with `__getitem__`, registers

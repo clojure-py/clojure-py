@@ -142,3 +142,58 @@ def test_repr_contains_entries():
     assert r.endswith("}")
     assert "a" in r
     assert "1" in r
+
+
+# --- Protocol dispatch tests (Phase 8B) ---
+
+from clojure._core import count, equiv, hash_eq, conj, empty, val_at
+
+
+def test_rt_count_via_counted():
+    assert count(hash_map()) == 0
+    assert count(hash_map().assoc("a", 1).assoc("b", 2)) == 2
+
+
+def test_rt_equiv_same_contents():
+    a = hash_map().assoc("x", 1).assoc("y", 2)
+    b = hash_map().assoc("y", 2).assoc("x", 1)  # different insertion order
+    assert equiv(a, b) is True
+
+
+def test_rt_equiv_different_values():
+    a = hash_map().assoc("x", 1)
+    b = hash_map().assoc("x", 2)
+    assert equiv(a, b) is False
+
+
+def test_rt_equiv_different_keys():
+    a = hash_map().assoc("x", 1)
+    b = hash_map().assoc("y", 1)
+    assert equiv(a, b) is False
+
+
+def test_rt_hash_eq_stable():
+    a = hash_map().assoc("a", 1).assoc("b", 2)
+    b = hash_map().assoc("b", 2).assoc("a", 1)
+    assert hash_eq(a) == hash_eq(b)
+
+
+def test_rt_empty_via_ipc():
+    e = empty(hash_map().assoc("a", 1))
+    assert isinstance(e, PersistentHashMap)
+    assert len(e) == 0
+
+
+def test_rt_get_via_ilookup():
+    m = hash_map().assoc("k", 42)
+    assert val_at(m, "k", None) == 42
+    assert val_at(m, "missing", "default") == "default"
+
+
+def test_map_is_callable_as_ifn():
+    """Map implements IFn — (m k) == (get m k), (m k default) == (get m k default)."""
+    m = hash_map().assoc("a", 1).assoc("b", 2)
+    assert m("a") == 1
+    assert m("b") == 2
+    assert m("missing") is None
+    assert m("missing", "default") == "default"
