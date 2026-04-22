@@ -11,8 +11,10 @@ use crate::iequiv::IEquiv;
 use crate::ifn::IFn;
 use crate::ihasheq::IHashEq;
 use crate::imeta::IMeta;
+use crate::indexed::Indexed;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_stack::IPersistentStack;
+use crate::ipersistent_vector::IPersistentVector;
 use crate::sequential::Sequential;
 use clojure_core_macros::implements;
 use parking_lot::RwLock;
@@ -626,16 +628,46 @@ impl IPersistentCollection for PersistentVector {
     }
 }
 
-// NOTE: IPersistentVector and Indexed protocol traits currently declare their
-// index params as `usize`, but the #[implements] macro's generated dispatch
-// wrapper always unbinds args to `Py<PyAny>`. These impls would fail to
-// compile (expected usize, found Py<PyAny>) without either (a) updating the
-// protocol trait signatures to PyObject + extract internally, or (b) the
-// macro learning to insert .extract::<usize>()? for non-PyObject args.
-//
-// Both fixes live outside this phase's file scope, so these impls are
-// deferred. The vector's Python-facing `nth`, `nth_or_default`, `assoc_n`
-// pymethods already provide this functionality directly.
+#[implements(IPersistentVector)]
+impl IPersistentVector for PersistentVector {
+    fn length(this: Py<Self>, py: Python<'_>) -> PyResult<usize> {
+        Ok(this.bind(py).get().cnt as usize)
+    }
+    fn assoc_n(this: Py<Self>, py: Python<'_>, i: PyObject, x: PyObject) -> PyResult<PyObject> {
+        let idx = i.bind(py).extract::<i64>().map_err(|_| {
+            crate::exceptions::IllegalArgumentException::new_err("vector index must be integer")
+        })?;
+        if idx < 0 {
+            return Err(pyo3::exceptions::PyIndexError::new_err("negative index"));
+        }
+        let s = this.bind(py).get();
+        let new = s.assoc_n_internal(py, idx as usize, x)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+}
+
+#[implements(Indexed)]
+impl Indexed for PersistentVector {
+    fn nth(this: Py<Self>, py: Python<'_>, i: PyObject) -> PyResult<PyObject> {
+        let idx = i.bind(py).extract::<i64>().map_err(|_| {
+            crate::exceptions::IllegalArgumentException::new_err("index must be integer")
+        })?;
+        if idx < 0 {
+            return Err(pyo3::exceptions::PyIndexError::new_err("negative index"));
+        }
+        this.bind(py).get().nth_internal(py, idx as usize)
+    }
+    fn nth_or_default(this: Py<Self>, py: Python<'_>, i: PyObject, default: PyObject) -> PyResult<PyObject> {
+        let idx = match i.bind(py).extract::<i64>() {
+            Ok(v) => v,
+            Err(_) => return Ok(default),
+        };
+        if idx < 0 { return Ok(default); }
+        let s = this.bind(py).get();
+        if (idx as u64) >= (s.cnt as u64) { return Ok(default); }
+        s.nth_internal(py, idx as usize)
+    }
+}
 
 #[implements(IPersistentStack)]
 impl IPersistentStack for PersistentVector {
@@ -679,8 +711,6 @@ impl Associative for PersistentVector {
         Ok(Py::new(py, new)?.into_any())
     }
 }
-
-// Indexed impl deferred — see note above about usize vs Py<PyAny>.
 
 #[implements(Sequential)]
 impl Sequential for PersistentVector {}

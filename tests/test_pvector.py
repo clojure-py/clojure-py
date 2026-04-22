@@ -213,3 +213,16 @@ def test_associative_assoc_via_rt():
     v = vector(10, 20, 30)
     v2 = v.assoc_n(1, 99)  # use the pymethod directly
     assert v2.nth(1) == 99
+
+
+def test_rt_nth_via_indexed():
+    from clojure._core import nth
+    v = vector("a", "b", "c")
+    assert nth(v, 0) == "a"
+    assert nth(v, 2) == "c"
+
+
+def test_rt_length_via_ipersistent_vector():
+    from clojure._core import length
+    assert length(vector()) == 0
+    assert length(vector(1, 2, 3)) == 3

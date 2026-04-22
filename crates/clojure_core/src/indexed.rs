@@ -6,6 +6,6 @@ type PyObject = Py<PyAny>;
 
 #[protocol(name = "clojure.core/Indexed", extend_via_metadata = false)]
 pub trait Indexed: Sized {
-    fn nth(this: Py<Self>, py: Python<'_>, i: usize) -> PyResult<PyObject>;
-    fn nth_or_default(this: Py<Self>, py: Python<'_>, i: usize, default: PyObject) -> PyResult<PyObject>;
+    fn nth(this: Py<Self>, py: Python<'_>, i: PyObject) -> PyResult<PyObject>;
+    fn nth_or_default(this: Py<Self>, py: Python<'_>, i: PyObject, default: PyObject) -> PyResult<PyObject>;
 }
