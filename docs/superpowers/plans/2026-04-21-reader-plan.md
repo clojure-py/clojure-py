@@ -61,3 +61,36 @@ Foundation. `Source` wraps `&str` + tracks line/col. `ReaderError` extends `Ille
 - Create: `tests/test_reader.py` (unit tests if not already), `tests/test_reader_roundtrip.py` (hypothesis fuzz)
 
 **Deliverables:** for arbitrary generated Clojure data `x`, `read_string(pr_str(x))` equals `x` via `rt::equiv`. 200 cases.
+
+---
+
+## Execution Status
+
+All 6 phases landed. **446 pytest tests passing.**
+
+| Phase | Description | Commit |
+|---|---|---|
+| R1 | Source + ReaderError + number/string/char parsers | `467fe41` |
+| R2 | read_string on atoms (nil/bool/int/float/string/char/symbol/keyword) | `33faca4` |
+| R3 | Collection readers ((), [], {}, #{}) | `3f68d06` |
+| R4 | Reader macros (', @, #', ^, ;, #_) + meta attachment | `a35d863` |
+| R5 | Printer (pr, pr_str) — round-trip capable | `5e0af07` |
+| R6 | hypothesis round-trip fuzzing + phashmap cross-type equality fix | `585b5b1` |
+
+**Real bug caught by R6 fuzzing** (documented in commit `585b5b1`): `PersistentHashMap::equiv` wasn't symmetric with `PersistentArrayMap::equiv`. Direction-dependent `x == y` vs `y == x`. Fixed by extending PHashMap's equiv to cross-type-match PArrayMap. Exactly what property-based testing is for.
+
+**Deferred** (explicit non-goals from the spec — future specs):
+
+- Syntax-quote (\`), unquote (~), unquote-splicing (~@) — evaluator-adjacent
+- Reader conditionals #? / #?@
+- Tagged literals #inst, #uuid, user-registered
+- Fn-literal #(...)
+- Regex literal #"..."
+- Namespaced maps #:ns{...}
+- Numeric suffixes: N, M, r (radix), hex/octal/binary literals
+- Auto-resolved keywords ::foo
+- Shebang #!
+- EDN-only mode
+- Multi-form read-from-stream
+
+The reader is ready to feed the evaluator.

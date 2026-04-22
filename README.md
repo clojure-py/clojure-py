@@ -134,3 +134,27 @@ cargo test --test proptest_hamt --release
 ## Design notes
 
 The extension targets **free-threaded CPython 3.14t specifically**. It is not ABI3-compatible; there is no abi3 level that includes the free-threaded build. The project exists to exercise no-GIL Python — every shared-mutable primitive (method cache, keyword intern table, var root, binding stack, namespace mappings) is lock-free, atomic, or explicitly locked with correctness verified under loom.
+
+## Reader
+
+Clojure reader — recursive-descent port of `LispReader.java`:
+
+```python
+from clojure._core import read_string, pr_str
+
+data = read_string("(def x {:items [1 2 3]})")
+# A PersistentList of (Symbol, Symbol, PersistentHashMap)
+
+print(pr_str(data))
+# (def x {:items [1 2 3]})
+```
+
+**Supported:**
+- Atoms: nil, true, false, int (bignum), float, string, character, symbol, keyword
+- Collections: `()`, `[]`, `{}`, `#{}`
+- Reader macros: `'quote`, `@deref`, `#'var`, `^meta`, `;comment`, `#_discard`
+- Round-trip via `pr_str` → `read_string` (property-tested with 200 hypothesis cases)
+
+**Deferred** (tracked in `docs/superpowers/plans/2026-04-21-reader-plan.md`):
+syntax-quote, reader conditionals, tagged literals, fn-literal, regex,
+namespaced maps, numeric suffixes, auto-resolved keywords, shebang, EDN-only mode.
