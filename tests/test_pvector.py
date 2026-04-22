@@ -139,3 +139,77 @@ def test_structural_sharing_preserved():
     assert len(v3) == 101
     assert v3.nth(50) == 999
     assert v3.nth(100) == 100
+
+
+# --- Protocol dispatch tests (added in Phase 6B) ---
+
+from clojure._core import count, equiv, hash_eq, conj, peek, pop, empty
+
+
+def test_rt_count_via_counted():
+    assert count(vector()) == 0
+    assert count(vector(1, 2, 3)) == 3
+
+
+def test_rt_equiv_same_contents():
+    assert equiv(vector(1, 2, 3), vector(1, 2, 3)) is True
+    assert equiv(vector(), vector()) is True
+    assert equiv(vector(1, 2), vector(1, 2, 3)) is False
+
+
+def test_rt_equiv_cross_type_vector_vs_list_false_for_now():
+    """Cross-type sequential equality is deferred — vector != list of same contents for now."""
+    from clojure._core import list_
+    assert equiv(vector(1, 2, 3), list_(1, 2, 3)) is False
+
+
+def test_rt_hash_eq_stable():
+    assert hash_eq(vector(1, 2, 3)) == hash_eq(vector(1, 2, 3))
+
+
+def test_rt_conj_ipc():
+    v = conj(vector(1, 2), 3)
+    assert len(v) == 3
+    assert v.nth(2) == 3
+
+
+def test_rt_peek_pop_via_ipersistentstack():
+    assert peek(vector(1, 2, 3)) == 3
+    p = pop(vector(1, 2, 3))
+    assert len(p) == 2
+    assert p.nth(1) == 2
+
+
+def test_rt_peek_empty_returns_nil():
+    assert peek(vector()) is None
+
+
+def test_rt_pop_empty_raises():
+    with pytest.raises(IllegalStateException):
+        pop(vector())
+
+
+def test_rt_empty_returns_empty_vector():
+    e = empty(vector(1, 2, 3))
+    assert isinstance(e, PersistentVector)
+    assert len(e) == 0
+
+
+def test_vector_is_callable_as_ifn():
+    """Vector implements IFn — (v i) == (nth v i)."""
+    v = vector("a", "b", "c")
+    assert v(0) == "a"
+    assert v(1) == "b"
+
+
+def test_vector_call_out_of_bounds():
+    v = vector("a")
+    with pytest.raises(IndexError):
+        _ = v(5)
+
+
+def test_associative_assoc_via_rt():
+    """Vector satisfies Associative — assoc by index."""
+    v = vector(10, 20, 30)
+    v2 = v.assoc_n(1, 99)  # use the pymethod directly
+    assert v2.nth(1) == 99

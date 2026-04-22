@@ -3,8 +3,18 @@
 //! Port of clojure/lang/PersistentVector.java. Transient + protocol impls
 //! land in Phase 6B/6C.
 
+use crate::associative::Associative;
 use crate::collections::pvector_node::{VNode, VSlot};
+use crate::counted::Counted;
 use crate::exceptions::IllegalStateException;
+use crate::iequiv::IEquiv;
+use crate::ifn::IFn;
+use crate::ihasheq::IHashEq;
+use crate::imeta::IMeta;
+use crate::ipersistent_collection::IPersistentCollection;
+use crate::ipersistent_stack::IPersistentStack;
+use crate::sequential::Sequential;
+use clojure_core_macros::implements;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
@@ -444,6 +454,34 @@ impl PersistentVector {
         Py::new(py, new)
     }
 
+    /// `(v i)` / `(v i default)` — vector-as-IFn: behaves like nth.
+    #[pyo3(signature = (*args))]
+    fn __call__(&self, py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<PyObject> {
+        match args.len() {
+            1 => {
+                let a0 = args.get_item(0)?;
+                let i = a0.extract::<i64>().map_err(|_| {
+                    crate::exceptions::IllegalArgumentException::new_err("Vector index must be an integer")
+                })?;
+                if i < 0 {
+                    return Err(pyo3::exceptions::PyIndexError::new_err("negative index"));
+                }
+                self.nth_internal(py, i as usize)
+            }
+            2 => {
+                let a0 = args.get_item(0)?;
+                let a1 = args.get_item(1)?.unbind();
+                let Ok(i) = a0.extract::<i64>() else { return Ok(a1); };
+                if i < 0 { return Ok(a1); }
+                if (i as u64) >= (self.cnt as u64) { return Ok(a1); }
+                self.nth_internal(py, i as usize)
+            }
+            n => Err(crate::exceptions::ArityException::new_err(format!(
+                "Wrong number of args ({n}) passed to: PersistentVector"
+            ))),
+        }
+    }
+
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyObject {
         self.meta
@@ -507,4 +545,239 @@ pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()>
     m.add_class::<PersistentVectorIter>()?;
     m.add_function(wrap_pyfunction!(vector, m)?)?;
     Ok(())
+}
+
+// --- Protocol impls (Phase 6B). ---
+
+#[implements(Counted)]
+impl Counted for PersistentVector {
+    fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize> {
+        Ok(this.bind(py).get().cnt as usize)
+    }
+}
+
+#[implements(IEquiv)]
+impl IEquiv for PersistentVector {
+    fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        // Only compare same type (cross-type sequential equality is deferred).
+        let other_b = other.bind(py);
+        let Ok(other_pv) = other_b.downcast::<PersistentVector>() else {
+            return Ok(false);
+        };
+        let a = this.bind(py).get();
+        let b = other_pv.get();
+        if a.cnt != b.cnt { return Ok(false); }
+        for i in 0..(a.cnt as usize) {
+            let av = a.nth_internal(py, i)?;
+            let bv = b.nth_internal(py, i)?;
+            if !crate::rt::equiv(py, av, bv)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+#[implements(IHashEq)]
+impl IHashEq for PersistentVector {
+    fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
+        let s = this.bind(py).get();
+        let mut h: i64 = 1;
+        for i in 0..(s.cnt as usize) {
+            let v = s.nth_internal(py, i)?;
+            let eh = crate::rt::hash_eq(py, v)?;
+            h = h.wrapping_mul(31).wrapping_add(eh);
+        }
+        Ok(h)
+    }
+}
+
+#[implements(IMeta)]
+impl IMeta for PersistentVector {
+    fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+    }
+    fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let m = if meta.is_none(py) { None } else { Some(meta) };
+        Ok(Py::new(py, PersistentVector {
+            cnt: s.cnt,
+            shift: s.shift,
+            root: Arc::clone(&s.root),
+            tail: Arc::clone(&s.tail),
+            meta: RwLock::new(m),
+        })?.into_any())
+    }
+}
+
+#[implements(IPersistentCollection)]
+impl IPersistentCollection for PersistentVector {
+    fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize> {
+        Ok(this.bind(py).get().cnt as usize)
+    }
+    fn conj(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let new = s.conj_internal(py, x)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+    fn empty(_this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        Ok(Py::new(py, PersistentVector::new_empty())?.into_any())
+    }
+}
+
+// NOTE: IPersistentVector and Indexed protocol traits currently declare their
+// index params as `usize`, but the #[implements] macro's generated dispatch
+// wrapper always unbinds args to `Py<PyAny>`. These impls would fail to
+// compile (expected usize, found Py<PyAny>) without either (a) updating the
+// protocol trait signatures to PyObject + extract internally, or (b) the
+// macro learning to insert .extract::<usize>()? for non-PyObject args.
+//
+// Both fixes live outside this phase's file scope, so these impls are
+// deferred. The vector's Python-facing `nth`, `nth_or_default`, `assoc_n`
+// pymethods already provide this functionality directly.
+
+#[implements(IPersistentStack)]
+impl IPersistentStack for PersistentVector {
+    fn peek(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        if s.cnt == 0 { return Ok(py.None()); }
+        s.nth_internal(py, (s.cnt - 1) as usize)
+    }
+    fn pop(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let new = s.pop_internal(py)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+}
+
+#[implements(Associative)]
+impl Associative for PersistentVector {
+    fn contains_key(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool> {
+        let s = this.bind(py).get();
+        // For vector, k must be an integer in [0, cnt).
+        let Ok(i) = k.bind(py).extract::<i64>() else { return Ok(false); };
+        Ok(i >= 0 && (i as u64) < (s.cnt as u64))
+    }
+    fn entry_at(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        let Ok(i) = k.bind(py).extract::<i64>() else { return Ok(py.None()); };
+        if i < 0 || (i as u64) >= (s.cnt as u64) { return Ok(py.None()); }
+        // Return a (key, value) tuple as MapEntry stand-in until Phase 7.
+        let v = s.nth_internal(py, i as usize)?;
+        Ok(pyo3::types::PyTuple::new(py, &[k, v])?.unbind().into_any())
+    }
+    fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        let i = k.bind(py).extract::<i64>().map_err(|_| {
+            crate::exceptions::IllegalArgumentException::new_err("Vector key must be an integer")
+        })?;
+        if i < 0 {
+            return Err(crate::exceptions::IllegalArgumentException::new_err("Vector index out of bounds"));
+        }
+        let s = this.bind(py).get();
+        let new = s.assoc_n_internal(py, i as usize, v)?;
+        Ok(Py::new(py, new)?.into_any())
+    }
+}
+
+// Indexed impl deferred — see note above about usize vs Py<PyAny>.
+
+#[implements(Sequential)]
+impl Sequential for PersistentVector {}
+
+#[implements(IFn)]
+impl IFn for PersistentVector {
+    fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (0) passed to: PersistentVector"))
+    }
+    fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
+        // (v i) — nth
+        let i = a0.bind(py).extract::<i64>().map_err(|_| {
+            crate::exceptions::IllegalArgumentException::new_err("Vector index must be an integer")
+        })?;
+        if i < 0 {
+            return Err(pyo3::exceptions::PyIndexError::new_err("negative index"));
+        }
+        this.bind(py).get().nth_internal(py, i as usize)
+    }
+    fn invoke2(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject) -> PyResult<PyObject> {
+        // (v i default) — nth-or-default
+        let i_res = a0.bind(py).extract::<i64>();
+        let Ok(i) = i_res else { return Ok(a1); };
+        if i < 0 { return Ok(a1); }
+        let s = this.bind(py).get();
+        if (i as u64) >= (s.cnt as u64) { return Ok(a1); }
+        s.nth_internal(py, i as usize)
+    }
+    // Arity stubs 3-20 raise ArityException.
+    fn invoke3(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (3) passed to: PersistentVector"))
+    }
+    fn invoke4(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (4) passed to: PersistentVector"))
+    }
+    fn invoke5(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (5) passed to: PersistentVector"))
+    }
+    fn invoke6(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (6) passed to: PersistentVector"))
+    }
+    fn invoke7(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (7) passed to: PersistentVector"))
+    }
+    fn invoke8(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (8) passed to: PersistentVector"))
+    }
+    fn invoke9(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (9) passed to: PersistentVector"))
+    }
+    fn invoke10(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (10) passed to: PersistentVector"))
+    }
+    fn invoke11(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (11) passed to: PersistentVector"))
+    }
+    fn invoke12(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (12) passed to: PersistentVector"))
+    }
+    fn invoke13(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (13) passed to: PersistentVector"))
+    }
+    fn invoke14(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (14) passed to: PersistentVector"))
+    }
+    fn invoke15(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (15) passed to: PersistentVector"))
+    }
+    fn invoke16(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (16) passed to: PersistentVector"))
+    }
+    fn invoke17(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (17) passed to: PersistentVector"))
+    }
+    fn invoke18(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (18) passed to: PersistentVector"))
+    }
+    fn invoke19(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (19) passed to: PersistentVector"))
+    }
+    fn invoke20(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject, _a19: PyObject) -> PyResult<PyObject> {
+        Err(crate::exceptions::ArityException::new_err("Wrong number of args (20) passed to: PersistentVector"))
+    }
+    fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
+        match args.len() {
+            1 => {
+                let a0 = args.get_item(0)?.unbind();
+                Self::invoke1(this, py, a0)
+            }
+            2 => {
+                let a0 = args.get_item(0)?.unbind();
+                let a1 = args.get_item(1)?.unbind();
+                Self::invoke2(this, py, a0, a1)
+            }
+            n => Err(crate::exceptions::ArityException::new_err(format!(
+                "Wrong number of args ({n}) passed to: PersistentVector"
+            ))),
+        }
+    }
 }
