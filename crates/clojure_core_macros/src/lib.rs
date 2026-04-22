@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, ItemImpl, ItemTrait};
 
+mod implements;
 mod protocol;
 
 #[proc_macro_attribute]
@@ -11,9 +12,8 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn implements(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Placeholder — Task 18 parses attrs, Task 19 codegens.
-    // For now, passthrough the impl block unchanged so any user code compiles.
-    let _item_impl = parse_macro_input!(item as ItemImpl);
-    quote::quote!(#_item_impl).into()
+pub fn implements(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as implements::ImplementsArgs);
+    let item_impl = parse_macro_input!(item as ItemImpl);
+    implements::expand(args, item_impl).into()
 }
