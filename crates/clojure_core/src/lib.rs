@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 mod dispatch;
 mod exceptions;
 mod ifn;
+mod ilookup;
 mod keyword;
 mod protocol;
 pub mod registry;
@@ -25,6 +26,8 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     protocol::register(py, m)?;
     registry::register_all(py, m)?;
     registry::install_all_extends(py, m)?;
+    ilookup::install_builtin_fallback(py, m)?;
+    rt::init(py, m)?;
     ifn::install_builtin_fallback(py, m)?;
     Ok(())
 }
