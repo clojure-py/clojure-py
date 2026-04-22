@@ -15,9 +15,23 @@ type PyObject = Py<PyAny>;
 
 static ILOOKUP_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
 static IFN_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static IEQUIV_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static IHASHEQ_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static ISEQ_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static ISEQABLE_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static COUNTED_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static IPC_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
 
 static VAL_AT_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("val_at"));
 static INVOKE_VARIADIC_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("invoke_variadic"));
+static EQUIV_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("equiv"));
+static HASH_EQ_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("hash_eq"));
+static SEQ_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("seq"));
+static FIRST_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("first"));
+static NEXT_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("next"));
+static MORE_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("more"));
+static COUNT_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("count"));
+static EMPTY_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("empty"));
 
 /// Cached arity keys `invoke0`..`invoke20`.
 static INVOKE_KEYS: Lazy<Vec<Arc<str>>> = Lazy::new(|| {
@@ -29,6 +43,25 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = ILOOKUP_PROTO.set(ilookup);
     let ifn = m.getattr("IFn")?.downcast::<crate::Protocol>()?.clone().unbind();
     let _ = IFN_PROTO.set(ifn);
+
+    let iequiv = m.getattr("IEquiv")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let _ = IEQUIV_PROTO.set(iequiv);
+
+    let ihasheq = m.getattr("IHashEq")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let _ = IHASHEQ_PROTO.set(ihasheq);
+
+    let iseq = m.getattr("ISeq")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let _ = ISEQ_PROTO.set(iseq);
+
+    let iseqable = m.getattr("ISeqable")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let _ = ISEQABLE_PROTO.set(iseqable);
+
+    let counted = m.getattr("Counted")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let _ = COUNTED_PROTO.set(counted);
+
+    let ipc = m.getattr("IPersistentCollection")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let _ = IPC_PROTO.set(ipc);
+
     let _ = py;
     Ok(())
 }
@@ -63,4 +96,85 @@ pub fn invoke_n(py: Python<'_>, target: PyObject, args: &[PyObject]) -> PyResult
     let args_vec: Vec<PyObject> = args.iter().map(|o| o.clone_ref(py)).collect();
     let args_tup = PyTuple::new(py, &args_vec)?;
     crate::dispatch::dispatch(py, proto, method_key, target, args_tup)
+}
+
+/// `(= a b)` — dispatches through IEquiv.
+pub fn equiv(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<bool> {
+    let proto = IEQUIV_PROTO.get().expect("rt::equiv called before rt::init");
+    let args = PyTuple::new(py, &[b])?;
+    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &EQUIV_KEY, a, args)?;
+    result.bind(py).extract::<bool>()
+}
+
+/// `(hash x)` — Clojure-style hash, dispatches through IHashEq.
+pub fn hash_eq(py: Python<'_>, x: PyObject) -> PyResult<i64> {
+    let proto = IHASHEQ_PROTO.get().expect("rt::hash_eq called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &HASH_EQ_KEY, x, args)?;
+    result.bind(py).extract::<i64>()
+}
+
+/// `(seq coll)` — returns ISeq or nil; nil-safe.
+pub fn seq(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    if coll.is_none(py) {
+        return Ok(py.None());
+    }
+    let proto = ISEQABLE_PROTO.get().expect("rt::seq called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    crate::dispatch::dispatch(py, proto, &SEQ_KEY, coll, args)
+}
+
+/// `(first coll)` — returns first element or nil.
+pub fn first(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    let s = seq(py, coll)?;
+    if s.is_none(py) {
+        return Ok(py.None());
+    }
+    let proto = ISEQ_PROTO.get().expect("rt::first called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    crate::dispatch::dispatch(py, proto, &FIRST_KEY, s, args)
+}
+
+/// `(next coll)` — returns ISeq of rest, or nil when empty.
+pub fn next_(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    let s = seq(py, coll)?;
+    if s.is_none(py) {
+        return Ok(py.None());
+    }
+    let proto = ISEQ_PROTO.get().expect("rt::next called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    crate::dispatch::dispatch(py, proto, &NEXT_KEY, s, args)
+}
+
+/// `(rest coll)` — returns ISeq of rest, or empty-seq when empty.
+pub fn rest(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    let s = seq(py, coll)?;
+    if s.is_none(py) {
+        // When plist lands we'll return an EmptyList here. For now, nil.
+        return Ok(py.None());
+    }
+    let proto = ISEQ_PROTO.get().expect("rt::rest called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    crate::dispatch::dispatch(py, proto, &MORE_KEY, s, args)
+}
+
+/// `(count coll)` — nil-safe; dispatches through Counted.
+pub fn count(py: Python<'_>, coll: PyObject) -> PyResult<usize> {
+    if coll.is_none(py) {
+        return Ok(0);
+    }
+    let proto = COUNTED_PROTO.get().expect("rt::count called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &COUNT_KEY, coll, args)?;
+    result.bind(py).extract::<usize>()
+}
+
+/// `(empty coll)` — dispatches through IPersistentCollection.
+pub fn empty(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
+    if coll.is_none(py) {
+        return Ok(py.None());
+    }
+    let proto = IPC_PROTO.get().expect("rt::empty called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    crate::dispatch::dispatch(py, proto, &EMPTY_KEY, coll, args)
 }
