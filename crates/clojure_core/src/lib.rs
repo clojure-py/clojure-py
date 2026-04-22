@@ -5,6 +5,7 @@ mod exceptions;
 mod ifn;
 mod ilookup;
 mod keyword;
+pub(crate) mod pmap;
 mod protocol;
 pub mod registry;
 pub mod rt;
