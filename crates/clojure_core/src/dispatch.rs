@@ -1,5 +1,5 @@
 use crate::exceptions::IllegalArgumentException;
-use crate::protocol::{CacheKey, Protocol};
+use crate::protocol::{CacheKey, MethodTable, Protocol};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyTuple, PyType};
 use std::sync::Arc;
@@ -65,11 +65,23 @@ fn try_resolve(
     ty: &Bound<'_, PyType>,
     exact_key: CacheKey,
 ) -> PyResult<Option<PyObject>> {
-    // Step 1: Exact type.
+    let current_epoch = protocol
+        .cache
+        .epoch
+        .load(std::sync::atomic::Ordering::Acquire);
+
+    // Step 1: Exact type. Direct extensions are always authoritative for
+    // their exact key; only *promoted* entries are subject to the epoch
+    // staleness check (an unrelated re-extension may have invalidated the
+    // parent impl they point at).
     if let Some(table) = protocol.cache.lookup(exact_key) {
-        if let Some(impl_fn) = table.impls.get(method_key) {
-            return Ok(Some(call_impl(py, impl_fn, target, args)?));
+        let fresh = !table.promoted || table.epoch == current_epoch;
+        if fresh {
+            if let Some(impl_fn) = table.impls.get(method_key) {
+                return Ok(Some(call_impl(py, impl_fn, target, args)?));
+            }
         }
+        // Stale promoted entry — fall through to MRO walk (may re-promote).
     }
 
     // Step 2: MRO walk (skip index 0 = exact type).
@@ -79,9 +91,30 @@ fn try_resolve(
         let parent_ty: Bound<'_, PyType> = parent.downcast_into()?;
         let pk = CacheKey::for_py_type(&parent_ty);
         if let Some(table) = protocol.cache.lookup(pk) {
+            // Parents in the MRO chain are only ever direct extensions
+            // (promotion only writes to exact_key), so no epoch check is
+            // needed here.
             if let Some(impl_fn) = table.impls.get(method_key) {
-                // Promote to exact-type cache.
-                protocol.cache.entries.insert(exact_key, Arc::clone(&table));
+                // Promote to exact-type cache. Build a fresh MethodTable
+                // tagged `promoted: true` stamped at the current epoch so a
+                // later re-extension of the parent invalidates this copy.
+                // `Py<PyAny>` isn't `Clone`, so we copy entries via
+                // `clone_ref` under the GIL.
+                let mut impls_copy =
+                    fxhash::FxHashMap::with_capacity_and_hasher(
+                        table.impls.len(),
+                        Default::default(),
+                    );
+                for (k, v) in table.impls.iter() {
+                    impls_copy.insert(Arc::clone(k), v.clone_ref(py));
+                }
+                let promoted_entry = Arc::new(MethodTable {
+                    impls: impls_copy,
+                    origin: table.origin,
+                    epoch: current_epoch,
+                    promoted: true,
+                });
+                protocol.cache.entries.insert(exact_key, promoted_entry);
                 return Ok(Some(call_impl(py, impl_fn, target, args)?));
             }
         }

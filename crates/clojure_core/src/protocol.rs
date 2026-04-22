@@ -31,6 +31,18 @@ pub enum Origin {
 pub struct MethodTable {
     pub impls: fxhash::FxHashMap<Arc<str>, PyObject>,
     pub origin: Origin,
+    /// Epoch at which this entry was filled. For promoted entries (MRO hits
+    /// copied to an exact-type key), this is the epoch captured at promotion
+    /// time; the dispatcher treats such entries as stale when the protocol
+    /// epoch advances. For direct extensions, this equals the epoch produced
+    /// by the extending `extend_type` call itself.
+    pub epoch: u64,
+    /// True iff this entry was installed by `try_resolve` as an MRO
+    /// promotion (i.e. the exact-type key is *not* the type that was
+    /// directly extended). Direct extensions (`extend_type`) bypass the
+    /// epoch staleness check — re-extending an unrelated type must not
+    /// invalidate an already-correct direct impl.
+    pub promoted: bool,
 }
 
 pub struct MethodCache {
@@ -96,14 +108,16 @@ impl Protocol {
             table.insert(Arc::from(k_str.as_str()), v.unbind());
         }
         let key = CacheKey::for_py_type(&ty);
+        let new_epoch = self.cache.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         self.cache.entries.insert(
             key,
             Arc::new(MethodTable {
                 impls: table,
                 origin: Origin::Extend,
+                epoch: new_epoch,
+                promoted: false,
             }),
         );
-        self.cache.bump_epoch();
         Ok(())
     }
 }
