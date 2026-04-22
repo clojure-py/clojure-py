@@ -644,7 +644,7 @@ impl TransientHashMap {
         Ok(())
     }
 
-    fn from_persistent(py: Python<'_>, m: &PersistentHashMap) -> Self {
+    pub(crate) fn from_persistent(py: Python<'_>, m: &PersistentHashMap) -> Self {
         let edit = Arc::new(AtomicUsize::new(1));
         let editable_root = m.root.as_ref().map(|r| r.ensure_editable(&edit));
         Self {
