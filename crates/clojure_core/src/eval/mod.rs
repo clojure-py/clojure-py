@@ -1,5 +1,6 @@
 //! Tree-walking evaluator.
 
+pub mod core_shims;
 pub mod env;
 pub mod errors;
 pub mod fn_value;
@@ -118,5 +119,6 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
     fn_value::register(py, m)?;
     m.add_function(wrap_pyfunction!(py_eval, m)?)?;
     m.add_function(wrap_pyfunction!(py_eval_string, m)?)?;
+    core_shims::init(py, m)?;
     Ok(())
 }

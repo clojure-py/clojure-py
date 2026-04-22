@@ -1,5 +1,6 @@
-//! Symbol resolution. E2: locals, then namespace-qualified or current-ns attribute lookup,
-//! derefing Vars transparently.
+//! Symbol resolution. E3: locals, then current-ns, then clojure.core fallback.
+//! Qualified symbols resolve in their specified namespace only. Vars are
+//! derefed transparently.
 
 use crate::eval::env::Env;
 use crate::eval::errors;
@@ -16,53 +17,41 @@ pub fn resolve_symbol(py: Python<'_>, sym: PyObject, env: &Env) -> PyResult<PyOb
     })?;
     let s = sym_ref.get();
 
-    // 1. Locals first (unqualified symbols only).
-    if s.ns.is_none() {
-        if let Some(v) = env.lookup_local(&s.name, py) {
-            return Ok(v);
-        }
+    // Qualified symbol: look up in specified ns only.
+    if let Some(ns_name) = s.ns.as_deref() {
+        let sys = py.import("sys")?;
+        let modules = sys.getattr("modules")?;
+        let target_ns = modules.get_item(ns_name).map_err(|_| {
+            errors::err(format!("No namespace: {}", ns_name))
+        })?;
+        let attr = target_ns.getattr(s.name.as_ref()).map_err(|_| {
+            errors::err(format!("Unable to resolve: {}/{}", ns_name, s.name))
+        })?;
+        return deref_if_var(attr);
     }
 
-    // 2. Namespace lookup.
-    // If qualified, look up the target namespace; else use current_ns.
-    let target_ns = match s.ns.as_deref() {
-        Some(ns_name) => {
-            // Find the namespace module from sys.modules.
-            let sys = py.import("sys")?;
-            let modules = sys.getattr("modules")?;
-            match modules.get_item(ns_name) {
-                Ok(m) => m,
-                Err(_) => {
-                    return Err(errors::err(format!(
-                        "No namespace: {} found while resolving {}/{}",
-                        ns_name, ns_name, s.name
-                    )));
-                }
-            }
-        }
-        None => env.current_ns.bind(py).clone(),
-    };
-
-    // Look up the symbol name as an attribute of the namespace.
-    let name_str = s.name.as_ref();
-    match target_ns.getattr(name_str) {
-        Ok(attr) => {
-            // If it's a Var, deref it. If it's a plain Python callable, return as-is.
-            let attr_b = attr.clone();
-            if let Ok(var) = attr_b.downcast::<crate::var::Var>() {
-                // Call .deref() via pymethod.
-                let deref_result = var.call_method0("deref")?;
-                return Ok(deref_result.unbind());
-            }
-            Ok(attr.unbind())
-        }
-        Err(_) => Err(errors::err(format!(
-            "Unable to resolve symbol: {} in this context",
-            if let Some(ns) = s.ns.as_deref() {
-                format!("{}/{}", ns, s.name)
-            } else {
-                s.name.to_string()
-            }
-        ))),
+    // Unqualified: locals, current-ns, clojure.core.
+    if let Some(v) = env.lookup_local(&s.name, py) {
+        return Ok(v);
     }
+    let current_ns = env.current_ns.bind(py);
+    if let Ok(attr) = current_ns.getattr(s.name.as_ref()) {
+        return deref_if_var(attr);
+    }
+    let sys = py.import("sys")?;
+    let modules = sys.getattr("modules")?;
+    if let Ok(core_ns) = modules.get_item("clojure.core") {
+        if let Ok(attr) = core_ns.getattr(s.name.as_ref()) {
+            return deref_if_var(attr);
+        }
+    }
+    Err(errors::err(format!("Unable to resolve symbol: {} in this context", s.name)))
+}
+
+fn deref_if_var<'py>(attr: Bound<'py, PyAny>) -> PyResult<PyObject> {
+    if let Ok(var) = attr.clone().downcast::<crate::var::Var>() {
+        let d = var.call_method0("deref")?;
+        return Ok(d.unbind());
+    }
+    Ok(attr.unbind())
 }

@@ -8,6 +8,7 @@ use crate::collections::plist::{EmptyList, PersistentList};
 use crate::collections::pvector::PersistentVector;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
+use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
 
@@ -23,6 +24,8 @@ pub fn lookup(head: &PyObject, py: Python<'_>) -> Option<&'static str> {
         "do" => Some("do"),
         "let" | "let*" => Some("let"),
         "fn" | "fn*" => Some("fn"),
+        "def" => Some("def"),
+        "var" => Some("var"),
         _ => None,
     }
 }
@@ -41,6 +44,8 @@ pub fn dispatch(
         "do" => do_form(py, &args, env),
         "let" => let_form(py, &args, env),
         "fn" => fn_form(py, &args, env),
+        "def" => def_form(py, &args, env),
+        "var" => var_form(py, &args, env),
         _ => Err(errors::err(format!("Unknown special form: {}", name))),
     }
 }
@@ -190,4 +195,77 @@ fn fn_form(py: Python<'_>, args: &[PyObject], env: &Env) -> PyResult<PyObject> {
         name,
     };
     Ok(Py::new(py, fn_val)?.into_any())
+}
+
+/// (def name) or (def name init-form)
+fn def_form(py: Python<'_>, args: &[PyObject], env: &Env) -> PyResult<PyObject> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(errors::err(format!(
+            "def requires 1 or 2 arguments (got {})",
+            args.len()
+        )));
+    }
+    let name_form = args[0].clone_ref(py);
+    let name_b = name_form.bind(py);
+    let sym = name_b.downcast::<Symbol>().map_err(|_| {
+        errors::err("def's first argument must be a Symbol")
+    })?;
+    if sym.get().ns.is_some() {
+        return Err(errors::err(format!(
+            "Can't def a qualified symbol: {}/{}",
+            sym.get().ns.as_deref().unwrap(),
+            sym.get().name
+        )));
+    }
+
+    // Intern Var in current-ns. Build a fresh unqualified Symbol Py object
+    // for the intern call (inline expansion — no Symbol::clone_structural).
+    let fresh_sym = Symbol::new(None, Arc::clone(&sym.get().name));
+    let fresh_sym_py = Py::new(py, fresh_sym)?;
+    let ns_py = env.current_ns.clone_ref(py);
+    let var_obj = crate::ns_ops::intern(py, ns_py, fresh_sym_py)?;
+
+    // If init form provided, eval it and bind root.
+    if args.len() == 2 {
+        let init_val = crate::eval::eval(py, args[1].clone_ref(py), env)?;
+        var_obj.bind(py).call_method1("bind_root", (init_val,))?;
+    }
+
+    Ok(var_obj.into_any())
+}
+
+/// (var sym) — returns the Var object (not its value).
+fn var_form(py: Python<'_>, args: &[PyObject], env: &Env) -> PyResult<PyObject> {
+    if args.len() != 1 {
+        return Err(errors::err(format!(
+            "var requires 1 argument (got {})",
+            args.len()
+        )));
+    }
+    let name_form = args[0].clone_ref(py);
+    let name_b = name_form.bind(py);
+    let sym = name_b.downcast::<Symbol>().map_err(|_| {
+        errors::err("var's argument must be a Symbol")
+    })?;
+    // Look up the Var (without derefing).
+    let target_ns = match sym.get().ns.as_deref() {
+        Some(n) => {
+            let sys = py.import("sys")?;
+            let modules = sys.getattr("modules")?;
+            modules.get_item(n).map_err(|_| {
+                errors::err(format!("No namespace: {} found in (var ...)", n))
+            })?
+        }
+        None => env.current_ns.bind(py).clone(),
+    };
+    let attr = target_ns.getattr(sym.get().name.as_ref()).map_err(|_| {
+        errors::err(format!("Unable to resolve var: {}", sym.get().name))
+    })?;
+    if attr.downcast::<crate::var::Var>().is_ok() {
+        return Ok(attr.unbind());
+    }
+    Err(errors::err(format!(
+        "Symbol {} does not resolve to a Var",
+        sym.get().name
+    )))
 }
