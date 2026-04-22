@@ -29,7 +29,7 @@ mod itransient_vector;
 mod keyword;
 mod namespace;
 mod ns_ops;
-pub(crate) mod pmap;
+pub(crate) mod binding_pmap;
 mod protocol;
 pub mod registry;
 pub mod rt;

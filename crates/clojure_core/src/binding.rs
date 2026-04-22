@@ -8,7 +8,7 @@
 //! `thread_local!` TLS is per-Python-thread exactly as we want.
 
 use crate::exceptions::IllegalStateException;
-use crate::pmap::PMap;
+use crate::binding_pmap::PMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use std::cell::RefCell;

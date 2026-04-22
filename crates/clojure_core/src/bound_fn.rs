@@ -1,7 +1,7 @@
 //! bound-fn* — capture the current binding frame and convey it to another thread.
 
 use crate::binding::BINDING_STACK;
-use crate::pmap::PMap;
+use crate::binding_pmap::PMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
