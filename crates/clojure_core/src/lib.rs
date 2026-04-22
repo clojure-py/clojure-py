@@ -10,6 +10,7 @@ pub mod registry;
 pub mod rt;
 mod symbol;
 mod test_protocols;
+mod var;
 
 pub use clojure_core_macros::{implements, protocol};
 pub use exceptions::{ArityException, IllegalArgumentException, IllegalStateException};
@@ -17,6 +18,7 @@ pub use ifn::IFn;
 pub use keyword::Keyword;
 pub use protocol::{MethodCache, Protocol, ProtocolMethod};
 pub use symbol::Symbol;
+pub use var::Var;
 
 #[pymodule]
 fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -24,6 +26,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     symbol::register(py, m)?;
     keyword::register(py, m)?;
     protocol::register(py, m)?;
+    var::register(py, m)?;
     registry::register_all(py, m)?;
     registry::install_all_extends(py, m)?;
     ilookup::install_builtin_fallback(py, m)?;
