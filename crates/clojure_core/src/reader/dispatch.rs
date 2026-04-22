@@ -2,6 +2,7 @@
 //! on the next character.
 
 use crate::reader::errors;
+use crate::reader::forms;
 use crate::reader::lexer;
 use crate::reader::number;
 use crate::reader::source::Source;
@@ -60,11 +61,10 @@ pub fn read_one(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
         '"' => string::parse_string(src, py),
         '\\' => string::parse_char(src, py),
         ':' => token::parse_keyword(src, py),
-        '(' | '[' | '{' | '#' => Err(errors::make(
-            format!("Collection reader not yet implemented for '{}'", ch),
-            line,
-            col,
-        )),
+        '(' => forms::list_reader(src, py),
+        '[' => forms::vector_reader(src, py),
+        '{' => forms::map_reader(src, py),
+        '#' => dispatch_hash_reader(src, py),
         ')' | ']' | '}' => Err(errors::make(
             format!("Unmatched delimiter: {}", ch),
             line,
@@ -77,5 +77,25 @@ pub fn read_one(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
         )),
         _ if looks_like_number(src) => number::parse_number(src, py),
         _ => token::parse_symbol_or_literal(src, py),
+    }
+}
+
+/// Dispatch on the char after `#`. Sets, var-quote, discard, meta, etc.
+fn dispatch_hash_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
+    let hash = src.advance();
+    debug_assert_eq!(hash, Some('#'));
+    let line = src.line();
+    let col = src.column();
+    match src.peek() {
+        Some('{') => forms::set_reader(src, py),
+        Some('\'') => Err(errors::make("var-quote reader not yet implemented", line, col)),
+        Some('_') => Err(errors::make("discard reader not yet implemented", line, col)),
+        Some('^') => Err(errors::make("meta reader not yet implemented", line, col)),
+        Some(c) => Err(errors::make(
+            format!("Unsupported dispatch macro: #{}", c),
+            line,
+            col,
+        )),
+        None => Err(errors::make("EOF after '#'", line, col)),
     }
 }

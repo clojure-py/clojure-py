@@ -2,6 +2,7 @@
 
 pub mod dispatch;
 pub mod errors;
+pub mod forms;
 pub mod lexer;
 pub mod number;
 pub mod source;
