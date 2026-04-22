@@ -84,7 +84,7 @@ impl Protocol {
     }
 
     /// Extend this protocol to a Python type with a map of method-name -> impl fn.
-    fn extend_type(
+    pub fn extend_type(
         &self,
         _py: Python<'_>,
         ty: Bound<'_, PyType>,

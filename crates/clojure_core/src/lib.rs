@@ -6,6 +6,7 @@ mod ifn;
 mod keyword;
 mod protocol;
 pub mod registry;
+pub mod rt;
 mod symbol;
 
 pub use clojure_core_macros::{implements, protocol};
