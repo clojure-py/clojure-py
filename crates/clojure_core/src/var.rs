@@ -39,14 +39,21 @@ impl Var {
         })
     }
 
-    fn deref(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let guard = self.root.read();
+    fn deref(slf: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let this = slf.bind(py).get();
+        if this.dynamic.load(std::sync::atomic::Ordering::Acquire) {
+            let key: Py<PyAny> = slf.clone_ref(py).into_any();
+            if let Some(v) = crate::binding::lookup_binding(py, &key) {
+                return Ok(v);
+            }
+        }
+        let guard = this.root.read();
         match guard.as_ref() {
             Some(v) => Ok(v.clone_ref(py)),
             None => Err(IllegalStateException::new_err(format!(
                 "Var {}/{} is unbound",
-                self.ns_name(py)?,
-                self.sym_name(py)?
+                this.ns_name(py)?,
+                this.sym_name(py)?
             ))),
         }
     }
@@ -88,6 +95,13 @@ impl Var {
         };
         this.fire_watches(py, &slf, old, Some(value))?;
         Ok(())
+    }
+
+    /// `(set! v val)` — mutate the current binding frame's entry for this var.
+    /// Errors if called outside a `binding` block or if the var isn't in the current frame.
+    fn set_bang(slf: Py<Self>, py: Python<'_>, val: PyObject) -> PyResult<()> {
+        let key: Py<PyAny> = slf.clone_ref(py).into_any();
+        crate::binding::set_binding(py, &key, val)
     }
 
     /// `(alter-var-root v f args)` — atomically set root to `(f old-root args...)`.
