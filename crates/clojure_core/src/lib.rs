@@ -62,5 +62,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     ilookup::install_builtin_fallback(py, m)?;
     rt::init(py, m)?;
     ifn::install_builtin_fallback(py, m)?;
+    iequiv::install_builtin_fallback(py, m)?;
+    ihasheq::install_builtin_fallback(py, m)?;
     Ok(())
 }
