@@ -90,17 +90,14 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 // --- Helpers. ---
 
-/// `(get coll k default)` — dispatches through ILookup. `nil` coll returns
-/// the default, matching vanilla `(get nil k)` → nil.
+/// `(get coll k default)` — dispatches through ILookup's ProtocolFn.
+/// `nil` coll returns the default, matching vanilla `(get nil k)` → nil.
 pub fn get(py: Python<'_>, coll: PyObject, k: PyObject, default: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
         return Ok(default);
     }
-    let proto = ILOOKUP_PROTO
-        .get()
-        .expect("rt::get called before rt::init — check pymodule init order");
-    let args = PyTuple::new(py, &[k, default])?;
-    crate::dispatch::dispatch(py, proto, &VAL_AT_KEY, coll, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_3(py, &PFN, "ILookup", "val_at", coll, k, default)
 }
 
 /// Invoke `target` with `args`, dispatched through IFn using the arity-specific
@@ -222,19 +219,17 @@ pub fn sequential_equiv(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<bo
     }
 }
 
-/// `(= a b)` — dispatches through IEquiv.
+/// `(= a b)` — dispatches through IEquiv's ProtocolFn.
 pub fn equiv(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<bool> {
-    let proto = IEQUIV_PROTO.get().expect("rt::equiv called before rt::init");
-    let args = PyTuple::new(py, &[b])?;
-    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &EQUIV_KEY, a, args)?;
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    let result = crate::protocol_fn::dispatch_cached_2(py, &PFN, "IEquiv", "equiv", a, b)?;
     result.bind(py).extract::<bool>()
 }
 
-/// `(hash x)` — Clojure-style hash, dispatches through IHashEq.
+/// `(hash x)` — Clojure-style hash, dispatches through IHashEq's ProtocolFn.
 pub fn hash_eq(py: Python<'_>, x: PyObject) -> PyResult<i64> {
-    let proto = IHASHEQ_PROTO.get().expect("rt::hash_eq called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &HASH_EQ_KEY, x, args)?;
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    let result = crate::protocol_fn::dispatch_cached_1(py, &PFN, "IHashEq", "hash_eq", x)?;
     result.bind(py).extract::<i64>()
 }
 
@@ -243,9 +238,8 @@ pub fn seq(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
         return Ok(py.None());
     }
-    let proto = ISEQABLE_PROTO.get().expect("rt::seq called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, proto, &SEQ_KEY, coll, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "ISeqable", "seq", coll)
 }
 
 /// `(first coll)` — returns first element or nil.
@@ -254,9 +248,8 @@ pub fn first(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     if s.is_none(py) {
         return Ok(py.None());
     }
-    let proto = ISEQ_PROTO.get().expect("rt::first called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, proto, &FIRST_KEY, s, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "ISeq", "first", s)
 }
 
 /// `(next coll)` — returns ISeq of rest, or nil when empty.
@@ -265,68 +258,61 @@ pub fn next_(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     if s.is_none(py) {
         return Ok(py.None());
     }
-    let proto = ISEQ_PROTO.get().expect("rt::next called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, proto, &NEXT_KEY, s, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "ISeq", "next", s)
 }
 
 /// `(rest coll)` — returns ISeq of rest, or empty-seq when empty.
 pub fn rest(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     let s = seq(py, coll)?;
     if s.is_none(py) {
-        // When plist lands we'll return an EmptyList here. For now, nil.
         return Ok(py.None());
     }
-    let proto = ISEQ_PROTO.get().expect("rt::rest called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, proto, &MORE_KEY, s, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "ISeq", "more", s)
 }
 
-/// `(count coll)` — nil-safe; dispatches through Counted.
+/// `(count coll)` — nil-safe; dispatches through Counted's ProtocolFn.
 pub fn count(py: Python<'_>, coll: PyObject) -> PyResult<usize> {
     if coll.is_none(py) {
         return Ok(0);
     }
-    let proto = COUNTED_PROTO.get().expect("rt::count called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &COUNT_KEY, coll, args)?;
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    let result = crate::protocol_fn::dispatch_cached_1(py, &PFN, "Counted", "count", coll)?;
     result.bind(py).extract::<usize>()
 }
 
-/// `(empty coll)` — dispatches through IPersistentCollection.
+/// `(empty coll)` — dispatches through IPersistentCollection's ProtocolFn.
 pub fn empty(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
         return Ok(py.None());
     }
-    let proto = IPC_PROTO.get().expect("rt::empty called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, proto, &EMPTY_KEY, coll, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "IPersistentCollection", "empty", coll)
 }
 
-/// `(conj coll x)` — dispatches through IPersistentCollection. Nil-safe:
-/// `(conj nil x)` returns `(x)`.
+/// `(conj coll x)` — dispatches through IPersistentCollection's ProtocolFn.
+/// Nil-safe: `(conj nil x)` returns `(x)`.
 pub fn conj(py: Python<'_>, coll: PyObject, x: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
-        // (conj nil x) → (x)
         let tup = PyTuple::new(py, &[x])?;
         return crate::collections::plist::list_(py, tup);
     }
-    let proto = IPC_PROTO.get().expect("rt::conj called before rt::init");
-    let args = PyTuple::new(py, &[x])?;
-    crate::dispatch::dispatch(py, proto, &CONJ_KEY, coll, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_2(py, &PFN, "IPersistentCollection", "conj", coll, x)
 }
 
-/// `(assoc coll k v)` — dispatches through Associative. `nil` coll
-/// yields a fresh 1-entry map, matching vanilla `(assoc nil :a 1)` → `{:a 1}`.
+/// `(assoc coll k v)` — dispatches through Associative's ProtocolFn.
+/// `nil` coll yields a fresh 1-entry map, matching vanilla
+/// `(assoc nil :a 1)` → `{:a 1}`.
 pub fn assoc(py: Python<'_>, coll: PyObject, k: PyObject, v: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
         let mut m = crate::collections::phashmap::PersistentHashMap::new_empty();
         m = m.assoc_internal(py, k, v)?;
         return Ok(Py::new(py, m)?.into_any());
     }
-    let proto = ASSOC_PROTO.get().expect("rt::assoc called before rt::init");
-    let args = PyTuple::new(py, &[k, v])?;
-    crate::dispatch::dispatch(py, proto, &ASSOC_KEY, coll, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_3(py, &PFN, "Associative", "assoc", coll, k, v)
 }
 
 /// `(meta x)` — dispatches through IMeta; nil-safe and falls back to nil if
@@ -344,9 +330,8 @@ pub fn meta(py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
             Err(_) => Ok(py.None()),
         };
     }
-    let proto = IMETA_PROTO.get().expect("rt::meta called before rt::init");
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    match crate::dispatch::dispatch(py, proto, &META_KEY, x, args) {
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    match crate::protocol_fn::dispatch_cached_1(py, &PFN, "IMeta", "meta", x) {
         Ok(v) => Ok(v),
         Err(e) if e.is_instance_of::<crate::exceptions::IllegalArgumentException>(py) => {
             Ok(py.None())
@@ -355,11 +340,10 @@ pub fn meta(py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
     }
 }
 
-/// `(with-meta x m)` — dispatches through IMeta.
+/// `(with-meta x m)` — dispatches through IMeta's ProtocolFn.
 pub fn with_meta(py: Python<'_>, x: PyObject, m: PyObject) -> PyResult<PyObject> {
-    let proto = IMETA_PROTO.get().expect("rt::with_meta called before rt::init");
-    let args = PyTuple::new(py, &[m])?;
-    crate::dispatch::dispatch(py, proto, &WITH_META_KEY, x, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_2(py, &PFN, "IMeta", "with_meta", x, m)
 }
 
 /// `(identical? a b)` — Python `is` semantics.
@@ -373,9 +357,8 @@ pub fn compare(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<i64> {
     if a.is_none(py) && b.is_none(py) { return Ok(0); }
     if a.is_none(py) { return Ok(-1); }
     if b.is_none(py) { return Ok(1); }
-    let proto = COMPARABLE_PROTO.get().expect("rt::compare called before rt::init");
-    let args = PyTuple::new(py, &[b])?;
-    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &COMPARE_TO_KEY, a, args)?;
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    let result = crate::protocol_fn::dispatch_cached_2(py, &PFN, "Comparable", "compare_to", a, b)?;
     result.bind(py).extract::<i64>()
 }
 

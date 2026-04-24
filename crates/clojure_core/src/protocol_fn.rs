@@ -60,6 +60,135 @@ fn get_old_protocol(
         .map(|e| e.value().clone_ref(py))
 }
 
+// -------- Cached-dispatch helpers for rt::* wrappers ----------
+//
+// Each `rt::*` helper (e.g. `rt::count`, `rt::first`) wraps a specific
+// protocol method. Looking up the ProtocolFn in the registry on every
+// call would dominate the fast path, so each helper stashes its resolved
+// ProtocolFn in a `'static OnceCell` on first hit.
+//
+// The helpers below accept that OnceCell + the registry key, resolve it
+// lazily, and dispatch through ProtocolFn::dispatch_owned.
+
+fn resolve_cached<'a>(
+    py: Python<'_>,
+    cell: &'a once_cell::sync::OnceCell<Py<ProtocolFn>>,
+    proto_name: &'static str,
+    method_name: &'static str,
+) -> &'a Py<ProtocolFn> {
+    cell.get_or_init(|| {
+        get_protocol_fn(py, proto_name, method_name).unwrap_or_else(|| {
+            panic!(
+                "ProtocolFn {}/{} not registered — check #[protocol] macro",
+                proto_name, method_name
+            )
+        })
+    })
+}
+
+/// Dispatch arity-1 (target-only method, like `count`) through a cached
+/// ProtocolFn WITHOUT constructing a Vec<PyObject> for args — the typed
+/// fn pointer is called directly. Falls through to the old-style Protocol
+/// dispatch on resolve miss, matching `dispatch_owned`'s semantics.
+#[inline]
+pub fn dispatch_cached_1(
+    py: Python<'_>,
+    cell: &once_cell::sync::OnceCell<Py<ProtocolFn>>,
+    proto_name: &'static str,
+    method_name: &'static str,
+    target: PyObject,
+) -> PyResult<PyObject> {
+    let pfn = resolve_cached(py, cell, proto_name, method_name);
+    let this = pfn.bind(py).get();
+    match this.resolve(py, &target)? {
+        Some(fns) => match fns.invoke0 {
+            Some(fp) => fp(py, &target),
+            None => {
+                // Unusual but possible: type implements only invoke_variadic.
+                dispatch_fallback(py, this, fns.as_ref(), target, Vec::new())
+            }
+        },
+        None => dispatch_fallback_miss(py, this, target, Vec::new()),
+    }
+}
+
+/// Dispatch arity-2 (target + 1 arg) through a cached ProtocolFn.
+#[inline]
+pub fn dispatch_cached_2(
+    py: Python<'_>,
+    cell: &once_cell::sync::OnceCell<Py<ProtocolFn>>,
+    proto_name: &'static str,
+    method_name: &'static str,
+    target: PyObject,
+    a: PyObject,
+) -> PyResult<PyObject> {
+    let pfn = resolve_cached(py, cell, proto_name, method_name);
+    let this = pfn.bind(py).get();
+    match this.resolve(py, &target)? {
+        Some(fns) => match fns.invoke1 {
+            Some(fp) => fp(py, &target, a),
+            None => dispatch_fallback(py, this, fns.as_ref(), target, vec![a]),
+        },
+        None => dispatch_fallback_miss(py, this, target, vec![a]),
+    }
+}
+
+/// Dispatch arity-3 (target + 2 args) through a cached ProtocolFn.
+#[inline]
+pub fn dispatch_cached_3(
+    py: Python<'_>,
+    cell: &once_cell::sync::OnceCell<Py<ProtocolFn>>,
+    proto_name: &'static str,
+    method_name: &'static str,
+    target: PyObject,
+    a: PyObject,
+    b: PyObject,
+) -> PyResult<PyObject> {
+    let pfn = resolve_cached(py, cell, proto_name, method_name);
+    let this = pfn.bind(py).get();
+    match this.resolve(py, &target)? {
+        Some(fns) => match fns.invoke2 {
+            Some(fp) => fp(py, &target, a, b),
+            None => dispatch_fallback(py, this, fns.as_ref(), target, vec![a, b]),
+        },
+        None => dispatch_fallback_miss(py, this, target, vec![a, b]),
+    }
+}
+
+// Helpers used by the dispatch_cached_N path when the typed slot is absent:
+// try variadic, else fall through to old Protocol dispatch.
+fn dispatch_fallback(
+    py: Python<'_>,
+    this: &ProtocolFn,
+    fns: &InvokeFns,
+    target: PyObject,
+    args: Vec<PyObject>,
+) -> PyResult<PyObject> {
+    if let Some(fp) = fns.invoke_variadic {
+        return fp(py, &target, args);
+    }
+    Err(crate::exceptions::IllegalArgumentException::new_err(format!(
+        "Protocol method {} of protocol {}: no impl for arity {}",
+        this.name, this.protocol_name, args.len()
+    )))
+}
+
+fn dispatch_fallback_miss(
+    py: Python<'_>,
+    this: &ProtocolFn,
+    target: PyObject,
+    args: Vec<PyObject>,
+) -> PyResult<PyObject> {
+    // Fall through to the old-style Protocol dispatch so fallback-installed
+    // impls (e.g. Counted's __len__ path for str) keep working.
+    if let Some(old_proto) = get_old_protocol(py, &this.protocol_name) {
+        let method_key: Arc<str> = Arc::from(this.name.as_str());
+        let rest_tup = pyo3::types::PyTuple::new(py, &args)?;
+        return crate::dispatch::dispatch(py, &old_proto, &method_key, target, rest_tup);
+    }
+    Err(this.raise_no_impl(py, &target))
+}
+
 /// Register a ProtocolFn under (protocol_name, method_name). Overwrites any
 /// prior entry — module re-init shouldn't happen in a single process, but
 /// idempotence keeps the API cheap rather than erroring.
