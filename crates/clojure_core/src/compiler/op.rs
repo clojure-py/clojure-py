@@ -32,9 +32,13 @@ pub enum Op {
     /// Fused Deref(var_ix) + Invoke(nargs): deref pool.vars[var_ix] and invoke
     /// the result with `nargs` args drained from the top of the value stack.
     /// Common case for calls to top-level (def'd) fns — saves one op + one
-    /// stack round-trip vs the split form. Falls through to `invoke_n_owned`
-    /// so all existing dispatch semantics are preserved.
-    InvokeVar(u16, u8),
+    /// stack round-trip vs the split form.
+    ///
+    /// The third field is an index into `FnPool.ic_slots`. The VM consults
+    /// the slot to skip `ProtocolFn::resolve` on repeat calls against the
+    /// same target type. Semantics are preserved — a miss falls through to
+    /// the full `invoke_n_owned` path and (re-)installs the slot.
+    InvokeVar(u16, u8, u16),
     Return,             // pop, return from current frame
 
     // Python interop

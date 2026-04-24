@@ -5,6 +5,8 @@
 //! (preserving the protocol-dispatch invariant). No implicit TCO; `recur`
 //! compiles down to `StoreLocal`s + `Jump` so the VM has no Recur op at all.
 
+pub mod ic;
+
 use crate::compiler::method::CompiledMethod;
 use crate::compiler::op::Op;
 use crate::compiler::pool::FnPool;
@@ -168,7 +170,7 @@ pub fn run(
                     stack.push(result);
                     pc += 1;
                 }
-                Op::InvokeVar(var_ix, nargs) => {
+                Op::InvokeVar(var_ix, nargs, ic_slot) => {
                     let var = pool.vars.get(*var_ix as usize).ok_or_else(|| {
                         errors::err(format!("InvokeVar: invalid var index {}", var_ix))
                     })?;
@@ -182,7 +184,10 @@ pub fn run(
                     }
                     let args_start = stack.len() - n;
                     let args: Vec<PyObject> = stack.drain(args_start..).collect();
-                    let result = crate::rt::invoke_n_owned(py, target, args)?;
+                    let cache = pool.ic_slots.get(*ic_slot as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar: invalid ic_slot {}", ic_slot))
+                    })?;
+                    let result = crate::rt::invoke_n_owned_cached(py, target, args, cache)?;
                     stack.push(result);
                     pc += 1;
                 }

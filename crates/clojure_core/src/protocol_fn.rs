@@ -317,7 +317,7 @@ fn resolve_legacy_impl(
 /// Pure arity dispatch on a resolved InvokeFns — no cache lookup, no
 /// fallback. Returns `Some(result)` if any slot matches (typed arity,
 /// variadic, or generic Py<PyAny>); `None` only if nothing fits.
-fn dispatch_on_fns(
+pub(crate) fn dispatch_on_fns(
     py: Python<'_>,
     fns: &InvokeFns,
     target: PyObject,
@@ -557,7 +557,7 @@ impl ProtocolFn {
     /// Look up the impl for `target`. Mirrors the classic three-step
     /// dispatch: exact type, MRO walk (with promotion), metadata fallback.
     /// Returns None when no impl is found.
-    fn resolve(&self, py: Python<'_>, target: &PyObject) -> PyResult<Option<Arc<InvokeFns>>> {
+    pub(crate) fn resolve(&self, py: Python<'_>, target: &PyObject) -> PyResult<Option<Arc<InvokeFns>>> {
         let ty = target.bind(py).get_type();
         let exact_key = CacheKey::for_py_type(&ty);
         let current_epoch = self.epoch.load(Ordering::Acquire);

@@ -4,6 +4,7 @@
 //! (via `Arc<FnPool>`). Nested `FnTemplate` values are interned as ordinary
 //! constants — the bytecode references them via `PushConst`.
 
+use crate::vm::ic::CachedInvoke;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use std::sync::Arc;
@@ -14,6 +15,10 @@ type PyObject = Py<PyAny>;
 pub struct FnPool {
     pub constants: Vec<PyObject>,
     pub vars: Vec<Py<crate::var::Var>>,
+    /// One per fused `InvokeVar` call site. The op carries an index into
+    /// this vec; the VM consults the slot on dispatch to skip
+    /// `ProtocolFn::resolve` on repeat calls against the same target type.
+    pub ic_slots: Vec<CachedInvoke>,
 }
 
 /// Mutable builder used during compilation. Resolves to an `Arc<FnPool>` at
@@ -22,6 +27,7 @@ pub struct FnPool {
 pub struct PoolBuilder {
     constants: Vec<PyObject>,
     vars: Vec<Py<crate::var::Var>>,
+    ic_slot_count: usize,
 }
 
 impl PoolBuilder {
@@ -29,10 +35,19 @@ impl PoolBuilder {
         let mut pb = Self {
             constants: Vec::new(),
             vars: Vec::new(),
+            ic_slot_count: 0,
         };
         // constants[0] = nil.
         pb.constants.push(py.None());
         pb
+    }
+
+    /// Allocate a fresh IC slot index. Slots are materialized as
+    /// `CachedInvoke::new()` in `finish()`.
+    pub fn alloc_ic_slot(&mut self) -> u16 {
+        let ix = self.ic_slot_count;
+        self.ic_slot_count += 1;
+        ix as u16
     }
 
     /// Append a constant; returns its pool index.
@@ -64,9 +79,12 @@ impl PoolBuilder {
     }
 
     pub fn finish(self) -> Arc<FnPool> {
+        let ic_slots: Vec<CachedInvoke> =
+            (0..self.ic_slot_count).map(|_| CachedInvoke::new()).collect();
         Arc::new(FnPool {
             constants: self.constants,
             vars: self.vars,
+            ic_slots,
         })
     }
 }

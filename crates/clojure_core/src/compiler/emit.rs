@@ -36,7 +36,7 @@ type PyObject = Py<PyAny>;
 ///   ..=invoke_idx`). A target at `deref_idx` itself is fine — in the fused
 ///   form it remaps to "start emitting args", which has the same effect
 ///   because `InvokeVar` does the deref internally.
-fn fuse_deref_invoke_pass(code: &mut Vec<Op>) {
+fn fuse_deref_invoke_pass(code: &mut Vec<Op>, pool: &mut PoolBuilder) {
     let code_len = code.len();
     if code_len < 3 { return; }
 
@@ -95,7 +95,8 @@ fn fuse_deref_invoke_pass(code: &mut Vec<Op>) {
 
     // Apply in reverse order so earlier fusions' indices stay valid.
     for (deref_idx, invoke_idx, var_ix, nargs) in fusions.iter().rev() {
-        code[*invoke_idx] = Op::InvokeVar(*var_ix, *nargs);
+        let ic_slot = pool.alloc_ic_slot();
+        code[*invoke_idx] = Op::InvokeVar(*var_ix, *nargs, ic_slot);
         code.remove(*deref_idx);
     }
 
@@ -1282,7 +1283,11 @@ impl Compiler {
 
             // Peephole: collapse Deref+args+Invoke -> InvokeVar before
             // building the final CompiledMethod. Runs once per method.
-            fuse_deref_invoke_pass(&mut self.cur_mut().code);
+            {
+                let cur = self.cur_mut();
+                let (code, pool) = (&mut cur.code, &mut cur.pool);
+                fuse_deref_invoke_pass(code, pool);
+            }
 
             let method = {
                 let cur = self.cur();
@@ -1869,7 +1874,11 @@ impl Compiler {
     /// Finalize a top-level compile into a 0-arity CompiledMethod.
     pub fn finish_top_level(mut self) -> (CompiledMethod, Arc<FnPool>) {
         self.emit(Op::Return);
-        fuse_deref_invoke_pass(&mut self.cur_mut().code);
+        {
+            let cur = self.cur_mut();
+            let (code, pool) = (&mut cur.code, &mut cur.pool);
+            fuse_deref_invoke_pass(code, pool);
+        }
         let ctx = self.fns.pop().unwrap();
         debug_assert!(self.fns.is_empty(), "top-level compile leaked a nested fn ctx");
         let method = CompiledMethod {

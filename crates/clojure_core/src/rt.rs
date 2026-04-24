@@ -184,6 +184,78 @@ pub fn invoke_n_owned(
     crate::protocol_fn::ProtocolFn::dispatch_owned(pfn.clone_ref(py), py, target, args)
 }
 
+/// IC-backed variant of `invoke_n_owned`. Used by `Op::InvokeVar`.
+///
+/// If the cache slot matches `(target_type, pfn_epoch)`, we skip
+/// `ProtocolFn::resolve` and dispatch straight into the cached
+/// `InvokeFns` via a typed fn pointer. On a miss (slot empty, wrong
+/// type, or stale epoch) we fall through to the full resolve-and-dispatch
+/// path and install the fresh entry so the next call hits.
+///
+/// Unlike `invoke_n_owned`, this assumes the target is *not* a
+/// ProtocolFn — the InvokeVar opcode always dispatches on the Var's
+/// dereffed root, which is a Fn/Keyword/Var/bare-Python-callable. This
+/// lets us skip the ProtocolFn downcast check on the hot path.
+pub fn invoke_n_owned_cached(
+    py: Python<'_>,
+    target: PyObject,
+    args: Vec<PyObject>,
+    cache: &crate::vm::ic::CachedInvoke,
+) -> PyResult<PyObject> {
+    // Pick the IFn/invokeN ProtocolFn for this arity (OnceCell — amortized free).
+    let n = args.len();
+    let pfn = if n <= 20 {
+        IFN_INVOKE_PFNS[n].get_or_init(|| {
+            crate::protocol_fn::get_protocol_fn(py, "IFn", IFN_INVOKE_KEYS[n])
+                .expect("IFn/invokeN ProtocolFn not registered by #[protocol]")
+        })
+    } else {
+        IFN_INVOKE_VARIADIC_PFN.get_or_init(|| {
+            crate::protocol_fn::get_protocol_fn(py, "IFn", "invoke_variadic")
+                .expect("IFn/invoke_variadic ProtocolFn not registered")
+        })
+    };
+    let pfn_ref = pfn.bind(py).get();
+
+    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
+
+    // IC fast path. A resolved InvokeFns always has at least one of
+    // {invoke_N, invoke_variadic, generic} set for the arity that keyed
+    // it, so `dispatch_on_fns` returns Some on cache hit.
+    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
+        if let Some(result) = crate::protocol_fn::dispatch_on_fns(py, fns.as_ref(), target, args) {
+            return result;
+        }
+        // Pathologic empty InvokeFns — shouldn't happen in normal use.
+        return Err(crate::exceptions::IllegalArgumentException::new_err(format!(
+            "Protocol method {} of protocol {}: cached InvokeFns has no dispatch slot for arity {}",
+            pfn_ref.name, pfn_ref.protocol_name, n
+        )));
+    }
+
+    // Slow path: resolve, install, dispatch.
+    if let Some(fns) = pfn_ref.resolve(py, &target)? {
+        cache.install(crate::vm::ic::ICEntry {
+            type_ptr,
+            epoch: current_epoch,
+            fns: std::sync::Arc::clone(&fns),
+        });
+        if let Some(r) = crate::protocol_fn::dispatch_on_fns(py, fns.as_ref(), target, args) {
+            return r;
+        }
+        // Resolved entry with no dispatch slot for this arity — unreachable
+        // under normal use (resolver only returns Some when something matches).
+        return Err(crate::exceptions::IllegalArgumentException::new_err(format!(
+            "Protocol method {} of protocol {}: resolved InvokeFns has no slot for arity {}",
+            pfn_ref.name, pfn_ref.protocol_name, n
+        )));
+    }
+    // Resolve missed — fall through to full dispatch (legacy cache, metadata,
+    // protocol fallback closure, etc.). No cache install on miss.
+    crate::protocol_fn::ProtocolFn::dispatch_owned(pfn.clone_ref(py), py, target, args)
+}
+
 /// True iff `x`'s type (or an MRO ancestor) is extended to `Sequential`.
 /// Used by IEquiv impls of sequential collections to decide whether the
 /// other side of an `=` comparison should be walked pairwise.
