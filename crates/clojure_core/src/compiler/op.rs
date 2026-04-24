@@ -29,6 +29,12 @@ pub enum Op {
 
     // Invocation
     Invoke(u8),         // pop N args, pop fn, push call result
+    /// Fused Deref(var_ix) + Invoke(nargs): deref pool.vars[var_ix] and invoke
+    /// the result with `nargs` args drained from the top of the value stack.
+    /// Common case for calls to top-level (def'd) fns — saves one op + one
+    /// stack round-trip vs the split form. Falls through to `invoke_n_owned`
+    /// so all existing dispatch semantics are preserved.
+    InvokeVar(u16, u8),
     Return,             // pop, return from current frame
 
     // Python interop

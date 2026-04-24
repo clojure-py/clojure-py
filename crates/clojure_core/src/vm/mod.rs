@@ -168,6 +168,24 @@ pub fn run(
                     stack.push(result);
                     pc += 1;
                 }
+                Op::InvokeVar(var_ix, nargs) => {
+                    let var = pool.vars.get(*var_ix as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar: invalid var index {}", var_ix))
+                    })?;
+                    let target = crate::var::Var::deref_fast(var, py)?;
+                    let n = *nargs as usize;
+                    if stack.len() < n {
+                        return Err(errors::err(format!(
+                            "InvokeVar({}): stack has only {} values",
+                            n, stack.len()
+                        )));
+                    }
+                    let args_start = stack.len() - n;
+                    let args: Vec<PyObject> = stack.drain(args_start..).collect();
+                    let result = crate::rt::invoke_n_owned(py, target, args)?;
+                    stack.push(result);
+                    pc += 1;
+                }
                 Op::Return => {
                     let v = stack.pop().ok_or_else(|| errors::err("Return on empty stack"))?;
                     return Ok(Step::Return(v));
