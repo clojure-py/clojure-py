@@ -91,7 +91,10 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 // --- Helpers. ---
 
 /// `(get coll k default)` — dispatches through ILookup's ProtocolFn.
-/// `nil` coll returns the default, matching vanilla `(get nil k)` → nil.
+/// Nil-safety lives here (not in the protocol layer) to match JVM Clojure's
+/// `RT.get` contract: `(get nil k)` -> nil, but `(coll? nil)` is still false.
+/// If the protocol itself were extended for NoneType, `(satisfies? ILookup nil)`
+/// would erroneously return true.
 pub fn get(py: Python<'_>, coll: PyObject, k: PyObject, default: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
         return Ok(default);
@@ -382,7 +385,7 @@ pub fn hash_eq(py: Python<'_>, x: PyObject) -> PyResult<i64> {
     result.bind(py).extract::<i64>()
 }
 
-/// `(seq coll)` — returns ISeq or nil; nil-safe.
+/// `(seq coll)` — returns ISeq or nil; nil-safe (matches JVM RT.seq).
 pub fn seq(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     if coll.is_none(py) {
         return Ok(py.None());
@@ -465,7 +468,10 @@ pub fn assoc(py: Python<'_>, coll: PyObject, k: PyObject, v: PyObject) -> PyResu
 }
 
 /// `(meta x)` — dispatches through IMeta; nil-safe and falls back to nil if
-/// the target has no IMeta impl (unlike strict dispatch).
+/// the target has no IMeta impl (unlike strict dispatch). These checks live
+/// here rather than in the protocol layer because JVM Clojure also keeps
+/// nil-handling in `RT.meta`; extending IMeta for NoneType would make
+/// `(satisfies? IMeta nil)` wrongly return true.
 pub fn meta(py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
     if x.is_none(py) {
         return Ok(py.None());

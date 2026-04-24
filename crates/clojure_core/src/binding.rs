@@ -118,6 +118,7 @@ pub fn push_thread_bindings(py: Python<'_>, assoc: PyObject) -> PyResult<()> {
     let b = assoc.bind(py);
     if let Ok(d) = b.downcast::<PyDict>() {
         for (k, v) in d.iter() {
+            validate_dynamic_key(py, &k)?;
             new_frame = frame_assoc(&new_frame, py, k.unbind(), v.unbind())?;
         }
     } else {
@@ -125,14 +126,33 @@ pub fn push_thread_bindings(py: Python<'_>, assoc: PyObject) -> PyResult<()> {
         while !cur.is_none(py) {
             let entry = crate::rt::first(py, cur.clone_ref(py))?;
             let e_b = entry.bind(py);
-            let k: PyObject = e_b.get_item(0)?.unbind();
+            let k = e_b.get_item(0)?;
             let v: PyObject = e_b.get_item(1)?.unbind();
-            new_frame = frame_assoc(&new_frame, py, k, v)?;
+            validate_dynamic_key(py, &k)?;
+            new_frame = frame_assoc(&new_frame, py, k.unbind(), v)?;
             cur = crate::rt::next_(py, cur)?;
         }
     }
 
     BINDING_STACK.with(|s| s.borrow_mut().push(new_frame));
+    Ok(())
+}
+
+/// JVM parity (Var.java:326-327): reject non-dynamic Vars at push time.
+/// Non-Var keys are left alone — policy stays whatever the frame store allows.
+fn validate_dynamic_key(py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()> {
+    if let Ok(v) = key.downcast::<crate::var::Var>() {
+        if !v.get().dynamic.load(std::sync::atomic::Ordering::Acquire) {
+            let repr: String = key
+                .repr()
+                .and_then(|r| r.extract())
+                .unwrap_or_else(|_| "<Var>".to_string());
+            return Err(IllegalStateException::new_err(format!(
+                "Can't dynamically bind non-dynamic var: {}",
+                repr
+            )));
+        }
+    }
     Ok(())
 }
 

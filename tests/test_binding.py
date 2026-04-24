@@ -22,13 +22,12 @@ def _dynv(ns_name: str, sym_name: str, root, dynamic=True):
     return v
 
 
-def test_non_dynamic_unaffected_by_binding():
+def test_push_thread_bindings_rejects_non_dynamic_var():
+    """JVM `Var.pushThreadBindings` raises IllegalStateException when any
+    supplied var lacks `:dynamic true`. Mirrors Var.java:326-327."""
     v = _dynv("b1", "x", 1, dynamic=False)
-    push_thread_bindings({v: 99})
-    try:
-        assert v.deref() == 1
-    finally:
-        pop_thread_bindings()
+    with pytest.raises(IllegalStateException, match="dynamically bind non-dynamic"):
+        push_thread_bindings({v: 99})
 
 
 def test_dynamic_binding_shadows_root():
@@ -110,18 +109,42 @@ def test_multiple_vars_in_one_frame():
         pop_thread_bindings()
 
 
-def test_dynamic_var_call_uses_root_only():
-    """Known gap: calling a dynamic var via IFn (v() syntax) does NOT consult the
-    binding stack — it uses the root directly. Documented in Task 29's spec.
-    This test pins the current behavior so we notice when it changes (hopefully
-    when a follow-on closes the gap)."""
-    v = _dynv("b9", "f", lambda: "root-impl")
-    push_thread_bindings({v: lambda: "bound-impl"})
+def test_dynamic_var_call_uses_current_binding():
+    """Calling a dynamic var via IFn (v() / v(a) / v(a, b) / variadic) must
+    consult the binding stack, matching `@v` / `(deref v)`. JVM Clojure's
+    Var.invoke delegates through the thread-binding frame, not the raw root."""
+    from clojure._core import invoke1, invoke2, invoke_variadic
+
+    # 0-arity __call__
+    v0 = _dynv("b9.0", "f", lambda: "root")
+    push_thread_bindings({v0: lambda: "bound"})
     try:
-        # deref() path: binding-aware → gets the bound lambda
-        bound_fn = v.deref()
-        assert bound_fn() == "bound-impl"
-        # IFn call path: reads root only → gets the root lambda
-        assert v() == "root-impl"
+        assert v0() == "bound"
+    finally:
+        pop_thread_bindings()
+
+    # 1-arity via __call__ and invoke1
+    v1 = _dynv("b9.1", "inc", lambda x: x + 1)
+    push_thread_bindings({v1: lambda x: x - 1})
+    try:
+        assert v1(10) == 9
+        assert invoke1(v1, 10) == 9
+    finally:
+        pop_thread_bindings()
+
+    # 2-arity via __call__ and invoke2
+    v2 = _dynv("b9.2", "add", lambda a, b: a + b)
+    push_thread_bindings({v2: lambda a, b: a * b})
+    try:
+        assert v2(3, 4) == 12
+        assert invoke2(v2, 3, 4) == 12
+    finally:
+        pop_thread_bindings()
+
+    # variadic
+    vv = _dynv("b9.3", "sum", lambda *a: sum(a))
+    push_thread_bindings({vv: lambda *a: sum(a) * 10})
+    try:
+        assert invoke_variadic(vv, 1, 2, 3) == 60
     finally:
         pop_thread_bindings()
