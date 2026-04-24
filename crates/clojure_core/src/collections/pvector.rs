@@ -1329,14 +1329,9 @@ impl Associative for TransientVector {
 #[pyo3(name = "transient")]
 pub fn transient_fn(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     // Dispatch through IEditableCollection (so any implementer works).
-    let proto_any = py.import("clojure._core")?.getattr("IEditableCollection")?;
-    let proto: Py<crate::Protocol> = proto_any.cast::<crate::Protocol>()?.clone().unbind();
-    let args = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(
-        py,
-        &proto,
-        &std::sync::Arc::from("as_transient"),
-        coll,
-        args,
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>>
+        = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(
+        py, &PFN, "IEditableCollection", "as_transient", coll,
     )
 }

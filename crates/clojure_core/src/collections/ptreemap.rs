@@ -816,27 +816,15 @@ impl IEquiv for PersistentTreeMap {
         collect_entries(py, &a.root, true, &mut entries);
         let _ = other_b;
         // For each of our entries, look up the key in `other`.
-        let lookup_proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("ILookup")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let val_at_key: std::sync::Arc<str> = std::sync::Arc::from("val_at");
         // Unique sentinel for "key missing from other" — a fresh empty list.
         let sentinel: PyObject =
             pyo3::types::PyList::empty(py).unbind().into_any();
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>>
+            = once_cell::sync::OnceCell::new();
         for (k, v) in entries {
-            let args = pyo3::types::PyTuple::new(
-                py,
-                &[k.clone_ref(py), sentinel.clone_ref(py)],
-            )?;
-            let bv = match crate::dispatch::dispatch(
-                py,
-                &lookup_proto,
-                &val_at_key,
-                other.clone_ref(py),
-                args,
+            let bv = match crate::protocol_fn::dispatch_cached_3(
+                py, &PFN, "ILookup", "val_at",
+                other.clone_ref(py), k.clone_ref(py), sentinel.clone_ref(py),
             ) {
                 Ok(v) => v,
                 Err(_) => return Ok(false),

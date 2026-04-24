@@ -10,7 +10,6 @@ pub mod collections;
 mod coll_reduce;
 mod comparable;
 mod counted;
-mod dispatch;
 mod eval;
 mod ikvreduce;
 mod exceptions;
@@ -69,7 +68,7 @@ pub use clojure_core_macros::{implements, protocol};
 pub use exceptions::{ArityException, AssertionError, IllegalArgumentException, IllegalStateException};
 pub use ifn::IFn;
 pub use keyword::Keyword;
-pub use protocol::{MethodCache, Protocol, ProtocolMethod};
+pub use protocol::{MethodCache, Protocol};
 pub use symbol::Symbol;
 pub use var::Var;
 

@@ -146,35 +146,6 @@ impl Protocol {
     }
 }
 
-#[pyclass(module = "clojure._core", name = "ProtocolMethod", frozen)]
-pub struct ProtocolMethod {
-    pub protocol: Py<Protocol>,
-    pub key: Arc<str>,
-}
-
-#[pymethods]
-impl ProtocolMethod {
-    #[getter]
-    fn protocol(&self, py: Python<'_>) -> Py<Protocol> {
-        self.protocol.clone_ref(py)
-    }
-
-    #[getter]
-    fn key(&self) -> &str {
-        &self.key
-    }
-
-    #[pyo3(signature = (target, *args))]
-    fn __call__(
-        &self,
-        py: Python<'_>,
-        target: PyObject,
-        args: Bound<'_, pyo3::types::PyTuple>,
-    ) -> PyResult<PyObject> {
-        crate::dispatch::dispatch(py, &self.protocol, &self.key, target, args)
-    }
-}
-
 /// Construct a fresh Protocol at runtime. Clojure-layer `defprotocol` uses
 /// this to create protocols that participate in the same dispatch machinery
 /// as Rust-defined `#[protocol]` traits. `ns`/`name` form the Clojure
@@ -257,7 +228,6 @@ pub fn create_protocol_method(
 
 pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Protocol>()?;
-    m.add_class::<ProtocolMethod>()?;
     m.add_function(wrap_pyfunction!(create_protocol, m)?)?;
     m.add_function(wrap_pyfunction!(create_protocol_method, m)?)?;
     Ok(())

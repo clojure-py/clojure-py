@@ -3398,8 +3398,9 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
                 cur = crate::rt::next_(py, cur)?;
             }
         }
-        // Old path: keep populating the Protocol's shared cache so any
-        // remaining `dispatch::dispatch` callers still work.
+        // Populate the legacy `Protocol` MethodCache so the lazy mirror in
+        // `ProtocolFn::dispatch_fallback_miss` can find Python-side impls
+        // on first dispatch against a new type.
         proto.get().extend_type(py, ty.clone(), d.clone())?;
         // New path: for each (method, impl_fn), stash the impl in the
         // corresponding ProtocolFn's `generic` slot. dispatch_on_fns
