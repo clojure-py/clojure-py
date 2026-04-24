@@ -96,6 +96,13 @@ impl Protocol {
     }
 
     /// Extend this protocol to a Python type with a map of method-name -> impl fn.
+    ///
+    /// Writes into the legacy `MethodCache`. The ProtocolFn dispatcher does
+    /// a lazy mirror on cache miss (see `dispatch_fallback_miss` in
+    /// `protocol_fn.rs`) so impls registered via this legacy entry point
+    /// reach the new typed-dispatch path without clobbering any typed
+    /// fn-pointer slots that `#[implements]` / the IFn fallback installed
+    /// directly into the ProtocolFn.
     pub fn extend_type(
         &self,
         _py: Python<'_>,
@@ -119,6 +126,23 @@ impl Protocol {
             }),
         );
         Ok(())
+    }
+}
+
+impl Protocol {
+    /// Look up an impl for `(type, method)` in the legacy MethodCache. Used
+    /// by `ProtocolFn::dispatch_fallback_miss` to honor Python-side
+    /// `Protocol.extend_type` calls that didn't write into the new
+    /// ProtocolFn directly.
+    pub(crate) fn lookup_legacy_impl(
+        &self,
+        py: Python<'_>,
+        key: CacheKey,
+        method: &str,
+    ) -> Option<PyObject> {
+        let entry = self.cache.entries.get(&key)?;
+        let py_obj = entry.value().impls.get(method)?;
+        Some(py_obj.clone_ref(py))
     }
 }
 
@@ -170,7 +194,7 @@ pub fn create_protocol(
         Symbol::new(Some(Arc::from(ns.as_str())), Arc::from(name.as_str())),
     )?;
     let keys: SmallVec<[Arc<str>; 8]> = method_keys
-        .into_iter()
+        .iter()
         .map(|s| Arc::from(s.as_str()))
         .collect();
     let proto = Protocol {
@@ -180,24 +204,55 @@ pub fn create_protocol(
         fallback: RwLock::new(None),
         via_metadata,
     };
-    Py::new(py, proto)
+    let proto_py = Py::new(py, proto)?;
+
+    // Register alongside the ProtocolFn registry so legacy-dispatch
+    // callers (and ProtocolFn's fallback-miss path) can find the old
+    // Protocol by name.
+    crate::protocol_fn::register_old_protocol(&name, proto_py.clone_ref(py));
+
+    // Also create a ProtocolFn per method and register it. Clojure-level
+    // `(extend-type T P ...)` attaches impls via ProtocolFn::extend_with_generic.
+    for k in method_keys.iter() {
+        let pfn = crate::protocol_fn::ProtocolFn::new_py(
+            k.clone(),
+            name.clone(),
+            via_metadata,
+        );
+        let pfn_py = Py::new(py, pfn)?;
+        crate::protocol_fn::register_protocol_fn(&name, k, pfn_py);
+    }
+
+    Ok(proto_py)
 }
 
-/// Construct a ProtocolMethod (callable dispatcher) at runtime.
+/// Construct a callable protocol-method dispatcher at runtime. Returns the
+/// ProtocolFn created by `create_protocol` for this (protocol, method) pair.
+/// Falls back to a freshly-created ProtocolFn if the registry lookup fails,
+/// which shouldn't happen in practice.
 #[pyfunction]
 #[pyo3(name = "create_protocol_method")]
 pub fn create_protocol_method(
     py: Python<'_>,
     protocol: Py<Protocol>,
     key: String,
-) -> PyResult<Py<ProtocolMethod>> {
-    Py::new(
-        py,
-        ProtocolMethod {
-            protocol,
-            key: Arc::from(key.as_str()),
-        },
-    )
+) -> PyResult<Py<crate::protocol_fn::ProtocolFn>> {
+    let proto_ref = protocol.bind(py).get();
+    let proto_name: &str = &proto_ref.name.bind(py).get().name;
+    if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, proto_name, &key) {
+        return Ok(pfn);
+    }
+    // Defensive: registry miss (shouldn't happen). Create a fresh PFn and
+    // register it so future lookups succeed.
+    let via_md = proto_ref.via_metadata;
+    let pfn = crate::protocol_fn::ProtocolFn::new_py(
+        key.clone(),
+        proto_name.to_string(),
+        via_md,
+    );
+    let pfn_py = Py::new(py, pfn)?;
+    crate::protocol_fn::register_protocol_fn(proto_name, &key, pfn_py.clone_ref(py));
+    Ok(pfn_py)
 }
 
 pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {

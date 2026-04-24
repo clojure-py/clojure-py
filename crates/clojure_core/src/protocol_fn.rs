@@ -88,8 +88,7 @@ fn resolve_cached<'a>(
 
 /// Dispatch arity-1 (target-only method, like `count`) through a cached
 /// ProtocolFn WITHOUT constructing a Vec<PyObject> for args — the typed
-/// fn pointer is called directly. Falls through to the old-style Protocol
-/// dispatch on resolve miss, matching `dispatch_owned`'s semantics.
+/// fn pointer is called directly.
 #[inline]
 pub fn dispatch_cached_1(
     py: Python<'_>,
@@ -99,17 +98,9 @@ pub fn dispatch_cached_1(
     target: PyObject,
 ) -> PyResult<PyObject> {
     let pfn = resolve_cached(py, cell, proto_name, method_name);
-    let this = pfn.bind(py).get();
-    match this.resolve(py, &target)? {
-        Some(fns) => match fns.invoke0 {
-            Some(fp) => fp(py, &target),
-            None => {
-                // Unusual but possible: type implements only invoke_variadic.
-                dispatch_fallback(py, this, fns.as_ref(), target, Vec::new())
-            }
-        },
-        None => dispatch_fallback_miss(py, this, target, Vec::new()),
-    }
+    dispatch_via_pfn(py, pfn, target, Vec::new(), |fns, py, target| {
+        fns.invoke0.map(|fp| fp(py, target))
+    })
 }
 
 /// Dispatch arity-2 (target + 1 arg) through a cached ProtocolFn.
@@ -127,9 +118,12 @@ pub fn dispatch_cached_2(
     match this.resolve(py, &target)? {
         Some(fns) => match fns.invoke1 {
             Some(fp) => fp(py, &target, a),
-            None => dispatch_fallback(py, this, fns.as_ref(), target, vec![a]),
+            None => match dispatch_on_fns(py, fns.as_ref(), target, vec![a]) {
+                Some(r) => r,
+                None => Err(this.raise_no_impl(py, &py.None())),
+            },
         },
-        None => dispatch_fallback_miss(py, this, target, vec![a]),
+        None => dispatch_fallback_miss(py, pfn, target, vec![a]),
     }
 }
 
@@ -149,44 +143,258 @@ pub fn dispatch_cached_3(
     match this.resolve(py, &target)? {
         Some(fns) => match fns.invoke2 {
             Some(fp) => fp(py, &target, a, b),
-            None => dispatch_fallback(py, this, fns.as_ref(), target, vec![a, b]),
+            None => match dispatch_on_fns(py, fns.as_ref(), target, vec![a, b]) {
+                Some(r) => r,
+                None => Err(this.raise_no_impl(py, &py.None())),
+            },
         },
-        None => dispatch_fallback_miss(py, this, target, vec![a, b]),
+        None => dispatch_fallback_miss(py, pfn, target, vec![a, b]),
     }
 }
 
-// Helpers used by the dispatch_cached_N path when the typed slot is absent:
-// try variadic, else fall through to old Protocol dispatch.
-fn dispatch_fallback(
+/// Helper for the arity-1 path that takes a closure to avoid moving target
+/// into the None arm before we need it.
+#[inline]
+fn dispatch_via_pfn<F>(
     py: Python<'_>,
-    this: &ProtocolFn,
-    fns: &InvokeFns,
+    pfn: &Py<ProtocolFn>,
     target: PyObject,
-    args: Vec<PyObject>,
-) -> PyResult<PyObject> {
-    if let Some(fp) = fns.invoke_variadic {
-        return fp(py, &target, args);
+    args_fallback: Vec<PyObject>,
+    fast: F,
+) -> PyResult<PyObject>
+where
+    F: FnOnce(&InvokeFns, Python<'_>, &PyObject) -> Option<PyResult<PyObject>>,
+{
+    let this = pfn.bind(py).get();
+    match this.resolve(py, &target)? {
+        Some(fns) => match fast(fns.as_ref(), py, &target) {
+            Some(r) => r,
+            None => match dispatch_on_fns(py, fns.as_ref(), target, args_fallback) {
+                Some(r) => r,
+                None => Err(this.raise_no_impl(py, &py.None())),
+            },
+        },
+        None => dispatch_fallback_miss(py, pfn, target, args_fallback),
     }
-    Err(crate::exceptions::IllegalArgumentException::new_err(format!(
-        "Protocol method {} of protocol {}: no impl for arity {}",
-        this.name, this.protocol_name, args.len()
-    )))
 }
 
 fn dispatch_fallback_miss(
     py: Python<'_>,
-    this: &ProtocolFn,
+    pfn: &Py<ProtocolFn>,
     target: PyObject,
     args: Vec<PyObject>,
 ) -> PyResult<PyObject> {
-    // Fall through to the old-style Protocol dispatch so fallback-installed
-    // impls (e.g. Counted's __len__ path for str) keep working.
-    if let Some(old_proto) = get_old_protocol(py, &this.protocol_name) {
-        let method_key: Arc<str> = Arc::from(this.name.as_str());
-        let rest_tup = pyo3::types::PyTuple::new(py, &args)?;
-        return crate::dispatch::dispatch(py, &old_proto, &method_key, target, rest_tup);
+    // Post-Phase-4: all dispatch is ProtocolFn-native. Miss path is:
+    //   1. lazy legacy mirror: if the old Protocol's MethodCache has an
+    //      impl for this (type, method) — typically from a Python-side
+    //      `Protocol.extend_type` call — install it into this ProtocolFn's
+    //      `generic` slot (marked promoted so future legacy re-extensions
+    //      invalidate it via epoch) and retry. Direct extensions beat
+    //      metadata.
+    //   2. extend-via-metadata (if opt-in): look up __clj_meta__[method]
+    //      and call with (target, *args) — does NOT populate the cache.
+    //   3. protocol-level fallback closure (if set): gets one shot to
+    //      populate the typed cache, then we re-resolve and retry.
+    //   4. raise "no impl".
+    let this = pfn.bind(py).get();
+
+    let old_proto_opt = get_old_protocol(py, &this.protocol_name);
+
+    // Step 1: lazy legacy mirror.
+    if let Some(ref old_proto) = old_proto_opt {
+        if let Some(result) = try_legacy_mirror(py, this, old_proto, &target, &args)? {
+            return result;
+        }
     }
-    Err(this.raise_no_impl(py, &target))
+
+    // Step 2: extend-via-metadata.
+    if let Some(ref old_proto) = old_proto_opt {
+        if old_proto.bind(py).get().via_metadata {
+            if let Ok(meta) = target.bind(py).getattr("__clj_meta__") {
+                if let Ok(meta_dict) = meta.cast::<pyo3::types::PyDict>() {
+                    if let Some(impl_fn) = meta_dict.get_item(this.name.as_str())? {
+                        let mut call_args: Vec<PyObject> = Vec::with_capacity(args.len() + 1);
+                        call_args.push(target);
+                        call_args.extend(args);
+                        let tup = pyo3::types::PyTuple::new(py, &call_args)?;
+                        return Ok(impl_fn.call1(tup)?.unbind());
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: protocol-level fallback closure.
+    let old_proto = match old_proto_opt {
+        Some(p) => p,
+        None => return Err(this.raise_no_impl(py, &target)),
+    };
+    let proto_ref = old_proto.bind(py).get();
+    let fb = match proto_ref.fallback.read().as_ref() {
+        Some(f) => f.clone_ref(py),
+        None => return Err(this.raise_no_impl(py, &target)),
+    };
+    let fb_args = (
+        old_proto.clone_ref(py),
+        this.name.clone(),
+        target.clone_ref(py),
+    );
+    let _ = fb.bind(py).call1(fb_args)?;
+
+    // Re-resolve — fallback should have populated the typed cache.
+    let fns = match this.resolve(py, &target)? {
+        Some(f) => f,
+        None => {
+            // Fallback may have populated only the legacy cache. Try one
+            // more lazy legacy mirror before giving up.
+            if let Some(result) = try_legacy_mirror(py, this, &old_proto, &target, &args)? {
+                return result;
+            }
+            return Err(this.raise_no_impl(py, &target));
+        }
+    };
+    let target_clone = target.clone_ref(py);
+    match dispatch_on_fns(py, &*fns, target, args) {
+        Some(r) => r,
+        None => Err(this.raise_no_impl(py, &target_clone)),
+    }
+}
+
+/// Look up an impl in the legacy cache for `target`'s type (exact + MRO).
+/// If found, call it directly with (target, *args) — no caching, so that
+/// concurrent `Protocol.extend_type` re-extensions are visible on the
+/// next dispatch. The typed-fn-pointer fast path stays cached; only this
+/// legacy-mirrored fallback runs an uncached lookup per call.
+fn try_legacy_mirror(
+    py: Python<'_>,
+    this: &ProtocolFn,
+    old_proto: &Py<crate::protocol::Protocol>,
+    target: &PyObject,
+    args: &[PyObject],
+) -> PyResult<Option<PyResult<PyObject>>> {
+    let Some(impl_py) = resolve_legacy_impl(py, old_proto, target, &this.name) else {
+        return Ok(None);
+    };
+    let mut call_args: Vec<PyObject> = Vec::with_capacity(args.len() + 1);
+    call_args.push(target.clone_ref(py));
+    for a in args {
+        call_args.push(a.clone_ref(py));
+    }
+    let tup = match pyo3::types::PyTuple::new(py, &call_args) {
+        Ok(t) => t,
+        Err(e) => return Ok(Some(Err(e))),
+    };
+    let _ = this; // silence unused warning
+    Ok(Some(impl_py.bind(py).call1(tup).map(|b| b.unbind())))
+}
+
+/// Walk the legacy MethodCache for `(type, method)` — exact type first,
+/// then MRO. Returns the first matching impl (a `Py<PyAny>` callable).
+fn resolve_legacy_impl(
+    py: Python<'_>,
+    old_proto: &Py<crate::protocol::Protocol>,
+    target: &PyObject,
+    method: &str,
+) -> Option<PyObject> {
+    let proto_ref = old_proto.bind(py).get();
+    let ty = target.bind(py).get_type();
+    let exact_key = crate::protocol::CacheKey::for_py_type(&ty);
+    if let Some(impl_py) = proto_ref.lookup_legacy_impl(py, exact_key, method) {
+        return Some(impl_py);
+    }
+    let mro = ty.getattr("__mro__").ok()?;
+    let mro_tuple: pyo3::Bound<'_, PyTuple> = mro.cast_into().ok()?;
+    for parent in mro_tuple.iter().skip(1) {
+        let parent_ty: pyo3::Bound<'_, PyType> = parent.cast_into().ok()?;
+        let pk = crate::protocol::CacheKey::for_py_type(&parent_ty);
+        if let Some(impl_py) = proto_ref.lookup_legacy_impl(py, pk, method) {
+            return Some(impl_py);
+        }
+    }
+    None
+}
+
+/// Pure arity dispatch on a resolved InvokeFns — no cache lookup, no
+/// fallback. Returns `Some(result)` if any slot matches (typed arity,
+/// variadic, or generic Py<PyAny>); `None` only if nothing fits.
+fn dispatch_on_fns(
+    py: Python<'_>,
+    fns: &InvokeFns,
+    target: PyObject,
+    mut args: Vec<PyObject>,
+) -> Option<PyResult<PyObject>> {
+    macro_rules! dispatch_n {
+        ($fns_field:ident, $($arg:ident),*) => {
+            match fns.$fns_field {
+                Some(fp) => {
+                    $(let $arg = args.pop().unwrap();)*
+                    Some(dispatch_n!(@reverse_call fp, py, target, [], $($arg),*))
+                }
+                None => match fns.invoke_variadic {
+                    Some(fp) => Some(fp(py, &target, args)),
+                    None => dispatch_generic(py, fns, target, args),
+                }
+            }
+        };
+        (@reverse_call $fp:ident, $py:ident, $tgt:ident, [$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
+            dispatch_n!(@reverse_call $fp, $py, $tgt, [$head $(, $acc)*], $($rest),*)
+        };
+        (@reverse_call $fp:ident, $py:ident, $tgt:ident, [$($acc:ident),*],) => {
+            $fp($py, &$tgt, $($acc),*)
+        };
+    }
+    match args.len() {
+        0  => match fns.invoke0 {
+            Some(fp) => Some(fp(py, &target)),
+            None => match fns.invoke_variadic {
+                Some(fp) => Some(fp(py, &target, args)),
+                None => dispatch_generic(py, fns, target, args),
+            }
+        },
+        1  => dispatch_n!(invoke1,  a),
+        2  => dispatch_n!(invoke2,  a, b),
+        3  => dispatch_n!(invoke3,  a, b, c),
+        4  => dispatch_n!(invoke4,  a, b, c, d),
+        5  => dispatch_n!(invoke5,  a, b, c, d, e),
+        6  => dispatch_n!(invoke6,  a, b, c, d, e, f),
+        7  => dispatch_n!(invoke7,  a, b, c, d, e, f, g),
+        8  => dispatch_n!(invoke8,  a, b, c, d, e, f, g, h),
+        9  => dispatch_n!(invoke9,  a, b, c, d, e, f, g, h, i),
+        10 => dispatch_n!(invoke10, a, b, c, d, e, f, g, h, i, j),
+        11 => dispatch_n!(invoke11, a, b, c, d, e, f, g, h, i, j, k),
+        12 => dispatch_n!(invoke12, a, b, c, d, e, f, g, h, i, j, k, l),
+        13 => dispatch_n!(invoke13, a, b, c, d, e, f, g, h, i, j, k, l, mm),
+        14 => dispatch_n!(invoke14, a, b, c, d, e, f, g, h, i, j, k, l, mm, n),
+        15 => dispatch_n!(invoke15, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o),
+        16 => dispatch_n!(invoke16, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p),
+        17 => dispatch_n!(invoke17, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q),
+        18 => dispatch_n!(invoke18, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r),
+        19 => dispatch_n!(invoke19, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r, s),
+        20 => dispatch_n!(invoke20, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r, s, t),
+        _  => match fns.invoke_variadic {
+            Some(fp) => Some(fp(py, &target, args)),
+            None => dispatch_generic(py, fns, target, args),
+        }
+    }
+}
+
+/// Helper: if `fns.generic` holds a Py<PyAny> impl, call it with
+/// (target, *args) via CPython tp_call. Otherwise `None`.
+fn dispatch_generic(
+    py: Python<'_>,
+    fns: &InvokeFns,
+    target: PyObject,
+    args: Vec<PyObject>,
+) -> Option<PyResult<PyObject>> {
+    let Some(generic_fn) = &fns.generic else { return None; };
+    let mut call_args: Vec<PyObject> = Vec::with_capacity(args.len() + 1);
+    call_args.push(target);
+    call_args.extend(args);
+    let tup = match pyo3::types::PyTuple::new(py, &call_args) {
+        Ok(t) => t,
+        Err(e) => return Some(Err(e)),
+    };
+    Some(generic_fn.bind(py).call1(tup).map(|b| b.unbind()))
 }
 
 /// Register a ProtocolFn under (protocol_name, method_name). Overwrites any
@@ -251,7 +459,6 @@ pub type InvokeFn19 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, Py
 pub type InvokeFn20 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
 pub type InvokeFnVariadic = fn(Python<'_>, &PyObject, Vec<PyObject>) -> PyResult<PyObject>;
 
-#[derive(Clone)]
 pub struct InvokeFns {
     pub invoke0:  Option<InvokeFn0>,
     pub invoke1:  Option<InvokeFn1>,
@@ -275,6 +482,11 @@ pub struct InvokeFns {
     pub invoke19: Option<InvokeFn19>,
     pub invoke20: Option<InvokeFn20>,
     pub invoke_variadic: Option<InvokeFnVariadic>,
+    /// Catch-all for runtime-registered impls (e.g. `(extend-type T P ...)`
+    /// from Clojure code) where the impl is a `Py<PyAny>` callable rather
+    /// than a typed fn pointer. When set AND the matching arity slot is
+    /// None, dispatch calls this via CPython `call1(target, *args)`.
+    pub generic: Option<Py<pyo3::types::PyAny>>,
     /// Epoch at install time — if this entry was promoted by an MRO walk
     /// and the protocol's epoch has since advanced (re-extension of some
     /// type), the entry is treated as stale.
@@ -293,8 +505,28 @@ impl InvokeFns {
             invoke15: None, invoke16: None, invoke17: None, invoke18: None, invoke19: None,
             invoke20: None,
             invoke_variadic: None,
+            generic: None,
             epoch: 0,
             promoted: false,
+        }
+    }
+
+    /// Clone-with-GIL: `Py<PyAny>` doesn't implement `Clone` directly,
+    /// so fn-pointer fields are copied bitwise and the Py<PyAny> is
+    /// cloned via `clone_ref`.
+    pub fn clone_with_gil(&self, py: Python<'_>) -> Self {
+        Self {
+            invoke0: self.invoke0, invoke1: self.invoke1, invoke2: self.invoke2,
+            invoke3: self.invoke3, invoke4: self.invoke4, invoke5: self.invoke5,
+            invoke6: self.invoke6, invoke7: self.invoke7, invoke8: self.invoke8,
+            invoke9: self.invoke9, invoke10: self.invoke10, invoke11: self.invoke11,
+            invoke12: self.invoke12, invoke13: self.invoke13, invoke14: self.invoke14,
+            invoke15: self.invoke15, invoke16: self.invoke16, invoke17: self.invoke17,
+            invoke18: self.invoke18, invoke19: self.invoke19, invoke20: self.invoke20,
+            invoke_variadic: self.invoke_variadic,
+            generic: self.generic.as_ref().map(|g| g.clone_ref(py)),
+            epoch: self.epoch,
+            promoted: self.promoted,
         }
     }
 }
@@ -350,7 +582,7 @@ impl ProtocolFn {
                 let parent_fns = Arc::clone(entry.value());
                 drop(entry);
                 // Promote: install a copy at exact_key stamped with current epoch.
-                let mut promoted_fns = (*parent_fns).clone();
+                let mut promoted_fns = parent_fns.clone_with_gil(py);
                 promoted_fns.epoch = current_epoch;
                 promoted_fns.promoted = true;
                 let promoted = Arc::new(promoted_fns);
@@ -398,11 +630,11 @@ impl ProtocolFn {
     /// Rust-side entry point. Called by `rt::invoke_n_owned` when target
     /// is a ProtocolFn. Takes ownership of `args`.
     ///
-    /// On typed-table miss, falls through to the old-style Protocol (looked
-    /// up by name in the global registry) so fallback-installed impls and
-    /// any protocol not yet migrated to the typed path still dispatch
-    /// correctly. This fallback is what makes Phase 3's binding-flip safe
-    /// even for protocols with dynamic fallbacks like `Counted::__len__`.
+    /// On typed-table miss, consults the declaring protocol's fallback
+    /// closure (if any). The fallback's job is to populate the typed
+    /// cache for the encountered type; after it runs, we retry once. If
+    /// the fallback is absent or didn't populate a matching entry, we
+    /// raise "no impl".
     pub fn dispatch_owned(
         slf: Py<Self>,
         py: Python<'_>,
@@ -412,31 +644,7 @@ impl ProtocolFn {
         let this = slf.bind(py).get();
         let fns = match this.resolve(py, &target)? {
             Some(f) => f,
-            None => {
-                // Fall through to the old Protocol, if one was registered
-                // under the same protocol name. This covers fallback-driven
-                // impls (Counted's __len__, etc.) and anything else still
-                // living on the old path.
-                if let Some(old_proto) = get_old_protocol(py, &this.protocol_name) {
-                    let method_key: Arc<str> = Arc::from(this.name.as_str());
-                    let mut tup_items: Vec<PyObject> =
-                        Vec::with_capacity(args.len() + 1);
-                    tup_items.push(target.clone_ref(py));
-                    tup_items.append(&mut args);
-                    // The old dispatch takes args as a PyTuple (excluding
-                    // target, which is passed separately).
-                    let rest = &tup_items[1..];
-                    let rest_tup = pyo3::types::PyTuple::new(py, rest)?;
-                    return crate::dispatch::dispatch(
-                        py,
-                        &old_proto,
-                        &method_key,
-                        target,
-                        rest_tup,
-                    );
-                }
-                return Err(this.raise_no_impl(py, &target));
-            }
+            None => return dispatch_fallback_miss(py, &slf, target, args),
         };
         // Arity-specialized dispatch. Each match arm: if the corresponding
         // typed fn pointer is present, drain the right number of args from
@@ -501,15 +709,16 @@ impl ProtocolFn {
         target: PyObject,
         args: Vec<PyObject>,
     ) -> PyResult<PyObject> {
-        match fns.invoke_variadic {
-            Some(fp) => fp(py, &target, args),
-            None => Err(IllegalArgumentException::new_err(format!(
-                "Protocol method {} of protocol {}: no impl for arity {}",
-                self.name,
-                self.protocol_name,
-                args.len()
-            ))),
+        if let Some(fp) = fns.invoke_variadic {
+            return fp(py, &target, args);
         }
+        if let Some(r) = dispatch_generic(py, fns, target, args) {
+            return r;
+        }
+        Err(IllegalArgumentException::new_err(format!(
+            "Protocol method {} of protocol {}: no impl",
+            self.name, self.protocol_name,
+        )))
     }
 }
 

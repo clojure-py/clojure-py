@@ -69,7 +69,19 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
             impls.set_item("coll_reduce1", &reduce1_wrapper)?;
             impls.set_item("coll_reduce2", &reduce2_wrapper)?;
             let ty = target.get_type();
-            proto.get().extend_type(py, ty, impls)?;
+            proto.get().extend_type(py, ty.clone(), impls)?;
+            // Populate the typed ProtocolFn caches for both arities so
+            // subsequent calls take the fast path.
+            if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "CollReduce", "coll_reduce1") {
+                let mut fns = crate::protocol_fn::InvokeFns::empty();
+                fns.invoke1 = Some(fallback_coll_reduce1_thunk as crate::protocol_fn::InvokeFn1);
+                pfn.bind(py).get().extend_with_native(ty.clone(), fns);
+            }
+            if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "CollReduce", "coll_reduce2") {
+                let mut fns = crate::protocol_fn::InvokeFns::empty();
+                fns.invoke2 = Some(fallback_coll_reduce2_thunk as crate::protocol_fn::InvokeFn2);
+                pfn.bind(py).get().extend_with_native(ty, fns);
+            }
 
             Ok(py.None())
         },
@@ -77,6 +89,25 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
 
     proto.call_method1("set_fallback", (fallback.unbind().into_any(),))?;
     Ok(())
+}
+
+/// Typed thunk for the seq-walk CollReduce/coll_reduce1 fallback.
+fn fallback_coll_reduce1_thunk(
+    py: Python<'_>,
+    target: &Py<PyAny>,
+    f: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    fallback_reduce1(py, target.clone_ref(py), f)
+}
+
+/// Typed thunk for the seq-walk CollReduce/coll_reduce2 fallback.
+fn fallback_coll_reduce2_thunk(
+    py: Python<'_>,
+    target: &Py<PyAny>,
+    f: Py<PyAny>,
+    init: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    fallback_reduce2(py, target.clone_ref(py), f, init)
 }
 
 /// Seq-walking reducer with chunked-seq fast-path. Used both by the fallback

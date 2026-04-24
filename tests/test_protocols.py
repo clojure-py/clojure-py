@@ -8,7 +8,7 @@ Rust-defined ones — exact PyType lookup → MRO walk → optional
 
 import sys
 import pytest
-from clojure._core import eval_string, Protocol, ProtocolMethod
+from clojure._core import eval_string, Protocol, ProtocolFn
 
 
 def _ev(s):
@@ -32,14 +32,14 @@ def test_defprotocol_creates_protocol_instance():
 def test_defprotocol_creates_method_dispatcher():
     _ev("(defprotocol PB (bar [x]))")
     m = _ev("bar")
-    assert isinstance(m, ProtocolMethod)
+    assert isinstance(m, ProtocolFn)
 
 
 def test_defprotocol_multiple_methods():
     _ev("(defprotocol PC (m1 [x]) (m2 [x y]) (m3 [x y z]))")
-    assert isinstance(_ev("m1"), ProtocolMethod)
-    assert isinstance(_ev("m2"), ProtocolMethod)
-    assert isinstance(_ev("m3"), ProtocolMethod)
+    assert isinstance(_ev("m1"), ProtocolFn)
+    assert isinstance(_ev("m2"), ProtocolFn)
+    assert isinstance(_ev("m3"), ProtocolFn)
 
 
 def test_defprotocol_with_docstring():

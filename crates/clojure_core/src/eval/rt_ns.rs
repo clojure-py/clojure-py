@@ -3441,7 +3441,22 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
                 cur = crate::rt::next_(py, cur)?;
             }
         }
-        proto.get().extend_type(py, ty.clone(), d)?;
+        // Old path: keep populating the Protocol's shared cache so any
+        // remaining `dispatch::dispatch` callers still work.
+        proto.get().extend_type(py, ty.clone(), d.clone())?;
+        // New path: for each (method, impl_fn), stash the impl in the
+        // corresponding ProtocolFn's `generic` slot. dispatch_on_fns
+        // calls it via CPython call1(target, *args) when typed slots
+        // are absent.
+        let proto_name: String = proto.get().name.bind(py).get().name.to_string();
+        for (k, v) in d.iter() {
+            let method_key: String = k.extract()?;
+            if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, &proto_name, &method_key) {
+                let mut fns = crate::protocol_fn::InvokeFns::empty();
+                fns.generic = Some(v.unbind());
+                pfn.bind(py).get().extend_with_native(ty.clone(), fns);
+            }
+        }
         Ok(py.None())
     })?;
 
