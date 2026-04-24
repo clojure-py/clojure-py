@@ -263,8 +263,14 @@ pub fn conj(py: Python<'_>, coll: PyObject, x: PyObject) -> PyResult<PyObject> {
     crate::dispatch::dispatch(py, proto, &CONJ_KEY, coll, args)
 }
 
-/// `(assoc coll k v)` — dispatches through Associative.
+/// `(assoc coll k v)` — dispatches through Associative. `nil` coll
+/// yields a fresh 1-entry map, matching vanilla `(assoc nil :a 1)` → `{:a 1}`.
 pub fn assoc(py: Python<'_>, coll: PyObject, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+    if coll.is_none(py) {
+        let mut m = crate::collections::phashmap::PersistentHashMap::new_empty();
+        m = m.assoc_internal(py, k, v)?;
+        return Ok(Py::new(py, m)?.into_any());
+    }
     let proto = ASSOC_PROTO.get().expect("rt::assoc called before rt::init");
     let args = PyTuple::new(py, &[k, v])?;
     crate::dispatch::dispatch(py, proto, &ASSOC_KEY, coll, args)
