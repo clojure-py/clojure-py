@@ -1,3 +1,13 @@
+# Baselines
+
+Stored:
+- `baseline-b733884.json` — original.
+- `baseline-deref-fast.json` — after inlining Var::deref_fast from the
+  VM (commit tbd). Uniform −20% across the suite; some hot benches
+  down ~34% (see diff.py output for per-bench deltas).
+
+Annotated analysis of the **original** baseline follows.
+
 # Baseline — b733884 (2026-04-23)
 
 Full-matrix tests: 1714 passing on linux-x64, linux-arm64, macos-arm64.

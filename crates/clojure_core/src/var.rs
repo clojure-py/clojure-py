@@ -273,7 +273,9 @@ impl Var {
     }
 
     /// Like `deref`, but callable from Rust code without a `Py<Self>`.
-    /// Returns the root, or IllegalStateException if unbound.
+    /// Returns the root, or IllegalStateException if unbound. Does NOT
+    /// consult the dynamic-binding stack — callers that need full `@v`
+    /// semantics should use `deref_fast` instead.
     fn deref_raw(&self, py: Python<'_>) -> PyResult<PyObject> {
         match (**self.root.load()).as_ref() {
             Some(v) => Ok(v.clone_ref(py)),
@@ -283,6 +285,22 @@ impl Var {
                 self.sym_name(py)?
             ))),
         }
+    }
+
+    /// Rust-side fast path equivalent to `Var.deref()` — checks the
+    /// dynamic-binding stack for dynamic Vars, then falls through to
+    /// the root. Bypasses `call_method0("deref")` so VM `Op::Deref`
+    /// doesn't pay CPython attribute-lookup overhead per hit.
+    pub fn deref_fast(slf: &Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let this = slf.bind(py).get();
+        if this.dynamic.load(Ordering::Acquire) {
+            // Dynamic path — consult the bound thread's stack.
+            let key: Py<PyAny> = slf.clone_ref(py).into_any();
+            if let Some(v) = crate::binding::lookup_binding(py, &key) {
+                return Ok(v);
+            }
+        }
+        this.deref_raw(py)
     }
     fn ns_name(&self, py: Python<'_>) -> PyResult<String> {
         // Anonymous Vars (created via `Var::create` for `with-local-vars`)

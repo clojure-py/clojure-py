@@ -129,7 +129,9 @@ pub fn run(
                     let var = pool.vars.get(*ix as usize).ok_or_else(|| {
                         errors::err(format!("Deref: invalid var index {}", ix))
                     })?;
-                    let v = var.bind(py).call_method0("deref")?.unbind();
+                    // Direct Rust call — avoids the CPython `call_method0`
+                    // dispatch that used to dominate Var::deref in hot loops.
+                    let v = crate::var::Var::deref_fast(var, py)?;
                     stack.push(v);
                     pc += 1;
                 }

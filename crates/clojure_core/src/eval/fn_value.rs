@@ -103,6 +103,26 @@ impl Fn {
     fn __repr__(&self) -> String {
         format!("#<Fn {}>", self.name.as_deref().unwrap_or("anonymous"))
     }
+
+    /// Return a list of "<pc>: <op-dbg>" strings for each method body.
+    /// Layout: {arity -> ["0: Op1", ...]}. Variadic methods are keyed on
+    /// `"variadic-<arity>"`. Useful for bench / perf analysis.
+    fn dump_code(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = pyo3::types::PyDict::new(py);
+        for m in &self.methods {
+            let lines: Vec<String> = m.code.iter().enumerate()
+                .map(|(pc, op)| format!("{}: {:?}", pc, op))
+                .collect();
+            d.set_item(format!("{}", m.arity), lines)?;
+        }
+        if let Some(v) = &self.variadic {
+            let lines: Vec<String> = v.code.iter().enumerate()
+                .map(|(pc, op)| format!("{}: {:?}", pc, op))
+                .collect();
+            d.set_item(format!("variadic-{}", v.arity), lines)?;
+        }
+        Ok(d.unbind().into_any())
+    }
 }
 
 #[implements(IFn)]
