@@ -111,6 +111,21 @@ pub fn get(py: Python<'_>, coll: PyObject, k: PyObject, default: PyObject) -> Py
 /// types hit the fast path, and arbitrary Python callables go through the
 /// built-in IFn fallback registered at module init.
 pub fn invoke_n(py: Python<'_>, target: PyObject, args: &[PyObject]) -> PyResult<PyObject> {
+    // Fast path: a ProtocolFn dispatches through its typed per-type table
+    // directly — skips IFn protocol cache + double PyTuple allocation.
+    if let Ok(pf) = target.bind(py).downcast::<crate::protocol_fn::ProtocolFn>() {
+        let pf_py: Py<crate::protocol_fn::ProtocolFn> = pf.clone().unbind();
+        if args.is_empty() {
+            return Err(crate::exceptions::IllegalArgumentException::new_err(format!(
+                "Protocol method {} requires at least one arg (the target)",
+                pf_py.bind(py).get().name
+            )));
+        }
+        let target_arg = args[0].clone_ref(py);
+        let rest: Vec<PyObject> = args[1..].iter().map(|o| o.clone_ref(py)).collect();
+        return crate::protocol_fn::ProtocolFn::dispatch_owned(pf_py, py, target_arg, rest);
+    }
+
     let proto = IFN_PROTO
         .get()
         .expect("rt::invoke_n called before rt::init — check pymodule init order");
@@ -130,8 +145,23 @@ pub fn invoke_n(py: Python<'_>, target: PyObject, args: &[PyObject]) -> PyResult
 pub fn invoke_n_owned(
     py: Python<'_>,
     target: PyObject,
-    args: Vec<PyObject>,
+    mut args: Vec<PyObject>,
 ) -> PyResult<PyObject> {
+    // Fast path: target is a ProtocolFn — dispatch through its typed
+    // table directly, skipping the IFn protocol cache + two PyTuple
+    // allocations + the name-keyed method lookup.
+    if let Ok(pf) = target.bind(py).downcast::<crate::protocol_fn::ProtocolFn>() {
+        let pf_py: Py<crate::protocol_fn::ProtocolFn> = pf.clone().unbind();
+        if args.is_empty() {
+            return Err(crate::exceptions::IllegalArgumentException::new_err(format!(
+                "Protocol method {} requires at least one arg (the target)",
+                pf_py.bind(py).get().name
+            )));
+        }
+        let target_arg = args.remove(0);
+        return crate::protocol_fn::ProtocolFn::dispatch_owned(pf_py, py, target_arg, args);
+    }
+
     let proto = IFN_PROTO
         .get()
         .expect("rt::invoke_n_owned called before rt::init — check pymodule init order");
