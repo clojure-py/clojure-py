@@ -32,3 +32,13 @@ def test_repr_marker_protocol():
     # Via-metadata flag set; still no impls, same rendering.
     pf = ProtocolFn("seq", "ISeqable", True)
     assert repr(pf) == "#<ProtocolFn ISeqable/seq>"
+
+
+def test_native_extend_api_reachable():
+    # P2.1 adds extend_with_native + registry. A direct Python-facing
+    # exercise of extend_with_native requires typed fn-pointers that only
+    # the macro-generated thunks produce — the real tests live in
+    # test_protocol_fn_macros.py (added in P2.4). This placeholder just
+    # confirms the module imports cleanly after the rebuild.
+    pf = ProtocolFn("test", "Proto", False)
+    assert pf is not None

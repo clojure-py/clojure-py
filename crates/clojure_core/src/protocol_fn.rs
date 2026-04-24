@@ -20,6 +20,45 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 type PyObject = Py<PyAny>;
 
+/// Global registry: (protocol_name, method_name) -> ProtocolFn instance.
+/// Populated by the `#[protocol]` proc-macro at module init. `#[implements]`
+/// looks up the right ProtocolFn via this map when registering typed impls.
+static PROTOCOL_FN_REGISTRY: once_cell::sync::OnceCell<
+    DashMap<(Arc<str>, Arc<str>), Py<ProtocolFn>>,
+> = once_cell::sync::OnceCell::new();
+
+fn registry() -> &'static DashMap<(Arc<str>, Arc<str>), Py<ProtocolFn>> {
+    PROTOCOL_FN_REGISTRY.get_or_init(DashMap::new)
+}
+
+/// Register a ProtocolFn under (protocol_name, method_name). Overwrites any
+/// prior entry — module re-init shouldn't happen in a single process, but
+/// idempotence keeps the API cheap rather than erroring.
+pub fn register_protocol_fn(
+    protocol_name: &str,
+    method_name: &str,
+    pfn: Py<ProtocolFn>,
+) {
+    registry().insert(
+        (Arc::from(protocol_name), Arc::from(method_name)),
+        pfn,
+    );
+}
+
+/// Look up a ProtocolFn by (protocol_name, method_name). Returns None if the
+/// declaration hasn't been registered yet — the expected steady-state is
+/// that every `#[implements]` call finds its ProtocolFn here, because the
+/// `#[protocol]` macro populated the registry earlier in module init.
+pub fn get_protocol_fn(
+    py: Python<'_>,
+    protocol_name: &str,
+    method_name: &str,
+) -> Option<Py<ProtocolFn>> {
+    registry()
+        .get(&(Arc::from(protocol_name), Arc::from(method_name)))
+        .map(|e| e.value().clone_ref(py))
+}
+
 /// Arity-specialized function-pointer table. One of these is stored per
 /// `(ProtocolFn, type)` pair. `None` for an arity means "the impl doesn't
 /// accept that many args" — dispatch then falls through to
@@ -145,6 +184,21 @@ impl ProtocolFn {
             "No implementation of method: {} of protocol: {} found for class: {}",
             self.name, self.protocol_name, ty_repr
         ))
+    }
+
+    /// Install a typed impl in the dispatch table. Overwrites any prior
+    /// entry for this type — direct extensions are authoritative.
+    /// Bumps the epoch so any previously-promoted MRO entries become stale.
+    pub fn extend_with_native(
+        &self,
+        ty: pyo3::Bound<'_, pyo3::types::PyType>,
+        mut fns: InvokeFns,
+    ) {
+        let epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        fns.epoch = epoch;
+        fns.promoted = false;
+        let key = CacheKey::for_py_type(&ty);
+        self.cache.insert(key, Arc::new(fns));
     }
 
     /// Rust-side entry point. Called by `rt::invoke_n_owned` when target
