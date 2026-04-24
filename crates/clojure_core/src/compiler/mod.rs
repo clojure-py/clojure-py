@@ -1,13 +1,15 @@
 //! Bytecode compiler: AST (read-forms) → Op stream.
 //!
-//! Pipeline: macroexpand → analyze → emit.
+//! Pipeline: macroexpand → emit. Analysis and code generation are fused
+//! in `emit.rs` (no separate AST phase).
 
 pub mod op;
 pub mod pool;
 pub mod method;
-pub mod analyzer;
 pub mod emit;
 pub mod letfn_cell;
+pub mod peephole;
+pub mod capture_analysis;
 
 use crate::compiler::emit::Compiler;
 use crate::compiler::method::CompiledMethod;
