@@ -643,29 +643,29 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // (chunk-first s) / (chunk-rest s) / (chunk-next s) — IChunkedSeq helpers.
     intern_fn(py, &rt_ns, "chunk-first", |args, py| {
         need_args(args, 1, "chunk-first")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IChunkedSeq")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("chunked_first");
-        let empty_args = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, args.get_item(0)?.unbind(), empty_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "IChunkedSeq", "chunked_first",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     intern_fn(py, &rt_ns, "chunk-rest", |args, py| {
         need_args(args, 1, "chunk-rest")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IChunkedSeq")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("chunked_more");
-        let empty_args = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, args.get_item(0)?.unbind(), empty_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "IChunkedSeq", "chunked_more",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     intern_fn(py, &rt_ns, "chunk-next", |args, py| {
         need_args(args, 1, "chunk-next")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IChunkedSeq")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("chunked_next");
-        let empty_args = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, args.get_item(0)?.unbind(), empty_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "IChunkedSeq", "chunked_next",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // (chunk-cons chunk rest) — if chunk empty return rest, else build ChunkedCons.
@@ -696,19 +696,19 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     intern_fn(py, &rt_ns, "coll-reduce", |args, py| {
         let coll = args.get_item(0)?.unbind();
         let f = args.get_item(1)?.unbind();
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("CollReduce")?.cast::<crate::Protocol>()?.clone().unbind();
         match args.len() {
             2 => {
-                let key: std::sync::Arc<str> = std::sync::Arc::from("coll_reduce1");
-                let call_args = PyTuple::new(py, &[f])?;
-                crate::dispatch::dispatch(py, &proto, &key, coll, call_args)
+                static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+                crate::protocol_fn::dispatch_cached_2(
+                    py, &PFN, "CollReduce", "coll_reduce1", coll, f,
+                )
             }
             3 => {
                 let init = args.get_item(2)?.unbind();
-                let key: std::sync::Arc<str> = std::sync::Arc::from("coll_reduce2");
-                let call_args = PyTuple::new(py, &[f, init])?;
-                crate::dispatch::dispatch(py, &proto, &key, coll, call_args)
+                static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+                crate::protocol_fn::dispatch_cached_3(
+                    py, &PFN, "CollReduce", "coll_reduce2", coll, f, init,
+                )
             }
             _ => Err(IllegalArgumentException::new_err("coll-reduce: 2 or 3 args")),
         }
@@ -717,14 +717,13 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // (kv-reduce coll f init)
     intern_fn(py, &rt_ns, "kv-reduce", |args, py| {
         need_args(args, 3, "kv-reduce")?;
-        let coll = args.get_item(0)?.unbind();
-        let f = args.get_item(1)?.unbind();
-        let init = args.get_item(2)?.unbind();
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IKVReduce")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("kv_reduce");
-        let call_args = PyTuple::new(py, &[f, init])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_3(
+            py, &PFN, "IKVReduce", "kv_reduce",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+            args.get_item(2)?.unbind(),
+        )
     })?;
 
     // --- Arithmetic 2-arg primitives. Python's operator dispatch handles
@@ -890,14 +889,13 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // the Clojure-level `reduce1` and any other chunk-at-a-time consumer.
     intern_fn(py, &rt_ns, "chunk-reduce", |args, py| {
         need_args(args, 3, "chunk-reduce")?;
-        let chunk = args.get_item(0)?.unbind();
-        let f = args.get_item(1)?.unbind();
-        let init = args.get_item(2)?.unbind();
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IChunk")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("chunk_reduce");
-        let call_args = PyTuple::new(py, &[f, init])?;
-        crate::dispatch::dispatch(py, &proto, &key, chunk, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_3(
+            py, &PFN, "IChunk", "chunk_reduce",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+            args.get_item(2)?.unbind(),
+        )
     })?;
 
     // --- Type predicates backed by Python isinstance. ---
@@ -970,11 +968,11 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         if coll.is_none(py) {
             return Ok(false_py(py));
         }
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("Associative")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("contains_key");
-        let call_args = PyTuple::new(py, &[args.get_item(1)?.unbind()])?;
-        match crate::dispatch::dispatch(py, &proto, &key, coll, call_args) {
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        match crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "Associative", "contains_key",
+            coll, args.get_item(1)?.unbind(),
+        ) {
             Ok(v) => Ok(v),
             // Sets should respond to contains? too; fall through if not Associative.
             Err(e) if e.is_instance_of::<IllegalArgumentException>(py) => {
@@ -994,53 +992,47 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         if coll.is_none(py) {
             return Ok(py.None());
         }
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("Associative")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("entry_at");
-        let call_args = PyTuple::new(py, &[args.get_item(1)?.unbind()])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "Associative", "entry_at",
+            coll, args.get_item(1)?.unbind(),
+        )
     })?;
 
     intern_fn(py, &rt_ns, "dissoc", |args, py| {
         need_args(args, 2, "dissoc")?;
-        let coll = args.get_item(0)?.unbind();
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IPersistentMap")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("without");
-        let call_args = PyTuple::new(py, &[args.get_item(1)?.unbind()])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "IPersistentMap", "without",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     intern_fn(py, &rt_ns, "disj", |args, py| {
         need_args(args, 2, "disj")?;
-        let coll = args.get_item(0)?.unbind();
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IPersistentSet")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("disjoin");
-        let call_args = PyTuple::new(py, &[args.get_item(1)?.unbind()])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "IPersistentSet", "disjoin",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     intern_fn(py, &rt_ns, "peek", |args, py| {
         need_args(args, 1, "peek")?;
         let coll = args.get_item(0)?.unbind();
         if coll.is_none(py) { return Ok(py.None()); }
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IPersistentStack")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("peek");
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(py, &PFN, "IPersistentStack", "peek", coll)
     })?;
 
     intern_fn(py, &rt_ns, "pop", |args, py| {
         need_args(args, 1, "pop")?;
         let coll = args.get_item(0)?.unbind();
         if coll.is_none(py) { return Ok(py.None()); }
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IPersistentStack")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("pop");
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(py, &PFN, "IPersistentStack", "pop", coll)
     })?;
 
     // (keys map) / (vals map) — walk the map yielding a seq of keys or values.
@@ -1238,12 +1230,11 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // (deref x) — dispatch through IDeref protocol.
     intern_fn(py, &rt_ns, "deref", |args, py| {
         need_args(args, 1, "deref")?;
-        let x = args.get_item(0)?.unbind();
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IDeref")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("deref");
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, x, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "IDeref", "deref",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // (swap-bang atom f & args) — forwarded to Atom::swap_bang.
@@ -1464,98 +1455,95 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     })?;
 
     // --- Transients (vanilla core.clj 3364-3430) ---
+    //
+    // Each `intern_fn` wraps a hot path; using `dispatch_cached_N` with a
+    // per-callsite `OnceCell<Py<ProtocolFn>>` skips the repeated DashMap
+    // lookup, Arc<str> allocation, PyTuple allocation, and Python `getattr`
+    // that the legacy `dispatch::dispatch` shim would do per call.
 
     // (transient coll) — IEditableCollection/as_transient.
     intern_fn(py, &rt_ns, "transient", |args, py| {
         need_args(args, 1, "transient")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("IEditableCollection")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("as_transient");
-        let coll = args.get_item(0)?.unbind();
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "IEditableCollection", "as_transient",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // (persistent! t) — ITransientCollection/persistent_bang.
     intern_fn(py, &rt_ns, "persistent-bang", |args, py| {
         need_args(args, 1, "persistent!")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("ITransientCollection")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("persistent_bang");
-        let t = args.get_item(0)?.unbind();
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, t, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "ITransientCollection", "persistent_bang",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // (conj! t x) — ITransientCollection/conj_bang.
     intern_fn(py, &rt_ns, "conj-bang", |args, py| {
         need_args(args, 2, "conj!")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("ITransientCollection")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("conj_bang");
-        let t = args.get_item(0)?.unbind();
-        let x = args.get_item(1)?.unbind();
-        let call_args = PyTuple::new(py, &[x])?;
-        crate::dispatch::dispatch(py, &proto, &key, t, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "ITransientCollection", "conj_bang",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     // (assoc! t k v) — ITransientAssociative/assoc_bang.
     intern_fn(py, &rt_ns, "assoc-bang", |args, py| {
         need_args(args, 3, "assoc!")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("ITransientAssociative")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("assoc_bang");
-        let t = args.get_item(0)?.unbind();
-        let k = args.get_item(1)?.unbind();
-        let v = args.get_item(2)?.unbind();
-        let call_args = PyTuple::new(py, &[k, v])?;
-        crate::dispatch::dispatch(py, &proto, &key, t, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_3(
+            py, &PFN, "ITransientAssociative", "assoc_bang",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+            args.get_item(2)?.unbind(),
+        )
     })?;
 
     // (dissoc! t k) — ITransientMap/dissoc_bang.
     intern_fn(py, &rt_ns, "dissoc-bang", |args, py| {
         need_args(args, 2, "dissoc!")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("ITransientMap")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("dissoc_bang");
-        let t = args.get_item(0)?.unbind();
-        let k = args.get_item(1)?.unbind();
-        let call_args = PyTuple::new(py, &[k])?;
-        crate::dispatch::dispatch(py, &proto, &key, t, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "ITransientMap", "dissoc_bang",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     // (pop! t) — ITransientVector/pop_bang.
     intern_fn(py, &rt_ns, "pop-bang", |args, py| {
         need_args(args, 1, "pop!")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("ITransientVector")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("pop_bang");
-        let t = args.get_item(0)?.unbind();
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, t, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "ITransientVector", "pop_bang",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // (disj! t k) — ITransientSet/disj_bang.
     intern_fn(py, &rt_ns, "disj-bang", |args, py| {
         need_args(args, 2, "disj!")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("ITransientSet")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("disj_bang");
-        let t = args.get_item(0)?.unbind();
-        let k = args.get_item(1)?.unbind();
-        let call_args = PyTuple::new(py, &[k])?;
-        crate::dispatch::dispatch(py, &proto, &key, t, call_args)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "ITransientSet", "disj_bang",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     // --- Reversible / rseq (vanilla 1600) ---
     intern_fn(py, &rt_ns, "rseq", |args, py| {
         need_args(args, 1, "rseq")?;
-        let proto: Py<crate::Protocol> =
-            m_ref(py)?.getattr("Reversible")?.cast::<crate::Protocol>()?.clone().unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("rseq");
-        let coll = args.get_item(0)?.unbind();
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, coll, empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "Reversible", "rseq",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // --- Numeric: num (vanilla 3503) ---
@@ -2191,64 +2179,42 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // (rseq coll) — dispatch through the Reversible protocol.
     intern_fn(py, &rt_ns, "rseq", |args, py| {
         need_args(args, 1, "rseq")?;
-        let proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("Reversible")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("rseq");
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        crate::dispatch::dispatch(py, &proto, &key, args.get_item(0)?.unbind(), empty)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "Reversible", "rseq",
+            args.get_item(0)?.unbind(),
+        )
     })?;
 
     // Sorted protocol dispatch helpers — called by subseq/rsubseq and friends.
     intern_fn(py, &rt_ns, "sorted-seq", |args, py| {
         need_args(args, 2, "sorted-seq")?;
-        let proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("Sorted")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("sorted_seq");
-        let asc = args.get_item(1)?.unbind();
-        let tup = PyTuple::new(py, &[asc])?;
-        crate::dispatch::dispatch(py, &proto, &key, args.get_item(0)?.unbind(), tup)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "Sorted", "sorted_seq",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     // Small helpers that subseq/rsubseq use.
     intern_fn(py, &rt_ns, "sorted-entry-key", |args, py| {
         need_args(args, 2, "sorted-entry-key")?;
-        let proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("Sorted")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let key_name: std::sync::Arc<str> = std::sync::Arc::from("entry_key");
-        let entry = args.get_item(1)?.unbind();
-        let tup = PyTuple::new(py, &[entry])?;
-        crate::dispatch::dispatch(py, &proto, &key_name, args.get_item(0)?.unbind(), tup)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_2(
+            py, &PFN, "Sorted", "entry_key",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+        )
     })?;
 
     // (compare-values coll a b) — compare using coll's comparator, else default.
     intern_fn(py, &rt_ns, "compare-values", |args, py| {
         need_args(args, 3, "compare-values")?;
-        let proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("Sorted")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let key_name: std::sync::Arc<str> = std::sync::Arc::from("comparator_of");
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        let comp_obj: PyObject = crate::dispatch::dispatch(
-            py,
-            &proto,
-            &key_name,
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        let comp_obj: PyObject = crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "Sorted", "comparator_of",
             args.get_item(0)?.unbind(),
-            empty,
         )?;
         let a = args.get_item(1)?.unbind();
         let b = args.get_item(2)?.unbind();
@@ -2662,16 +2628,11 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // value that doesn't implement IPending (the protocol's :default).
     intern_fn(py, &rt_ns, "realized?", |args, py| {
         need_args(args, 1, "realized?")?;
-        let x = args.get_item(0)?.unbind();
-        let proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("IPending")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let key: std::sync::Arc<str> = std::sync::Arc::from("is_realized");
-        let empty = PyTuple::new(py, &[] as &[PyObject])?;
-        match crate::dispatch::dispatch(py, &proto, &key, x, empty) {
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        match crate::protocol_fn::dispatch_cached_1(
+            py, &PFN, "IPending", "is_realized",
+            args.get_item(0)?.unbind(),
+        ) {
             Ok(v) => Ok(v),
             // Non-IPending → false (matches vanilla, which only defines
             // realized? for IPending types).
@@ -3289,17 +3250,13 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     intern_fn(py, &rt_ns, "sorted-seq-from", |args, py| {
         need_args(args, 3, "sorted-seq-from")?;
-        let proto: Py<crate::Protocol> = py
-            .import("clojure._core")?
-            .getattr("Sorted")?
-            .cast::<crate::Protocol>()?
-            .clone()
-            .unbind();
-        let key_name: std::sync::Arc<str> = std::sync::Arc::from("sorted_seq_from");
-        let k = args.get_item(1)?.unbind();
-        let asc = args.get_item(2)?.unbind();
-        let tup = PyTuple::new(py, &[k, asc])?;
-        crate::dispatch::dispatch(py, &proto, &key_name, args.get_item(0)?.unbind(), tup)
+        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+        crate::protocol_fn::dispatch_cached_3(
+            py, &PFN, "Sorted", "sorted_seq_from",
+            args.get_item(0)?.unbind(),
+            args.get_item(1)?.unbind(),
+            args.get_item(2)?.unbind(),
+        )
     })?;
 
     // --- Watches & validators on IRef-ish types (Atom / Ref / Var) ---
@@ -4733,21 +4690,23 @@ fn rt_nth(py: Python<'_>, coll: PyObject, i: PyObject, default: Option<PyObject>
     if coll.is_none(py) {
         return Ok(default.unwrap_or_else(|| py.None()));
     }
-    let proto: Py<crate::Protocol> =
-        py.import("clojure._core")?.getattr("Indexed")?.cast::<crate::Protocol>()?.clone().unbind();
-    let (key, args_t) = match &default {
+    let result = match &default {
         Some(d) => {
-            let k: std::sync::Arc<str> = std::sync::Arc::from("nth_or_default");
-            let t = PyTuple::new(py, &[i.clone_ref(py), d.clone_ref(py)])?;
-            (k, t)
+            static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+            crate::protocol_fn::dispatch_cached_3(
+                py, &PFN, "Indexed", "nth_or_default",
+                coll.clone_ref(py), i.clone_ref(py), d.clone_ref(py),
+            )
         }
         None => {
-            let k: std::sync::Arc<str> = std::sync::Arc::from("nth");
-            let t = PyTuple::new(py, &[i.clone_ref(py)])?;
-            (k, t)
+            static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+            crate::protocol_fn::dispatch_cached_2(
+                py, &PFN, "Indexed", "nth",
+                coll.clone_ref(py), i.clone_ref(py),
+            )
         }
     };
-    match crate::dispatch::dispatch(py, &proto, &key, coll.clone_ref(py), args_t) {
+    match result {
         Ok(v) => Ok(v),
         Err(e) if e.is_instance_of::<crate::exceptions::IllegalArgumentException>(py) => {
             // Fallback: seq-walk to the ith element.

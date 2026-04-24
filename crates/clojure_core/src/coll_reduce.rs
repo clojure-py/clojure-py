@@ -170,25 +170,16 @@ fn is_chunked_seq(py: Python<'_>, coll: &PyObject) -> PyResult<bool> {
 }
 
 fn chunked_first(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
-    let proto_any = py.import("clojure._core")?.getattr("IChunkedSeq")?;
-    let proto: Py<crate::Protocol> = proto_any.cast::<crate::Protocol>()?.clone().unbind();
-    let key: Arc<str> = Arc::from("chunked_first");
-    let empty = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, &proto, &key, coll, empty)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "IChunkedSeq", "chunked_first", coll)
 }
 
 fn chunked_next(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
-    let proto_any = py.import("clojure._core")?.getattr("IChunkedSeq")?;
-    let proto: Py<crate::Protocol> = proto_any.cast::<crate::Protocol>()?.clone().unbind();
-    let key: Arc<str> = Arc::from("chunked_next");
-    let empty = PyTuple::new(py, &[] as &[PyObject])?;
-    crate::dispatch::dispatch(py, &proto, &key, coll, empty)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_1(py, &PFN, "IChunkedSeq", "chunked_next", coll)
 }
 
 fn invoke_chunk_reduce(py: Python<'_>, chunk: PyObject, f: PyObject, init: PyObject) -> PyResult<PyObject> {
-    let proto_any = py.import("clojure._core")?.getattr("IChunk")?;
-    let proto: Py<crate::Protocol> = proto_any.cast::<crate::Protocol>()?.clone().unbind();
-    let key: Arc<str> = Arc::from("chunk_reduce");
-    let args = PyTuple::new(py, &[f, init])?;
-    crate::dispatch::dispatch(py, &proto, &key, chunk, args)
+    static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
+    crate::protocol_fn::dispatch_cached_3(py, &PFN, "IChunk", "chunk_reduce", chunk, f, init)
 }
