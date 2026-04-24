@@ -217,7 +217,8 @@ pub fn invoke_n_owned_cached(
     };
     let pfn_ref = pfn.bind(py).get();
 
-    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    // Raw FFI: PyTypeObject* via ob_type — skips Bound<PyType> construction.
+    let type_ptr = unsafe { pyo3::ffi::Py_TYPE(target.as_ptr()) as usize };
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
 
     // IC fast path. A resolved InvokeFns always has at least one of
@@ -268,7 +269,8 @@ pub fn invoke_var_cached_0(
             .expect("IFn/invoke0 ProtocolFn not registered")
     });
     let pfn_ref = pfn.bind(py).get();
-    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    // Raw FFI: PyTypeObject* via ob_type — skips Bound<PyType> construction.
+    let type_ptr = unsafe { pyo3::ffi::Py_TYPE(target.as_ptr()) as usize };
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
     if let Some(fp) = cache.lookup_invoke0(type_ptr, current_epoch) {
         return fp(py, &target);
@@ -289,7 +291,8 @@ pub fn invoke_var_cached_1(
             .expect("IFn/invoke1 ProtocolFn not registered")
     });
     let pfn_ref = pfn.bind(py).get();
-    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    // Raw FFI: PyTypeObject* via ob_type — skips Bound<PyType> construction.
+    let type_ptr = unsafe { pyo3::ffi::Py_TYPE(target.as_ptr()) as usize };
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
     if let Some(fp) = cache.lookup_invoke1(type_ptr, current_epoch) {
         return fp(py, &target, a);
@@ -311,7 +314,8 @@ pub fn invoke_var_cached_2(
             .expect("IFn/invoke2 ProtocolFn not registered")
     });
     let pfn_ref = pfn.bind(py).get();
-    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    // Raw FFI: PyTypeObject* via ob_type — skips Bound<PyType> construction.
+    let type_ptr = unsafe { pyo3::ffi::Py_TYPE(target.as_ptr()) as usize };
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
     if let Some(fp) = cache.lookup_invoke2(type_ptr, current_epoch) {
         return fp(py, &target, a, b);
