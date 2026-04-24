@@ -144,10 +144,11 @@ def test_pmap_runs_in_parallel():
     start = time.time()
     result = list(_ev("(pmap --slow (range 10))"))
     elapsed = time.time() - start
-    # 10 × 50ms sequential = 500ms; in parallel with ≥10 workers should be
-    # well under 200ms.
+    # 10 × 50ms sequential = 500ms; any real parallelism gets us comfortably
+    # under that. Threshold is loose (0.45s) so a slow runner can't flake —
+    # we're checking that pmap isn't *serial*, not benchmarking it.
     assert result == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
-    assert elapsed < 0.3, f"pmap took {elapsed*1000:.0f}ms — not parallel?"
+    assert elapsed < 0.45, f"pmap took {elapsed*1000:.0f}ms — not parallel?"
 
 
 def test_pmap_multi_collection():

@@ -30,8 +30,9 @@ jobs:
           # ARM64 yet — the extracted Python install is missing its stdlib
           # (`ModuleNotFoundError: encodings`). Re-add when upstream support
           # lands. Linux-arm64 still covers the ARM64 code path.
-          - { os: macos-13,         label: macos-x64 }     # last x64 macOS runner
           - { os: macos-latest,     label: macos-arm64 }   # Apple Silicon
+          # macos-x64 (macos-13 Intel) intentionally omitted — old hardware
+          # we don't support; macos-arm64 is the only macOS target we ship.
     steps:
       - uses: actions/checkout@v4
 
