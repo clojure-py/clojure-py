@@ -13,3 +13,6 @@ dist/
 docs/superpowers/
 .claude/
 CLAUDE.md
+
+# Per-run bench output — keep only tagged baselines + the summary
+bench/results/bench-*.json
