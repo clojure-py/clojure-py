@@ -6,12 +6,19 @@ use syn::{ItemTrait, LitBool, LitStr, Token, TraitItem, TraitItemFn};
 pub struct ProtocolArgs {
     pub name: String,
     pub via_metadata: bool,
+    /// Phase 3 opt-in: when true, the macro binds the ProtocolFn at the
+    /// method name (e.g. "count") instead of the ProtocolMethod. The
+    /// ProtocolMethod is still constructed (dropped on the floor — no one
+    /// references it after binding); Phase 4 will remove it entirely.
+    /// Defaults false to preserve Phase 2 behavior.
+    pub emit_fn_primary: bool,
 }
 
 impl Parse for ProtocolArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name: Option<String> = None;
         let mut via_metadata: bool = false;
+        let mut emit_fn_primary: bool = false;
         let punct: syn::punctuated::Punctuated<syn::MetaNameValue, Token![,]> =
             input.parse_terminated(syn::MetaNameValue::parse, Token![,])?;
         for nv in punct {
@@ -29,6 +36,10 @@ impl Parse for ProtocolArgs {
                     let b: LitBool = syn::parse2(nv.value.to_token_stream())?;
                     via_metadata = b.value;
                 }
+                "emit_fn_primary" => {
+                    let b: LitBool = syn::parse2(nv.value.to_token_stream())?;
+                    emit_fn_primary = b.value;
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         nv,
@@ -40,7 +51,7 @@ impl Parse for ProtocolArgs {
         let name = name.ok_or_else(|| {
             syn::Error::new(input.span(), "protocol requires name = \"...\"")
         })?;
-        Ok(Self { name, via_metadata })
+        Ok(Self { name, via_metadata, emit_fn_primary })
     }
 }
 
@@ -94,36 +105,56 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
     };
 
     let via_md = args.via_metadata;
+    let emit_fn_primary = args.emit_fn_primary;
 
     let method_key_strings: Vec<String> = methods.iter().map(|m| m.ident.to_string()).collect();
 
     let register_fn_ident = quote::format_ident!("__register_proto_{}", trait_ident);
 
-    // Per-method ProtocolMethod bindings emitted as a repetition.
+    // Per-method ProtocolMethod bindings emitted as a repetition. When
+    // `emit_fn_primary` is true, the PM is still constructed (Protocol's
+    // cache still needs impls for satisfies? and fall-through dispatch)
+    // but NOT exposed at the module-level method name — the ProtocolFn
+    // takes that slot instead.
     let method_bindings: Vec<proc_macro2::TokenStream> = method_key_strings.iter().map(|mname| {
-        quote! {
-            {
-                let pm = crate::ProtocolMethod {
-                    protocol: proto_py.clone_ref(py),
-                    key: ::std::sync::Arc::from(#mname),
-                };
-                let pm_py = ::pyo3::Py::new(py, pm)?;
-                m.add(#mname, pm_py)?;
+        if emit_fn_primary {
+            quote! {
+                {
+                    // No module-level binding for the PM — the ProtocolFn
+                    // binding below takes the `mname` slot. PM is dropped.
+                }
+            }
+        } else {
+            quote! {
+                {
+                    let pm = crate::ProtocolMethod {
+                        protocol: proto_py.clone_ref(py),
+                        key: ::std::sync::Arc::from(#mname),
+                    };
+                    let pm_py = ::pyo3::Py::new(py, pm)?;
+                    m.add(#mname, pm_py)?;
+                }
             }
         }
     }).collect();
 
-    // Phase 2: per-method ProtocolFn creation + registry insertion. The
-    // ProtocolFn instances run in parallel to the existing ProtocolMethod
-    // objects during this phase. Primary module-level name bindings still
-    // point at the ProtocolMethod (above); Phase 3 flips them to the
-    // ProtocolFn.
-    //
-    // Transitional: the ProtocolFn is also exposed at module name
-    // "_pfn:<method>" so tests can reach it during Phase 2.
+    // Per-method ProtocolFn creation + registry insertion. Primary module
+    // binding depends on `emit_fn_primary`:
+    //   - false (Phase 2 default): ProtocolFn exposed at "_pfn:<name>" only;
+    //     the method name stays bound to ProtocolMethod.
+    //   - true (Phase 3 opt-in): ProtocolFn exposed at the method name.
+    //     No _pfn: alias emitted.
     let proto_name_str = trait_ident.to_string();
     let protocol_fn_bindings: Vec<proc_macro2::TokenStream> =
         method_key_strings.iter().map(|mname| {
+            let expose_at_primary = if emit_fn_primary {
+                quote! { m.add(#mname, pfn_py)?; }
+            } else {
+                quote! {
+                    let hidden_name = ::std::format!("_pfn:{}", #mname);
+                    m.add(hidden_name.as_str(), pfn_py)?;
+                }
+            };
             quote! {
                 {
                     let pfn = crate::protocol_fn::ProtocolFn::new_py(
@@ -137,8 +168,7 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
                         #mname,
                         pfn_py.clone_ref(py),
                     );
-                    let hidden_name = ::std::format!("_pfn:{}", #mname);
-                    m.add(hidden_name.as_str(), pfn_py)?;
+                    #expose_at_primary
                 }
             }
         }).collect();

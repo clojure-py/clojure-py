@@ -4,7 +4,7 @@ use pyo3::types::{PyAny, PyCFunction, PyDict, PyTuple};
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/Counted", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/Counted", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait Counted: Sized {
     fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize>;
 }
