@@ -16,7 +16,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/Sorted", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/Sorted", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait Sorted: Sized {
     fn sorted_seq(this: Py<Self>, py: Python<'_>, ascending: PyObject) -> PyResult<PyObject>;
     fn sorted_seq_from(

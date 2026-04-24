@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/CollReduce", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/CollReduce", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait CollReduce: Sized {
     /// Reduce without an initial value. Equivalent to `(reduce f coll)`.
     fn coll_reduce1(this: Py<Self>, py: Python<'_>, f: PyObject) -> PyResult<PyObject>;

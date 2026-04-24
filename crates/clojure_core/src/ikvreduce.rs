@@ -8,7 +8,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/IKVReduce", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/IKVReduce", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait IKVReduce: Sized {
     fn kv_reduce(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject>;
 }

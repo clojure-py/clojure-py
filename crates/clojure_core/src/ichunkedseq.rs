@@ -4,7 +4,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/IChunkedSeq", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/IChunkedSeq", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait IChunkedSeq: Sized {
     /// Current chunk — an IChunk.
     fn chunked_first(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject>;

@@ -30,7 +30,7 @@ fn arity_err<T>(n: usize) -> PyResult<PyObject> {
     )))
 }
 
-#[protocol(name = "clojure.core/IFn", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/IFn", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait IFn: Sized {
     fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> { arity_err::<Self>(0) }
     fn invoke1(_this: Py<Self>, _py: Python<'_>, _a0: PyObject) -> PyResult<PyObject> { arity_err::<Self>(1) }

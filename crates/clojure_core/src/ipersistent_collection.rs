@@ -4,7 +4,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/IPersistentCollection", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/IPersistentCollection", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait IPersistentCollection: Sized {
     fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize>;
     fn conj(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject>;

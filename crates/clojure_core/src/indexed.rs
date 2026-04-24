@@ -4,7 +4,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/Indexed", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/Indexed", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait Indexed: Sized {
     fn nth(this: Py<Self>, py: Python<'_>, i: PyObject) -> PyResult<PyObject>;
     fn nth_or_default(this: Py<Self>, py: Python<'_>, i: PyObject, default: PyObject) -> PyResult<PyObject>;

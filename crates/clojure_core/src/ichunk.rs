@@ -8,7 +8,7 @@ type PyObject = Py<PyAny>;
 /// covered by the shared `Counted` and `Indexed` protocols respectively, so
 /// we don't redeclare them here (doing so would shadow those protocols'
 /// module-level bindings).
-#[protocol(name = "clojure.core/IChunk", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/IChunk", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait IChunk: Sized {
     fn drop_first(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject>;
     /// Fold this chunk's elements with `f`, threading `init`. Used by the

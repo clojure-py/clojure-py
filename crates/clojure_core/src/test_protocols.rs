@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 
 type PyObject = Py<pyo3::types::PyAny>;
 
-#[protocol(name = "clojure.core.test/Greeter", extend_via_metadata = true)]
+#[protocol(name = "clojure.core.test/Greeter", extend_via_metadata = true, emit_fn_primary = true)]
 pub trait Greeter {
     fn greet(&self, py: Python<'_>) -> PyResult<PyObject>;
 }

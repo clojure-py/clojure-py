@@ -4,7 +4,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/Associative", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/Associative", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait Associative: Sized {
     fn contains_key(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool>;
     fn entry_at(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject>;

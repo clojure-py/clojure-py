@@ -11,7 +11,7 @@ use pyo3::types::{PyAny, PyBool, PyCFunction, PyDict, PyFloat, PyInt, PyString, 
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/Comparable", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/Comparable", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait Comparable: Sized {
     fn compare_to(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<i64>;
 }

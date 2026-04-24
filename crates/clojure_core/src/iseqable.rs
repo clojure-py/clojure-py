@@ -4,7 +4,7 @@ use pyo3::types::{PyAny, PyCFunction, PyDict, PyModule, PyTuple};
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/ISeqable", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/ISeqable", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait ISeqable: Sized {
     fn seq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject>;
 }

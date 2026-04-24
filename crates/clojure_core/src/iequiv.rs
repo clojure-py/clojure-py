@@ -4,7 +4,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/IEquiv", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/IEquiv", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait IEquiv: Sized {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool>;
 }

@@ -4,7 +4,7 @@ use pyo3::types::PyAny;
 
 type PyObject = Py<PyAny>;
 
-#[protocol(name = "clojure.core/ITransientMap", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/ITransientMap", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait ITransientMap: Sized {
     fn dissoc_bang(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject>;
 }

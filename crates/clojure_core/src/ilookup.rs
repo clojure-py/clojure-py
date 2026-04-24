@@ -17,7 +17,7 @@ type PyObject = Py<PyAny>;
 /// if absent. The single-method (with not_found) shape matches Clojure-JVM's
 /// `IPersistentMap.valAt(key, notFound)`; the two-arg Clojure form `(get m k)`
 /// is spelled `val_at(coll, k, nil)` at the Rust level.
-#[protocol(name = "clojure.core/ILookup", extend_via_metadata = false)]
+#[protocol(name = "clojure.core/ILookup", extend_via_metadata = false, emit_fn_primary = true)]
 pub trait ILookup: Sized {
     fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject>;
 }
