@@ -41,18 +41,26 @@ impl Fn {
                 return Ok((v, true));
             }
         }
-        Err(errors::err(format!(
+        // Arity mismatch should surface as the vanilla-style
+        // `ArityException`, not an `EvalError` — tests like
+        // `(thrown-with-msg? clojure._core/ArityException #"..." ...)`
+        // rely on the specific class.
+        Err(crate::exceptions::ArityException::new_err(format!(
             "Wrong number of args ({}) passed to {}",
             n_args,
             self.name.as_deref().unwrap_or("<anonymous>")
         )))
     }
 
-    fn apply(&self, py: Python<'_>, args: &[PyObject]) -> PyResult<PyObject> {
-        let (method, is_variadic_call) = self.dispatch_method(args.len())?;
+    pub fn apply_with_self(
+        slf: Py<Self>,
+        py: Python<'_>,
+        args: &[PyObject],
+    ) -> PyResult<PyObject> {
+        let this = slf.bind(py).get();
+        let (method, is_variadic_call) = this.dispatch_method(args.len())?;
+        let self_any: PyObject = slf.clone_ref(py).into_any();
         if is_variadic_call {
-            // Pack overflow (args[arity..]) into a seq; that becomes the
-            // value in slot `arity`.
             let required = method.arity as usize;
             let mut frame_args: Vec<PyObject> = args[..required]
                 .iter()
@@ -64,9 +72,9 @@ impl Fn {
                 .collect();
             let rest_seq = build_rest_seq(py, rest)?;
             frame_args.push(rest_seq);
-            crate::vm::run(py, method, &self.pool, &self.captures, &frame_args)
+            crate::vm::run(py, method, &this.pool, &this.captures, &frame_args, Some(&self_any))
         } else {
-            crate::vm::run(py, method, &self.pool, &self.captures, args)
+            crate::vm::run(py, method, &this.pool, &this.captures, args, Some(&self_any))
         }
     }
 }
@@ -84,12 +92,12 @@ fn build_rest_seq(py: Python<'_>, items: Vec<PyObject>) -> PyResult<PyObject> {
 #[pymethods]
 impl Fn {
     #[pyo3(signature = (*args))]
-    fn __call__(&self, py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<PyObject> {
+    fn __call__(slf: Py<Self>, py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<PyObject> {
         let mut vals: Vec<PyObject> = Vec::with_capacity(args.len());
         for i in 0..args.len() {
             vals.push(args.get_item(i)?.unbind());
         }
-        self.apply(py, &vals)
+        Fn::apply_with_self(slf, py, &vals)
     }
 
     fn __repr__(&self) -> String {
@@ -100,74 +108,74 @@ impl Fn {
 #[implements(IFn)]
 impl IFn for Fn {
     fn invoke0(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[])
+        Fn::apply_with_self(this.clone_ref(py), py, &[])
     }
     fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0])
     }
     fn invoke2(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1])
     }
     fn invoke3(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2])
     }
     fn invoke4(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3])
     }
     fn invoke5(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4])
     }
     fn invoke6(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5])
     }
     fn invoke7(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6])
     }
     fn invoke8(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7])
     }
     fn invoke9(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8])
     }
     fn invoke10(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9])
     }
     fn invoke11(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10])
     }
     fn invoke12(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11])
     }
     fn invoke13(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12])
     }
     fn invoke14(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13])
     }
     fn invoke15(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14])
     }
     fn invoke16(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15])
     }
     fn invoke17(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16])
     }
     fn invoke18(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17])
     }
     fn invoke19(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject, a18: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18])
     }
     fn invoke20(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject, a2: PyObject, a3: PyObject, a4: PyObject, a5: PyObject, a6: PyObject, a7: PyObject, a8: PyObject, a9: PyObject, a10: PyObject, a11: PyObject, a12: PyObject, a13: PyObject, a14: PyObject, a15: PyObject, a16: PyObject, a17: PyObject, a18: PyObject, a19: PyObject) -> PyResult<PyObject> {
-        this.bind(py).get().apply(py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19])
+        Fn::apply_with_self(this.clone_ref(py), py, &[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19])
     }
     fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<PyObject> {
         let mut vals: Vec<PyObject> = Vec::with_capacity(args.len());
         for i in 0..args.len() {
             vals.push(args.get_item(i)?.unbind());
         }
-        this.bind(py).get().apply(py, &vals)
+        Fn::apply_with_self(this.clone_ref(py), py, &vals)
     }
 }
 

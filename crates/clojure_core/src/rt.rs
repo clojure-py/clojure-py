@@ -7,6 +7,7 @@
 use once_cell::sync::{Lazy, OnceCell};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule, PyTuple};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
@@ -21,6 +22,10 @@ static ISEQ_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
 static ISEQABLE_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
 static COUNTED_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
 static IPC_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static ASSOC_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static IMETA_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static SEQUENTIAL_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
+static COMPARABLE_PROTO: OnceCell<Py<crate::Protocol>> = OnceCell::new();
 
 static VAL_AT_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("val_at"));
 static INVOKE_VARIADIC_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("invoke_variadic"));
@@ -32,6 +37,11 @@ static NEXT_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("next"));
 static MORE_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("more"));
 static COUNT_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("count"));
 static EMPTY_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("empty"));
+static CONJ_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("conj"));
+static ASSOC_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("assoc"));
+static META_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("meta"));
+static WITH_META_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("with_meta"));
+static COMPARE_TO_KEY: Lazy<Arc<str>> = Lazy::new(|| Arc::from("compare_to"));
 
 /// Cached arity keys `invoke0`..`invoke20`.
 static INVOKE_KEYS: Lazy<Vec<Arc<str>>> = Lazy::new(|| {
@@ -39,28 +49,40 @@ static INVOKE_KEYS: Lazy<Vec<Arc<str>>> = Lazy::new(|| {
 });
 
 pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let ilookup = m.getattr("ILookup")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let ilookup = m.getattr("ILookup")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = ILOOKUP_PROTO.set(ilookup);
-    let ifn = m.getattr("IFn")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let ifn = m.getattr("IFn")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = IFN_PROTO.set(ifn);
 
-    let iequiv = m.getattr("IEquiv")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let iequiv = m.getattr("IEquiv")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = IEQUIV_PROTO.set(iequiv);
 
-    let ihasheq = m.getattr("IHashEq")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let ihasheq = m.getattr("IHashEq")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = IHASHEQ_PROTO.set(ihasheq);
 
-    let iseq = m.getattr("ISeq")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let iseq = m.getattr("ISeq")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = ISEQ_PROTO.set(iseq);
 
-    let iseqable = m.getattr("ISeqable")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let iseqable = m.getattr("ISeqable")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = ISEQABLE_PROTO.set(iseqable);
 
-    let counted = m.getattr("Counted")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let counted = m.getattr("Counted")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = COUNTED_PROTO.set(counted);
 
-    let ipc = m.getattr("IPersistentCollection")?.downcast::<crate::Protocol>()?.clone().unbind();
+    let ipc = m.getattr("IPersistentCollection")?.cast::<crate::Protocol>()?.clone().unbind();
     let _ = IPC_PROTO.set(ipc);
+
+    let assoc = m.getattr("Associative")?.cast::<crate::Protocol>()?.clone().unbind();
+    let _ = ASSOC_PROTO.set(assoc);
+
+    let imeta = m.getattr("IMeta")?.cast::<crate::Protocol>()?.clone().unbind();
+    let _ = IMETA_PROTO.set(imeta);
+
+    let comparable = m.getattr("Comparable")?.cast::<crate::Protocol>()?.clone().unbind();
+    let _ = COMPARABLE_PROTO.set(comparable);
+
+    let sequential = m.getattr("Sequential")?.cast::<crate::Protocol>()?.clone().unbind();
+    let _ = SEQUENTIAL_PROTO.set(sequential);
 
     let _ = py;
     Ok(())
@@ -68,8 +90,12 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 // --- Helpers. ---
 
-/// `(get coll k default)` — dispatches through ILookup.
+/// `(get coll k default)` — dispatches through ILookup. `nil` coll returns
+/// the default, matching vanilla `(get nil k)` → nil.
 pub fn get(py: Python<'_>, coll: PyObject, k: PyObject, default: PyObject) -> PyResult<PyObject> {
+    if coll.is_none(py) {
+        return Ok(default);
+    }
     let proto = ILOOKUP_PROTO
         .get()
         .expect("rt::get called before rt::init — check pymodule init order");
@@ -96,6 +122,51 @@ pub fn invoke_n(py: Python<'_>, target: PyObject, args: &[PyObject]) -> PyResult
     let args_vec: Vec<PyObject> = args.iter().map(|o| o.clone_ref(py)).collect();
     let args_tup = PyTuple::new(py, &args_vec)?;
     crate::dispatch::dispatch(py, proto, method_key, target, args_tup)
+}
+
+/// True iff `x`'s type (or an MRO ancestor) is extended to `Sequential`.
+/// Used by IEquiv impls of sequential collections to decide whether the
+/// other side of an `=` comparison should be walked pairwise.
+pub fn is_sequential(py: Python<'_>, x: &PyObject) -> bool {
+    let Some(proto) = SEQUENTIAL_PROTO.get() else { return false; };
+    let proto_ref = proto.bind(py).get();
+    let b = x.bind(py);
+    let ty = b.get_type();
+    let exact = crate::protocol::CacheKey::for_py_type(&ty);
+    if proto_ref.cache.lookup(exact).is_some() {
+        return true;
+    }
+    let Ok(mro) = ty.getattr("__mro__") else { return false; };
+    let Ok(mro_tuple): Result<Bound<'_, PyTuple>, _> = mro.cast_into() else { return false; };
+    for parent in mro_tuple.iter().skip(1) {
+        let Ok(pt): Result<Bound<'_, pyo3::types::PyType>, _> = parent.cast_into() else { continue; };
+        let pk = crate::protocol::CacheKey::for_py_type(&pt);
+        if proto_ref.cache.lookup(pk).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Element-wise equality by walking both sides via `seq`. Both inputs are
+/// assumed sequential (caller checks); walks terminate at the first
+/// length-or-element mismatch. Used by every sequential collection's IEquiv
+/// impl to honor Clojure's cross-type sequential-equality rule
+/// (e.g. `(= [1 2 3] '(1 2 3))` → true).
+pub fn sequential_equiv(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<bool> {
+    let mut a_seq = seq(py, a)?;
+    let mut b_seq = seq(py, b)?;
+    loop {
+        let a_nil = a_seq.is_none(py);
+        let b_nil = b_seq.is_none(py);
+        if a_nil && b_nil { return Ok(true); }
+        if a_nil || b_nil { return Ok(false); }
+        let ha = first(py, a_seq.clone_ref(py))?;
+        let hb = first(py, b_seq.clone_ref(py))?;
+        if !equiv(py, ha, hb)? { return Ok(false); }
+        a_seq = next_(py, a_seq)?;
+        b_seq = next_(py, b_seq)?;
+    }
 }
 
 /// `(= a b)` — dispatches through IEquiv.
@@ -177,6 +248,93 @@ pub fn empty(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     let proto = IPC_PROTO.get().expect("rt::empty called before rt::init");
     let args = PyTuple::new(py, &[] as &[PyObject])?;
     crate::dispatch::dispatch(py, proto, &EMPTY_KEY, coll, args)
+}
+
+/// `(conj coll x)` — dispatches through IPersistentCollection. Nil-safe:
+/// `(conj nil x)` returns `(x)`.
+pub fn conj(py: Python<'_>, coll: PyObject, x: PyObject) -> PyResult<PyObject> {
+    if coll.is_none(py) {
+        // (conj nil x) → (x)
+        let tup = PyTuple::new(py, &[x])?;
+        return crate::collections::plist::list_(py, tup);
+    }
+    let proto = IPC_PROTO.get().expect("rt::conj called before rt::init");
+    let args = PyTuple::new(py, &[x])?;
+    crate::dispatch::dispatch(py, proto, &CONJ_KEY, coll, args)
+}
+
+/// `(assoc coll k v)` — dispatches through Associative.
+pub fn assoc(py: Python<'_>, coll: PyObject, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+    let proto = ASSOC_PROTO.get().expect("rt::assoc called before rt::init");
+    let args = PyTuple::new(py, &[k, v])?;
+    crate::dispatch::dispatch(py, proto, &ASSOC_KEY, coll, args)
+}
+
+/// `(meta x)` — dispatches through IMeta; nil-safe and falls back to nil if
+/// the target has no IMeta impl (unlike strict dispatch).
+pub fn meta(py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
+    if x.is_none(py) {
+        return Ok(py.None());
+    }
+    // Clojure namespaces don't implement IMeta — their meta lives on the
+    // `__clj_ns_meta__` dunder attached at create_ns time.
+    let b = x.bind(py);
+    if crate::namespace::is_clojure_namespace(py, b).unwrap_or(false) {
+        return match b.getattr("__clj_ns_meta__") {
+            Ok(m) => Ok(m.unbind()),
+            Err(_) => Ok(py.None()),
+        };
+    }
+    let proto = IMETA_PROTO.get().expect("rt::meta called before rt::init");
+    let args = PyTuple::new(py, &[] as &[PyObject])?;
+    match crate::dispatch::dispatch(py, proto, &META_KEY, x, args) {
+        Ok(v) => Ok(v),
+        Err(e) if e.is_instance_of::<crate::exceptions::IllegalArgumentException>(py) => {
+            Ok(py.None())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `(with-meta x m)` — dispatches through IMeta.
+pub fn with_meta(py: Python<'_>, x: PyObject, m: PyObject) -> PyResult<PyObject> {
+    let proto = IMETA_PROTO.get().expect("rt::with_meta called before rt::init");
+    let args = PyTuple::new(py, &[m])?;
+    crate::dispatch::dispatch(py, proto, &WITH_META_KEY, x, args)
+}
+
+/// `(identical? a b)` — Python `is` semantics.
+pub fn identical(py: Python<'_>, a: PyObject, b: PyObject) -> bool {
+    a.bind(py).is(b.bind(py))
+}
+
+/// `(compare a b)` — dispatches through Comparable; nil sorts first.
+pub fn compare(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<i64> {
+    // Nil handling lives here so user types don't need to special-case it.
+    if a.is_none(py) && b.is_none(py) { return Ok(0); }
+    if a.is_none(py) { return Ok(-1); }
+    if b.is_none(py) { return Ok(1); }
+    let proto = COMPARABLE_PROTO.get().expect("rt::compare called before rt::init");
+    let args = PyTuple::new(py, &[b])?;
+    let result: Py<PyAny> = crate::dispatch::dispatch(py, proto, &COMPARE_TO_KEY, a, args)?;
+    result.bind(py).extract::<i64>()
+}
+
+/// Monotonic ID counter — backs `gensym` and any other caller needing a
+/// fresh integer per process.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// `(cons x coll)` — build a Cons cell. The tail is stored **unrealized**;
+/// `seq`/`next`/`rest` on the Cons will call `rt::seq` on the tail lazily.
+/// Forcing the tail here would realize LazySeqs eagerly at cons-construction
+/// time and break `(cons x (lazy-seq ...))` recursion.
+pub fn cons(py: Python<'_>, x: PyObject, coll: PyObject) -> PyResult<PyObject> {
+    let c = crate::seqs::cons::Cons::new(x, coll);
+    Ok(Py::new(py, c)?.into_any())
 }
 
 // --- Python-exposed wrappers for helpers that aren't already ProtocolMethods. ---

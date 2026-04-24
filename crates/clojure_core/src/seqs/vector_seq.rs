@@ -11,7 +11,6 @@ use crate::iseq::ISeq;
 use crate::iseqable::ISeqable;
 use crate::sequential::Sequential;
 use clojure_core_macros::implements;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -21,7 +20,7 @@ type PyObject = Py<PyAny>;
 pub struct VectorSeq {
     pub vec: Py<PersistentVector>,
     pub i: u32,
-    pub meta: RwLock<Option<PyObject>>,
+    pub meta: Option<PyObject>,
 }
 
 #[pymethods]
@@ -58,7 +57,7 @@ impl ISeq for VectorSeq {
         let vs = VectorSeq {
             vec: s.vec.clone_ref(py),
             i: next_i,
-            meta: RwLock::new(None),
+            meta: None,
         };
         Ok(Py::new(py, vs)?.into_any())
     }
@@ -94,20 +93,10 @@ impl Counted for VectorSeq {
 #[implements(IEquiv)]
 impl IEquiv for VectorSeq {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        // Walk both.
-        let mut ap: PyObject = this.into_any();
-        let mut bp: PyObject = other;
-        loop {
-            let sa = crate::rt::seq(py, ap.clone_ref(py))?;
-            let sb = crate::rt::seq(py, bp.clone_ref(py))?;
-            if sa.is_none(py) && sb.is_none(py) { return Ok(true); }
-            if sa.is_none(py) || sb.is_none(py) { return Ok(false); }
-            let ha = crate::rt::first(py, sa.clone_ref(py))?;
-            let hb = crate::rt::first(py, sb.clone_ref(py))?;
-            if !crate::rt::equiv(py, ha, hb)? { return Ok(false); }
-            ap = crate::rt::next_(py, sa)?;
-            bp = crate::rt::next_(py, sb)?;
+        if !crate::rt::is_sequential(py, &other) {
+            return Ok(false);
         }
+        crate::rt::sequential_equiv(py, this.into_any(), other)
     }
 }
 
@@ -132,7 +121,7 @@ impl IHashEq for VectorSeq {
 impl IMeta for VectorSeq {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
-        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+        Ok(s.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
     }
     fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
         let s = this.bind(py).get();
@@ -140,7 +129,7 @@ impl IMeta for VectorSeq {
         Ok(Py::new(py, VectorSeq {
             vec: s.vec.clone_ref(py),
             i: s.i,
-            meta: RwLock::new(m),
+            meta: m,
         })?.into_any())
     }
 }

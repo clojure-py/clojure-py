@@ -44,7 +44,7 @@ impl Keyword {
     fn __hash__(&self) -> u32 { self.hash_cache }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        let Ok(o) = other.downcast::<Self>() else { return false; };
+        let Ok(o) = other.cast::<Self>() else { return false; };
         let o = o.get();
         // Interned -> pointer identity is sufficient; value-equality fallback for the brief
         // race window during concurrent insert.
@@ -66,7 +66,7 @@ impl Keyword {
     fn __call__(&self, py: Python<'_>, coll: &Bound<'_, PyAny>, default: Option<PyObject>) -> PyResult<PyObject> {
         let self_key = self.look_up_self(py)?;
         // Dict lookup uses __hash__ + __eq__; interned keys -> pointer-equal -> hit.
-        if let Ok(d) = coll.downcast::<PyDict>() {
+        if let Ok(d) = coll.cast::<PyDict>() {
             if let Some(v) = d.get_item(&self_key)? {
                 return Ok(v.unbind());
             }
@@ -79,6 +79,13 @@ impl Keyword {
         }
         Ok(default.unwrap_or_else(|| py.None()))
     }
+}
+
+/// Look up a keyword in the intern table without creating one. Returns None
+/// when no keyword with the given ns/name has been interned yet.
+pub fn find_keyword(py: Python<'_>, ns: Option<&str>, name: &str) -> Option<Py<Keyword>> {
+    let key: KeywordKey = (ns.map(Arc::from), Arc::from(name));
+    INTERN.get(&key).map(|e| e.value().clone_ref(py))
 }
 
 #[pyfunction]
@@ -127,9 +134,6 @@ use clojure_core_macros::implements;
 
 #[implements(IFn)]
 impl IFn for Keyword {
-    fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (0) passed to: Keyword"))
-    }
     fn invoke1(this: Py<Self>, py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
         let self_ref: &Keyword = this.bind(py).get();
         let k = self_ref.look_up_self(py)?;
@@ -139,60 +143,6 @@ impl IFn for Keyword {
         let self_ref: &Keyword = this.bind(py).get();
         let k = self_ref.look_up_self(py)?;
         crate::rt::get(py, coll, k.into_any(), default)
-    }
-    fn invoke3(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (3) passed to: Keyword"))
-    }
-    fn invoke4(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (4) passed to: Keyword"))
-    }
-    fn invoke5(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (5) passed to: Keyword"))
-    }
-    fn invoke6(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (6) passed to: Keyword"))
-    }
-    fn invoke7(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (7) passed to: Keyword"))
-    }
-    fn invoke8(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (8) passed to: Keyword"))
-    }
-    fn invoke9(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (9) passed to: Keyword"))
-    }
-    fn invoke10(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (10) passed to: Keyword"))
-    }
-    fn invoke11(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (11) passed to: Keyword"))
-    }
-    fn invoke12(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (12) passed to: Keyword"))
-    }
-    fn invoke13(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (13) passed to: Keyword"))
-    }
-    fn invoke14(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (14) passed to: Keyword"))
-    }
-    fn invoke15(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (15) passed to: Keyword"))
-    }
-    fn invoke16(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (16) passed to: Keyword"))
-    }
-    fn invoke17(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (17) passed to: Keyword"))
-    }
-    fn invoke18(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (18) passed to: Keyword"))
-    }
-    fn invoke19(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (19) passed to: Keyword"))
-    }
-    fn invoke20(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject, _a19: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (20) passed to: Keyword"))
     }
     fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
         match args.len() {

@@ -4,10 +4,10 @@ Clojure core on Python 3.14t, implemented in Rust via PyO3.
 
 ## Status
 
-Core abstractions (protocols, IFn, Var, Namespace, Symbol, Keyword) —
-see `docs/superpowers/specs/2026-04-21-core-abstractions-design.md` for
-the design spec and `docs/superpowers/plans/2026-04-21-core-abstractions-plan.md`
-for the implementation plan.
+Core abstractions (protocols, IFn, Var, Namespace, Symbol, Keyword) are
+in place, along with persistent collections, reader, bytecode evaluator,
+a port of `clojure.core`, and a growing port of the vanilla Clojure test
+suite.
 
 ## Build
 
@@ -26,6 +26,24 @@ uv pip install maturin pytest pytest-timeout
 
 # Build the extension (editable install into the venv)
 maturin develop --release
+```
+
+## REPL
+
+```bash
+# Simple REPL — stdlib only.
+python -m clojure --simple
+
+# Rich REPL — paren-aware multi-line input, syntax highlighting,
+# symbol completion, eldoc hints. Needs the optional 'repl' extras.
+uv pip install "prompt_toolkit>=3.0" "pygments>=2.15"
+python -m clojure --rich
+
+# One-shot eval.
+python -m clojure -e '(+ 1 2)'
+
+# Auto-pick: rich if tty + prompt_toolkit importable, else simple.
+python -m clojure
 ```
 
 ## Test
@@ -77,7 +95,6 @@ crates/
   clojure_core_macros/                  # proc-macro crate (#[protocol], #[implements])
 python/clojure/                         # Python package (re-exports from _core)
 tests/                                  # pytest suite
-docs/superpowers/{specs,plans}/         # design + implementation documents
 ```
 
 ## Collections
@@ -155,9 +172,9 @@ print(pr_str(data))
 - Reader macros: `'quote`, `@deref`, `#'var`, `^meta`, `;comment`, `#_discard`
 - Round-trip via `pr_str` → `read_string` (property-tested with 200 hypothesis cases)
 
-**Deferred** (tracked in `docs/superpowers/plans/2026-04-21-reader-plan.md`):
-syntax-quote, reader conditionals, tagged literals, fn-literal, regex,
-namespaced maps, numeric suffixes, auto-resolved keywords, shebang, EDN-only mode.
+**Deferred**: reader conditionals, tagged literals, namespaced maps,
+shebang, EDN-only mode. (Syntax-quote, fn-literal, regex, numeric
+suffixes, and auto-resolved keywords have since landed.)
 
 ## Evaluator
 

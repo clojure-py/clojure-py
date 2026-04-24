@@ -1,5 +1,6 @@
 //! PersistentList — cons-cell linked list. EmptyList is a module-init singleton.
 
+use crate::coll_reduce::CollReduce;
 use crate::counted::Counted;
 use crate::exceptions::IllegalStateException;
 use crate::iequiv::IEquiv;
@@ -13,7 +14,6 @@ use crate::iseqable::ISeqable;
 use crate::sequential::Sequential;
 use clojure_core_macros::implements;
 use once_cell::sync::OnceCell;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
@@ -23,7 +23,7 @@ type PyObject = Py<PyAny>;
 
 #[pyclass(module = "clojure._core", name = "EmptyList", frozen)]
 pub struct EmptyList {
-    meta: RwLock<Option<PyObject>>,
+    meta: Option<PyObject>,
 }
 
 static EMPTY_LIST: OnceCell<Py<EmptyList>> = OnceCell::new();
@@ -51,12 +51,7 @@ impl EmptyList {
 
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyObject {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
-    }
-
-    fn with_meta(&self, py: Python<'_>, meta: PyObject) -> PyResult<Py<EmptyList>> {
-        let m = if meta.is_none(py) { None } else { Some(meta) };
-        Py::new(py, EmptyList { meta: RwLock::new(m) })
+        self.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
     }
 }
 
@@ -81,7 +76,7 @@ impl ISeq for EmptyList {
             head: x,
             tail: this.into_any(),
             count: 1,
-            meta: RwLock::new(None),
+            meta: None,
         };
         Ok(Py::new(py, new)?.into_any())
     }
@@ -101,8 +96,15 @@ impl Counted for EmptyList {
 impl IEquiv for EmptyList {
     fn equiv(_this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
         let b = other.bind(py);
-        // Only another EmptyList is equal (PersistentList invariant: count >= 1).
-        Ok(b.downcast::<EmptyList>().is_ok())
+        // Fast path: another EmptyList.
+        if b.cast::<EmptyList>().is_ok() {
+            return Ok(true);
+        }
+        // Any Sequential with no elements is equal to ().
+        if !crate::rt::is_sequential(py, &other) {
+            return Ok(false);
+        }
+        Ok(crate::rt::seq(py, other)?.is_none(py))
     }
 }
 
@@ -115,11 +117,11 @@ impl IHashEq for EmptyList {
 impl IMeta for EmptyList {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
-        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+        Ok(s.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
     }
     fn with_meta(_this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
         let m = if meta.is_none(py) { None } else { Some(meta) };
-        Ok(Py::new(py, EmptyList { meta: RwLock::new(m) })?.into_any())
+        Ok(Py::new(py, EmptyList { meta: m })?.into_any())
     }
 }
 
@@ -146,6 +148,17 @@ impl IPersistentStack for EmptyList {
 #[implements(Sequential)]
 impl Sequential for EmptyList {}
 
+#[implements(CollReduce)]
+impl CollReduce for EmptyList {
+    fn coll_reduce1(_this: Py<Self>, py: Python<'_>, f: PyObject) -> PyResult<PyObject> {
+        // (reduce f ()) — invoke f with no args, per clojure.core/reduce contract.
+        crate::rt::invoke_n(py, f, &[])
+    }
+    fn coll_reduce2(_this: Py<Self>, _py: Python<'_>, _f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        Ok(init)
+    }
+}
+
 // --- PersistentList ---
 
 #[pyclass(module = "clojure._core", name = "PersistentList", frozen)]
@@ -153,7 +166,7 @@ pub struct PersistentList {
     pub head: PyObject,
     pub tail: PyObject,  // PersistentList | EmptyList
     pub count: u32,
-    pub meta: RwLock<Option<PyObject>>,
+    pub meta: Option<PyObject>,
 }
 
 #[pymethods]
@@ -181,8 +194,8 @@ impl PersistentList {
         let mut cur: PyObject = slf.into_any();
         loop {
             let b = cur.bind(py);
-            if b.downcast::<EmptyList>().is_ok() { break; }
-            if let Ok(pl) = b.downcast::<PersistentList>() {
+            if b.cast::<EmptyList>().is_ok() { break; }
+            if let Ok(pl) = b.cast::<PersistentList>() {
                 let r = pl.get().head.bind(py).repr()?.extract::<String>()?;
                 parts.push(r);
                 cur = pl.get().tail.clone_ref(py);
@@ -196,17 +209,7 @@ impl PersistentList {
 
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyObject {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
-    }
-
-    fn with_meta(&self, py: Python<'_>, meta: PyObject) -> PyResult<Py<PersistentList>> {
-        let m = if meta.is_none(py) { None } else { Some(meta) };
-        Py::new(py, PersistentList {
-            head: self.head.clone_ref(py),
-            tail: self.tail.clone_ref(py),
-            count: self.count,
-            meta: RwLock::new(m),
-        })
+        self.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
     }
 }
 
@@ -220,10 +223,10 @@ impl PersistentListIter {
     fn __iter__(slf: Py<Self>) -> Py<Self> { slf }
     fn __next__(&mut self, py: Python<'_>) -> PyResult<PyObject> {
         let b = self.current.bind(py);
-        if b.downcast::<EmptyList>().is_ok() {
+        if b.cast::<EmptyList>().is_ok() {
             return Err(pyo3::exceptions::PyStopIteration::new_err(()));
         }
-        if let Ok(pl) = b.downcast::<PersistentList>() {
+        if let Ok(pl) = b.cast::<PersistentList>() {
             let h = pl.get().head.clone_ref(py);
             self.current = pl.get().tail.clone_ref(py);
             return Ok(h);
@@ -240,7 +243,7 @@ impl ISeq for PersistentList {
     fn next(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
         let b = s.tail.bind(py);
-        if b.downcast::<EmptyList>().is_ok() { return Ok(py.None()); }
+        if b.cast::<EmptyList>().is_ok() { return Ok(py.None()); }
         Ok(s.tail.clone_ref(py))
     }
     fn more(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
@@ -252,7 +255,7 @@ impl ISeq for PersistentList {
             head: x,
             tail: this.into_any(),  // self-as-tail; structural sharing
             count,
-            meta: RwLock::new(None),
+            meta: None,
         };
         Ok(Py::new(py, new)?.into_any())
     }
@@ -275,33 +278,35 @@ impl Counted for PersistentList {
 #[implements(IEquiv)]
 impl IEquiv for PersistentList {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        // Same-type fast path: direct head/tail walk (avoids protocol dispatch).
         let other_b = other.bind(py);
-        // Only compare same type (cross-type sequential equality is deferred).
-        let Ok(other_pl) = other_b.downcast::<PersistentList>() else {
-            return Ok(false);
-        };
-        let a = this.bind(py).get();
-        let b = other_pl.get();
-        if a.count != b.count { return Ok(false); }
-
-        // Walk both lists pairwise.
-        let mut ap: PyObject = this.clone_ref(py).into_any();
-        let mut bp: PyObject = other.clone_ref(py);
-        loop {
-            let ab = ap.bind(py);
-            let bb = bp.bind(py);
-            let a_empty = ab.downcast::<EmptyList>().is_ok();
-            let b_empty = bb.downcast::<EmptyList>().is_ok();
-            if a_empty && b_empty { return Ok(true); }
-            if a_empty != b_empty { return Ok(false); }
-            let apl = ab.downcast::<PersistentList>()?;
-            let bpl = bb.downcast::<PersistentList>()?;
-            let a_head = apl.get().head.clone_ref(py);
-            let b_head = bpl.get().head.clone_ref(py);
-            if !crate::rt::equiv(py, a_head, b_head)? { return Ok(false); }
-            ap = apl.get().tail.clone_ref(py);
-            bp = bpl.get().tail.clone_ref(py);
+        if let Ok(other_pl) = other_b.cast::<PersistentList>() {
+            let a = this.bind(py).get();
+            let b = other_pl.get();
+            if a.count != b.count { return Ok(false); }
+            let mut ap: PyObject = this.clone_ref(py).into_any();
+            let mut bp: PyObject = other.clone_ref(py);
+            loop {
+                let ab = ap.bind(py);
+                let bb = bp.bind(py);
+                let a_empty = ab.cast::<EmptyList>().is_ok();
+                let b_empty = bb.cast::<EmptyList>().is_ok();
+                if a_empty && b_empty { return Ok(true); }
+                if a_empty != b_empty { return Ok(false); }
+                let apl = ab.cast::<PersistentList>()?;
+                let bpl = bb.cast::<PersistentList>()?;
+                let a_head = apl.get().head.clone_ref(py);
+                let b_head = bpl.get().head.clone_ref(py);
+                if !crate::rt::equiv(py, a_head, b_head)? { return Ok(false); }
+                ap = apl.get().tail.clone_ref(py);
+                bp = bpl.get().tail.clone_ref(py);
+            }
         }
+        // Cross-type sequential equality (e.g. list == vector).
+        if !crate::rt::is_sequential(py, &other) {
+            return Ok(false);
+        }
+        crate::rt::sequential_equiv(py, this.into_any(), other)
     }
 }
 
@@ -315,8 +320,8 @@ impl IHashEq for PersistentList {
         let mut cur: PyObject = this.into_any();
         loop {
             let b = cur.bind(py);
-            if b.downcast::<EmptyList>().is_ok() { break; }
-            if let Ok(pl) = b.downcast::<PersistentList>() {
+            if b.cast::<EmptyList>().is_ok() { break; }
+            if let Ok(pl) = b.cast::<PersistentList>() {
                 let head = pl.get().head.clone_ref(py);
                 let eh = crate::rt::hash_eq(py, head)?;
                 h = h.wrapping_mul(31).wrapping_add(eh);
@@ -333,7 +338,7 @@ impl IHashEq for PersistentList {
 impl IMeta for PersistentList {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
-        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+        Ok(s.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
     }
     fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
         let s = this.bind(py).get();
@@ -342,7 +347,7 @@ impl IMeta for PersistentList {
             head: s.head.clone_ref(py),
             tail: s.tail.clone_ref(py),
             count: s.count,
-            meta: RwLock::new(m),
+            meta: m,
         })?.into_any())
     }
 }
@@ -376,6 +381,47 @@ impl IPersistentStack for PersistentList {
 #[implements(Sequential)]
 impl Sequential for PersistentList {}
 
+#[implements(CollReduce)]
+impl CollReduce for PersistentList {
+    fn coll_reduce1(this: Py<Self>, py: Python<'_>, f: PyObject) -> PyResult<PyObject> {
+        let s: &PersistentList = this.bind(py).get();
+        let mut acc = s.head.clone_ref(py);
+        let mut cur = s.tail.clone_ref(py);
+        while !cur.is_none(py) {
+            let b = cur.bind(py);
+            if let Ok(pl) = b.cast::<PersistentList>() {
+                let pl_ref = pl.get();
+                acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, pl_ref.head.clone_ref(py)])?;
+                if crate::reduced::is_reduced(py, &acc) {
+                    return Ok(crate::reduced::unreduced(py, acc));
+                }
+                cur = pl_ref.tail.clone_ref(py);
+            } else {
+                return crate::coll_reduce::fallback_reduce2(py, cur, f, acc);
+            }
+        }
+        Ok(acc)
+    }
+    fn coll_reduce2(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        let mut acc = init;
+        let mut cur: PyObject = this.into_any();
+        while !cur.is_none(py) {
+            let b = cur.bind(py);
+            if let Ok(pl) = b.cast::<PersistentList>() {
+                let pl_ref = pl.get();
+                acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, pl_ref.head.clone_ref(py)])?;
+                if crate::reduced::is_reduced(py, &acc) {
+                    return Ok(crate::reduced::unreduced(py, acc));
+                }
+                cur = pl_ref.tail.clone_ref(py);
+            } else {
+                return crate::coll_reduce::fallback_reduce2(py, cur, f, acc);
+            }
+        }
+        Ok(acc)
+    }
+}
+
 // --- Python-facing constructor ---
 
 #[pyfunction]
@@ -394,7 +440,7 @@ pub fn list_(py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<PyObject> {
             head: item,
             tail,
             count,
-            meta: RwLock::new(None),
+            meta: None,
         };
         tail = Py::new(py, node)?.into_any();
     }
@@ -408,7 +454,7 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
     m.add_class::<PersistentListIter>()?;
     m.add_function(wrap_pyfunction!(list_, m)?)?;
 
-    let el = Py::new(py, EmptyList { meta: RwLock::new(None) })?;
+    let el = Py::new(py, EmptyList { meta: None })?;
     let _ = EMPTY_LIST.set(el);
     Ok(())
 }

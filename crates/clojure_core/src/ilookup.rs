@@ -27,7 +27,7 @@ pub trait ILookup: Sized {
 /// not_found on KeyError/IndexError.
 pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let ilookup_any = m.getattr("ILookup")?;
-    let ilookup_proto: &Bound<'_, crate::Protocol> = ilookup_any.downcast()?;
+    let ilookup_proto: &Bound<'_, crate::Protocol> = ilookup_any.cast()?;
 
     let fallback = PyCFunction::new_closure(
         py,
@@ -37,16 +37,13 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
             let py = args.py();
             // args = (protocol, method_key, target)
             let proto_any = args.get_item(0)?;
-            let proto: &Bound<'_, crate::Protocol> = proto_any.downcast()?;
+            let proto: &Bound<'_, crate::Protocol> = proto_any.cast()?;
             let _method_key: String = args.get_item(1)?.extract()?;
             let target = args.get_item(2)?;
 
-            // Only handle targets with __getitem__.
-            if target.getattr("__getitem__").is_err() {
-                return Ok(py.None());
-            }
-
-            // Build the val_at wrapper: takes (self, k, not_found), tries self[k].
+            // Build the val_at wrapper: takes (self, k, not_found), tries
+            // self[k] when the target has __getitem__; otherwise returns
+            // not_found. Matches vanilla's `(get non-lookupable k)` → nil.
             let val_at_wrapper = PyCFunction::new_closure(
                 py,
                 None,
@@ -56,17 +53,12 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
                     let self_obj = inner_args.get_item(0)?;
                     let k = inner_args.get_item(1)?;
                     let not_found = inner_args.get_item(2)?;
+                    if self_obj.getattr("__getitem__").is_err() {
+                        return Ok(not_found.unbind());
+                    }
                     match self_obj.get_item(&k) {
                         Ok(v) => Ok(v.unbind()),
-                        Err(e) => {
-                            // Return not_found for KeyError / IndexError / TypeError.
-                            // Any other error we re-raise.
-                            let _ = e;
-                            // Simple approach: always return not_found on any get_item error.
-                            // If target is genuinely broken the user can still see the
-                            // error via `target[k]` directly.
-                            Ok(not_found.unbind())
-                        }
+                        Err(_) => Ok(not_found.unbind()),
                     }
                 },
             )?;

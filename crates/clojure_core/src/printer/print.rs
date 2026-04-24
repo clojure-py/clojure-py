@@ -5,8 +5,18 @@ use pyo3::types::{PyAny, PyBool, PyFloat, PyInt, PyString};
 
 type PyObject = Py<PyAny>;
 
-/// Print `x` to a string in reader-compatible form.
+/// Print `x` to a string in reader-compatible form (strings quoted).
 pub fn pr_str(py: Python<'_>, x: PyObject) -> PyResult<String> {
+    pr_str_with(py, x, true)
+}
+
+/// Print `x` to a string in non-readable form (strings un-quoted) — backs
+/// `print-str` / `print` / `println`.
+pub fn print_str(py: Python<'_>, x: PyObject) -> PyResult<String> {
+    pr_str_with(py, x, false)
+}
+
+fn pr_str_with(py: Python<'_>, x: PyObject, readable: bool) -> PyResult<String> {
     let b = x.bind(py);
 
     // nil
@@ -15,12 +25,12 @@ pub fn pr_str(py: Python<'_>, x: PyObject) -> PyResult<String> {
     }
 
     // Booleans (check BEFORE ints — PyBool is a subclass of PyInt in CPython).
-    if let Ok(bv) = b.downcast::<PyBool>() {
+    if let Ok(bv) = b.cast::<PyBool>() {
         return Ok(if bv.is_true() { "true".to_string() } else { "false".to_string() });
     }
 
     // Our types.
-    if let Ok(sym) = b.downcast::<crate::symbol::Symbol>() {
+    if let Ok(sym) = b.cast::<crate::symbol::Symbol>() {
         let s = sym.get();
         return match s.ns.as_deref() {
             Some(ns) => Ok(format!("{}/{}", ns, s.name)),
@@ -28,7 +38,7 @@ pub fn pr_str(py: Python<'_>, x: PyObject) -> PyResult<String> {
         };
     }
 
-    if let Ok(kw) = b.downcast::<crate::keyword::Keyword>() {
+    if let Ok(kw) = b.cast::<crate::keyword::Keyword>() {
         let k = kw.get();
         return match k.ns.as_deref() {
             Some(ns) => Ok(format!(":{}/{}", ns, k.name)),
@@ -37,58 +47,61 @@ pub fn pr_str(py: Python<'_>, x: PyObject) -> PyResult<String> {
     }
 
     // PersistentList
-    if let Ok(pl) = b.downcast::<crate::collections::plist::PersistentList>() {
-        return pr_list(py, pl.clone().unbind().into_any());
+    if let Ok(pl) = b.cast::<crate::collections::plist::PersistentList>() {
+        return pr_list(py, pl.clone().unbind().into_any(), readable);
     }
-    if b.downcast::<crate::collections::plist::EmptyList>().is_ok() {
+    if b.cast::<crate::collections::plist::EmptyList>().is_ok() {
         return Ok("()".to_string());
     }
 
     // PersistentVector
-    if let Ok(pv) = b.downcast::<crate::collections::pvector::PersistentVector>() {
-        return pr_vector(py, pv.get());
+    if let Ok(pv) = b.cast::<crate::collections::pvector::PersistentVector>() {
+        return pr_vector(py, pv.get(), readable);
     }
 
-    // PersistentHashMap / ArrayMap
-    if b.downcast::<crate::collections::phashmap::PersistentHashMap>().is_ok()
-        || b.downcast::<crate::collections::parraymap::PersistentArrayMap>().is_ok()
+    // PersistentHashMap / ArrayMap / PersistentTreeMap
+    if b.cast::<crate::collections::phashmap::PersistentHashMap>().is_ok()
+        || b.cast::<crate::collections::parraymap::PersistentArrayMap>().is_ok()
+        || b.cast::<crate::collections::ptreemap::PersistentTreeMap>().is_ok()
     {
-        return pr_map(py, x);
+        return pr_map(py, x, readable);
     }
 
-    // PersistentHashSet
-    if b.downcast::<crate::collections::phashset::PersistentHashSet>().is_ok() {
-        return pr_set(py, x);
+    // PersistentHashSet / PersistentTreeSet
+    if b.cast::<crate::collections::phashset::PersistentHashSet>().is_ok()
+        || b.cast::<crate::collections::ptreeset::PersistentTreeSet>().is_ok()
+    {
+        return pr_set(py, x, readable);
     }
 
     // Cons / LazySeq / VectorSeq — print as (a b c)
-    if b.downcast::<crate::seqs::cons::Cons>().is_ok()
-        || b.downcast::<crate::seqs::lazy_seq::LazySeq>().is_ok()
-        || b.downcast::<crate::seqs::vector_seq::VectorSeq>().is_ok()
+    if b.cast::<crate::seqs::cons::Cons>().is_ok()
+        || b.cast::<crate::seqs::lazy_seq::LazySeq>().is_ok()
+        || b.cast::<crate::seqs::vector_seq::VectorSeq>().is_ok()
     {
-        return pr_seq(py, x);
+        return pr_seq(py, x, readable);
     }
 
     // Var — print as #'ns/sym
-    if let Ok(var) = b.downcast::<crate::var::Var>() {
+    if let Ok(var) = b.cast::<crate::var::Var>() {
         // Var's pymethod __repr__ returns #'ns/sym; just use it.
         let r = var.call_method0("__repr__")?;
         return Ok(r.extract::<String>()?);
     }
 
     // Python primitives.
-    if let Ok(iv) = b.downcast::<PyInt>() {
+    if let Ok(iv) = b.cast::<PyInt>() {
         return Ok(iv.extract::<i128>().map(|n| n.to_string())
             .or_else(|_| iv.call_method0("__repr__").and_then(|r| r.extract::<String>()))?);
     }
-    if let Ok(fv) = b.downcast::<PyFloat>() {
+    if let Ok(fv) = b.cast::<PyFloat>() {
         let f = fv.extract::<f64>()?;
         // Clojure-style: 1.0 prints as 1.0 (Python's default too).
         return Ok(format!("{}", f_display(f)));
     }
-    if let Ok(s) = b.downcast::<PyString>() {
+    if let Ok(s) = b.cast::<PyString>() {
         let raw = s.extract::<String>()?;
-        return Ok(escape_string(&raw));
+        return Ok(if readable { escape_string(&raw) } else { raw });
     }
 
     // Fallback: call Python repr.
@@ -123,17 +136,17 @@ fn escape_string(s: &str) -> String {
     out
 }
 
-fn pr_list(py: Python<'_>, lst: PyObject) -> PyResult<String> {
+fn pr_list(py: Python<'_>, lst: PyObject, readable: bool) -> PyResult<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut cur: PyObject = lst;
     loop {
         let b = cur.bind(py);
-        if b.downcast::<crate::collections::plist::EmptyList>().is_ok() {
+        if b.cast::<crate::collections::plist::EmptyList>().is_ok() {
             break;
         }
-        if let Ok(pl) = b.downcast::<crate::collections::plist::PersistentList>() {
+        if let Ok(pl) = b.cast::<crate::collections::plist::PersistentList>() {
             let head = pl.get().head.clone_ref(py);
-            parts.push(pr_str(py, head)?);
+            parts.push(pr_str_with(py, head, readable)?);
             cur = pl.get().tail.clone_ref(py);
             continue;
         }
@@ -145,49 +158,62 @@ fn pr_list(py: Python<'_>, lst: PyObject) -> PyResult<String> {
 fn pr_vector(
     py: Python<'_>,
     v: &crate::collections::pvector::PersistentVector,
+    readable: bool,
 ) -> PyResult<String> {
     let mut parts: Vec<String> = Vec::with_capacity(v.cnt as usize);
     for i in 0..(v.cnt as usize) {
         let item = v.nth_internal_pub(py, i)?;
-        parts.push(pr_str(py, item)?);
+        parts.push(pr_str_with(py, item, readable)?);
     }
     Ok(format!("[{}]", parts.join(" ")))
 }
 
-fn pr_map(py: Python<'_>, m: PyObject) -> PyResult<String> {
-    // Iterate via Python __iter__ (yields keys) + val_at.
+fn pr_map(py: Python<'_>, m: PyObject, readable: bool) -> PyResult<String> {
+    // Iterate via Python __iter__ (yields keys for hash/array maps, MapEntries
+    // for tree maps). Unify by treating the iter item as either a MapEntry or
+    // a bare key (fetch value via val_at).
     let b = m.bind(py);
     let iter = b.try_iter()?;
     let mut parts: Vec<String> = Vec::new();
     for item in iter {
-        let k = item?.unbind();
+        let it = item?;
+        // If it's a MapEntry (tree-map case), extract its key/val directly.
+        if let Ok(me) = it.cast::<crate::collections::map_entry::MapEntry>() {
+            let ke = me.get().key.clone_ref(py);
+            let ve = me.get().val.clone_ref(py);
+            let ks = pr_str_with(py, ke, readable)?;
+            let vs = pr_str_with(py, ve, readable)?;
+            parts.push(format!("{} {}", ks, vs));
+            continue;
+        }
+        let k = it.unbind();
         let v = b.call_method1("val_at", (k.clone_ref(py),))?.unbind();
-        let ks = pr_str(py, k)?;
-        let vs = pr_str(py, v)?;
+        let ks = pr_str_with(py, k, readable)?;
+        let vs = pr_str_with(py, v, readable)?;
         parts.push(format!("{} {}", ks, vs));
     }
     Ok(format!("{{{}}}", parts.join(", ")))
 }
 
-fn pr_set(py: Python<'_>, s: PyObject) -> PyResult<String> {
+fn pr_set(py: Python<'_>, s: PyObject, readable: bool) -> PyResult<String> {
     let b = s.bind(py);
     let iter = b.try_iter()?;
     let mut parts: Vec<String> = Vec::new();
     for item in iter {
         let v = item?.unbind();
-        parts.push(pr_str(py, v)?);
+        parts.push(pr_str_with(py, v, readable)?);
     }
     Ok(format!("#{{{}}}", parts.join(" ")))
 }
 
-fn pr_seq(py: Python<'_>, s: PyObject) -> PyResult<String> {
+fn pr_seq(py: Python<'_>, s: PyObject, readable: bool) -> PyResult<String> {
     // Use rt::first/rt::next_ to walk.
     let mut parts: Vec<String> = Vec::new();
     let mut cur: PyObject = crate::rt::seq(py, s)?;
     loop {
         if cur.is_none(py) { break; }
         let head = crate::rt::first(py, cur.clone_ref(py))?;
-        parts.push(pr_str(py, head)?);
+        parts.push(pr_str_with(py, head, readable)?);
         cur = crate::rt::next_(py, cur)?;
     }
     Ok(format!("({})", parts.join(" ")))

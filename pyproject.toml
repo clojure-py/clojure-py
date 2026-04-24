@@ -17,6 +17,11 @@ manifest-path = "crates/clojure_core/Cargo.toml"
 module-name = "clojure._core"
 python-source = "python"
 features = ["pyo3/extension-module"]
+include = [{ path = "python/clojure/**/*.clj", format = ["sdist", "wheel"] }]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-timeout"]
+repl = ["prompt_toolkit>=3.0", "pygments>=2.15"]
+
+[project.entry-points.pytest11]
+clojure_test = "clojure.pytest_plugin"

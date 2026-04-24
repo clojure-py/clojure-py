@@ -31,13 +31,15 @@ def test_symbol_isinstance():
     assert isinstance(symbol("foo"), Symbol)
 
 def test_with_meta_preserves_value_equality():
+    from clojure._core import with_meta
     s1 = symbol("foo")
-    s2 = s1.with_meta({"a": 1})
+    s2 = with_meta(s1, {"a": 1})
     assert s1 == s2
     assert hash(s1) == hash(s2)
 
 def test_with_meta_independent_instances():
+    from clojure._core import with_meta
     s1 = symbol("foo")
-    s2 = s1.with_meta({"a": 1})
+    s2 = with_meta(s1, {"a": 1})
     assert s1.meta is None
     assert s2.meta == {"a": 1}

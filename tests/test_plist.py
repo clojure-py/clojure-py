@@ -153,8 +153,9 @@ def test_meta_default_none():
 
 
 def test_with_meta_preserves_values():
+    from clojure._core import with_meta
     lst = list_(1, 2)
-    lst2 = lst.with_meta({"a": 1})
+    lst2 = with_meta(lst, {"a": 1})
     assert lst2.meta == {"a": 1}
     assert list(lst2) == [1, 2]
     assert lst.meta is None  # original unchanged

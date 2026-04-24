@@ -157,10 +157,14 @@ def test_rt_equiv_same_contents():
     assert equiv(vector(1, 2), vector(1, 2, 3)) is False
 
 
-def test_rt_equiv_cross_type_vector_vs_list_false_for_now():
-    """Cross-type sequential equality is deferred — vector != list of same contents for now."""
+def test_rt_equiv_cross_type_vector_vs_list_true():
+    """Cross-type sequential equality: a vector equals any Sequential (list,
+    lazy seq, cons) with the same elements in order."""
     from clojure._core import list_
-    assert equiv(vector(1, 2, 3), list_(1, 2, 3)) is False
+    assert equiv(vector(1, 2, 3), list_(1, 2, 3)) is True
+    assert equiv(list_(1, 2, 3), vector(1, 2, 3)) is True
+    assert equiv(vector(1, 2), list_(1, 2, 3)) is False
+    assert equiv(vector(), list_()) is True
 
 
 def test_rt_hash_eq_stable():

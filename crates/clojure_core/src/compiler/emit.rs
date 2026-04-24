@@ -26,6 +26,10 @@ type PyObject = Py<PyAny>;
 pub struct LocalBinding {
     pub name: Arc<str>,
     pub slot: u16,
+    /// `true` for names introduced by `letfn*`. The slot holds a
+    /// `LetfnCell`; references compile to `LoadLocal + LetfnCellGet`,
+    /// captures propagate the flag so inner fns also unbox.
+    pub is_letfn_cell: bool,
 }
 
 /// A single closure capture: where, in the immediately enclosing fn's
@@ -34,6 +38,10 @@ pub struct LocalBinding {
 pub struct CaptureBinding {
     pub name: Arc<str>,
     pub source: CaptureSource,
+    /// Mirrors `LocalBinding::is_letfn_cell`. Set when the captured
+    /// outer binding (or transitively-captured outer-outer) is a
+    /// letfn cell. References compile to `LoadCapture + LetfnCellGet`.
+    pub is_letfn_cell: bool,
 }
 
 pub struct LoopInfo {
@@ -61,6 +69,11 @@ pub struct FnCtx {
     pub remaining_uses: std::collections::HashMap<u16, usize>,
     /// Loop slots never get mid-body cleared (they must survive a back-edge).
     pub no_clear_slots: std::collections::HashSet<u16>,
+    /// Depth of enclosing `loop*` forms within this fn. When > 0, `LoadLocal`
+    /// must NOT auto-emit `ClearLocal` — loop iteration re-executes the same
+    /// lexical occurrence multiple times at runtime, but the liveness pass
+    /// only sees the single static occurrence.
+    pub loop_depth: u32,
 }
 
 impl FnCtx {
@@ -76,15 +89,26 @@ impl FnCtx {
             tail: true,
             remaining_uses: std::collections::HashMap::new(),
             no_clear_slots: std::collections::HashSet::new(),
+            loop_depth: 0,
         }
     }
 }
 
 /// Resolution outcome for a Symbol reference, relative to the current fn ctx.
 pub enum Resolved {
-    Local(u16),
-    Capture(u16),
+    /// `(slot, is_letfn_cell)`. When the flag is set, emit
+    /// `LoadLocal + LetfnCellGet`.
+    Local(u16, bool),
+    /// `(capture_ix, is_letfn_cell)`. When the flag is set, emit
+    /// `LoadCapture + LetfnCellGet`.
+    Capture(u16, bool),
     Var(u16),
+    /// A direct Python value (e.g. an exception class) resolved via a
+    /// qualified symbol whose attribute isn't a Var. Interned as a constant.
+    Const(u16),
+    /// The symbol names the currently-executing fn (via `(fn name [...] ...)`).
+    /// Emitted as `Op::LoadSelf`.
+    SelfRef,
 }
 
 pub struct Compiler {
@@ -123,6 +147,10 @@ impl Compiler {
             let ctx = self.cur_mut();
             if ctx.no_clear_slots.contains(&slot) {
                 false
+            } else if ctx.loop_depth > 0 {
+                // Inside a loop — lexical occurrence count is unreliable;
+                // never emit ClearLocal while we might iterate.
+                false
             } else if let Some(count) = ctx.remaining_uses.get_mut(&slot) {
                 if *count > 0 {
                     *count -= 1;
@@ -149,7 +177,11 @@ impl Compiler {
     }
 
     pub fn push_local(&mut self, name: Arc<str>, slot: u16) {
-        self.cur_mut().locals.push(LocalBinding { name, slot });
+        self.cur_mut().locals.push(LocalBinding { name, slot, is_letfn_cell: false });
+    }
+
+    pub fn push_letfn_local(&mut self, name: Arc<str>, slot: u16) {
+        self.cur_mut().locals.push(LocalBinding { name, slot, is_letfn_cell: true });
     }
 
     pub fn pop_locals_to(&mut self, len: usize) {
@@ -166,26 +198,40 @@ impl Compiler {
     /// `Resolved::Capture(ix)` for the current ctx.
     fn resolve_local_or_capture(&mut self, name: &str) -> Option<Resolved> {
         // Look in current ctx first.
-        if let Some(slot) = self.cur().locals.iter().rev()
-            .find(|lb| lb.name.as_ref() == name).map(|lb| lb.slot)
+        if let Some(lb) = self.cur().locals.iter().rev()
+            .find(|lb| lb.name.as_ref() == name)
         {
-            return Some(Resolved::Local(slot));
+            return Some(Resolved::Local(lb.slot, lb.is_letfn_cell));
         }
-        // Walk upward looking for a local or capture with this name.
-        let mut found: Option<(usize, CaptureSource)> = None;
+        // Current ctx's own self-name (e.g. `(fn walk [x] (walk x))`).
+        if let Some(n) = self.cur().name.as_deref() {
+            if n == name {
+                return Some(Resolved::SelfRef);
+            }
+        }
+        // Walk upward looking for a local, capture, or outer-fn's self-name.
+        let mut found: Option<(usize, CaptureSource, bool)> = None;
         for (i, ctx) in self.fns.iter().enumerate().rev().skip(1) {
-            if let Some(slot) = ctx.locals.iter().rev()
-                .find(|lb| lb.name.as_ref() == name).map(|lb| lb.slot)
+            if let Some(lb) = ctx.locals.iter().rev()
+                .find(|lb| lb.name.as_ref() == name)
             {
-                found = Some((i, CaptureSource::Local(slot)));
+                found = Some((i, CaptureSource::Local(lb.slot), lb.is_letfn_cell));
                 break;
             }
-            if let Some(ix) = ctx.captures.iter().position(|cb| cb.name.as_ref() == name) {
-                found = Some((i, CaptureSource::Capture(ix as u16)));
+            if let Some((ix, cb)) = ctx.captures.iter().enumerate().find(|(_, cb)| cb.name.as_ref() == name) {
+                found = Some((i, CaptureSource::Capture(ix as u16), cb.is_letfn_cell));
                 break;
+            }
+            // Outer fn's self-name: an inner fn references an outer named fn.
+            // Capture chain flows with CaptureSource::SelfRef at that level.
+            if let Some(n) = ctx.name.as_deref() {
+                if n == name {
+                    found = Some((i, CaptureSource::SelfRef, false));
+                    break;
+                }
             }
         }
-        let (found_at, initial_source) = found?;
+        let (found_at, initial_source, is_letfn_cell) = found?;
         // Install capture bindings from `found_at + 1` up to current (top).
         // The first intermediate's source is what we actually found.
         // Subsequent ones reference the previous ctx's fresh capture.
@@ -200,6 +246,7 @@ impl Compiler {
                 ctx.captures.push(CaptureBinding {
                     name: Arc::from(name),
                     source,
+                    is_letfn_cell,
                 });
                 ix
             };
@@ -207,8 +254,8 @@ impl Compiler {
         }
         // The current ctx's own capture index:
         match source {
-            CaptureSource::Capture(ix) => Some(Resolved::Capture(ix)),
-            CaptureSource::Local(_) => unreachable!(), // we always chained through at least one
+            CaptureSource::Capture(ix) => Some(Resolved::Capture(ix, is_letfn_cell)),
+            CaptureSource::Local(_) | CaptureSource::SelfRef => unreachable!(),
         }
     }
 
@@ -216,17 +263,44 @@ impl Compiler {
         if let Some(ns_name) = sym.ns.as_deref() {
             let sys = py.import("sys")?;
             let modules = sys.getattr("modules")?;
-            let target_ns = modules.get_item(ns_name).map_err(|_| {
-                errors::err(format!("No namespace: {}", ns_name))
-            })?;
+            // Aliases take precedence over `sys.modules`. Otherwise an
+            // unrelated package stub (e.g. `i` created as the parent of
+            // `i.a` from a previous test) would shadow a same-named alias
+            // installed by `(require '[foo :as i])`.
+            let alias_hit: Option<Bound<'_, pyo3::types::PyAny>> = {
+                let current = self.current_ns.bind(py);
+                if let Ok(aliases_obj) = current.getattr("__clj_aliases__") {
+                    if let Ok(aliases) = aliases_obj.cast::<pyo3::types::PyDict>() {
+                        let alias_sym = Py::new(
+                            py,
+                            crate::symbol::Symbol::new(None, std::sync::Arc::from(ns_name)),
+                        )?;
+                        aliases.get_item(alias_sym)?
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            let target_ns = match alias_hit {
+                Some(n) => n,
+                None => modules.get_item(ns_name).map_err(|_| {
+                    errors::err(format!("No namespace: {}", ns_name))
+                })?,
+            };
             let attr = target_ns.getattr(sym.name.as_ref()).map_err(|_| {
                 errors::err(format!("Unable to resolve: {}/{}", ns_name, sym.name))
             })?;
-            let var = attr.downcast::<crate::var::Var>().map_err(|_| {
-                errors::err(format!("{}/{} does not resolve to a Var", ns_name, sym.name))
-            })?;
-            let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
-            return Ok(Resolved::Var(ix));
+            if let Ok(var) = attr.cast::<crate::var::Var>() {
+                let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
+                return Ok(Resolved::Var(ix));
+            }
+            // Not a Var — treat as a direct Python value (class, fn, etc.)
+            // and intern as a constant. Enables referencing classes like
+            // `clojure.lang.IllegalArgumentException` from a catch clause.
+            let ix = self.cur_mut().pool.intern_const(attr.unbind());
+            return Ok(Resolved::Const(ix));
         }
 
         if let Some(r) = self.resolve_local_or_capture(sym.name.as_ref()) {
@@ -235,7 +309,7 @@ impl Compiler {
 
         let current = self.current_ns.bind(py);
         if let Ok(attr) = current.getattr(sym.name.as_ref()) {
-            if let Ok(var) = attr.downcast::<crate::var::Var>() {
+            if let Ok(var) = attr.cast::<crate::var::Var>() {
                 let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
                 return Ok(Resolved::Var(ix));
             }
@@ -245,22 +319,54 @@ impl Compiler {
         let modules = sys.getattr("modules")?;
         if let Ok(core_ns) = modules.get_item("clojure.core") {
             if let Ok(attr) = core_ns.getattr(sym.name.as_ref()) {
-                if let Ok(var) = attr.downcast::<crate::var::Var>() {
+                if let Ok(var) = attr.cast::<crate::var::Var>() {
                     let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
                     return Ok(Resolved::Var(ix));
                 }
             }
         }
 
+        // Dotted-module-path fallback: e.g. `clojure.lang.IllegalArgumentException`
+        // → sys.modules["clojure.lang"].IllegalArgumentException. Enables
+        // catch clauses to name Python classes by dotted path, parallel to
+        // vanilla's JVM class-name resolution.
+        let name = sym.name.as_ref();
+        if let Some(dot_ix) = name.rfind('.') {
+            let mod_path = &name[..dot_ix];
+            let attr = &name[dot_ix + 1..];
+            if let Ok(m) = modules.get_item(mod_path) {
+                if let Ok(a) = m.getattr(attr) {
+                    let ix = self.cur_mut().pool.intern_const(a.unbind());
+                    return Ok(Resolved::Const(ix));
+                }
+            }
+            if let Ok(m) = py.import(mod_path) {
+                if let Ok(a) = m.getattr(attr) {
+                    let ix = self.cur_mut().pool.intern_const(a.unbind());
+                    return Ok(Resolved::Const(ix));
+                }
+            }
+        }
         Err(errors::err(format!(
             "Unable to resolve symbol: {} in this context",
             sym.name
         )))
     }
 
+    /// Public entry point to the compiler's macroexpansion logic. Used by
+    /// `clojure.core/macroexpand-1`. Empty-env + empty-locals caller context.
+    pub fn try_macroexpand_user_public(
+        &mut self,
+        py: Python<'_>,
+        list_py: &PyObject,
+        head: &PyObject,
+    ) -> PyResult<Option<PyObject>> {
+        self.try_macroexpand_user(py, list_py, head)
+    }
+
     /// For `def` — interns a fresh Var in current-ns and adds it to the
-    /// pool. Does NOT deref; returns the pool index.
-    pub fn intern_def_target(&mut self, py: Python<'_>, sym: &Symbol) -> PyResult<u16> {
+    /// pool. Does NOT deref; returns the pool index and the Var.
+    pub fn intern_def_target(&mut self, py: Python<'_>, sym: &Symbol) -> PyResult<(u16, Py<crate::var::Var>)> {
         if sym.ns.is_some() {
             return Err(errors::err(format!(
                 "Can't def a qualified symbol: {}/{}",
@@ -271,7 +377,8 @@ impl Compiler {
         let fresh_sym = Symbol::new(None, Arc::clone(&sym.name));
         let fresh_sym_py = Py::new(py, fresh_sym)?;
         let var = crate::ns_ops::intern(py, self.current_ns.clone_ref(py), fresh_sym_py)?;
-        Ok(self.cur_mut().pool.intern_var(py, var))
+        let ix = self.cur_mut().pool.intern_var(py, var.clone_ref(py));
+        Ok((ix, var))
     }
 
     /// If the list's head is a Symbol that resolves to a Var tagged with
@@ -287,7 +394,7 @@ impl Compiler {
         head: &PyObject,
     ) -> PyResult<Option<PyObject>> {
         let hb = head.bind(py);
-        let sym_ref = match hb.downcast::<Symbol>() {
+        let sym_ref = match hb.cast::<Symbol>() {
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
@@ -341,7 +448,7 @@ impl Compiler {
         let attr = core_ns.getattr(name).map_err(|_| {
             errors::err(format!("Missing core Var: {}", name))
         })?;
-        let var = attr.downcast::<crate::var::Var>().map_err(|_| {
+        let var = attr.cast::<crate::var::Var>().map_err(|_| {
             errors::err(format!("{} is not a Var", name))
         })?;
         Ok(self.cur_mut().pool.intern_var(py, var.clone().unbind()))
@@ -357,31 +464,39 @@ impl Compiler {
             self.emit(Op::PushConst(ix));
             return Ok(());
         }
-        if b.downcast::<PyBool>().is_ok()
-            || b.downcast::<PyInt>().is_ok()
-            || b.downcast::<PyFloat>().is_ok()
-            || b.downcast::<PyString>().is_ok()
-            || b.downcast::<crate::keyword::Keyword>().is_ok()
+        if b.cast::<PyBool>().is_ok()
+            || b.cast::<PyInt>().is_ok()
+            || b.cast::<PyFloat>().is_ok()
+            || b.cast::<PyString>().is_ok()
+            || b.cast::<crate::keyword::Keyword>().is_ok()
         {
             let ix = self.cur_mut().pool.intern_const(form);
             self.emit(Op::PushConst(ix));
             return Ok(());
         }
 
-        if let Ok(sym_ref) = b.downcast::<Symbol>() {
+        if let Ok(sym_ref) = b.cast::<Symbol>() {
             match self.resolve_symbol(py, sym_ref.get())? {
-                Resolved::Local(slot) => { self.emit_load_local(slot); }
-                Resolved::Capture(ix) => { self.emit(Op::LoadCapture(ix)); }
+                Resolved::Local(slot, is_letfn) => {
+                    self.emit_load_local(slot);
+                    if is_letfn { self.emit(Op::LetfnCellGet); }
+                }
+                Resolved::Capture(ix, is_letfn) => {
+                    self.emit(Op::LoadCapture(ix));
+                    if is_letfn { self.emit(Op::LetfnCellGet); }
+                }
                 Resolved::Var(ix) => { self.emit(Op::Deref(ix)); }
+                Resolved::Const(ix) => { self.emit(Op::PushConst(ix)); }
+                Resolved::SelfRef => { self.emit(Op::LoadSelf); }
             }
             return Ok(());
         }
 
-        if let Ok(pl) = b.downcast::<PersistentList>() {
+        if let Ok(pl) = b.cast::<PersistentList>() {
             let head = pl.get().head.clone_ref(py);
             return self.compile_list_form(py, form.clone_ref(py), head);
         }
-        if b.downcast::<EmptyList>().is_ok() {
+        if b.cast::<EmptyList>().is_ok() {
             let ix = self.cur_mut().pool.intern_const(form);
             self.emit(Op::PushConst(ix));
             return Ok(());
@@ -400,13 +515,13 @@ impl Compiler {
             return self.compile_list_form(py, normalized, head);
         }
 
-        if let Ok(pv) = b.downcast::<PersistentVector>() {
+        if let Ok(pv) = b.cast::<PersistentVector>() {
             return self.compile_collection_literal(py, form.clone_ref(py), pv.get().cnt as usize);
         }
-        if b.downcast::<PersistentHashMap>().is_ok() || b.downcast::<PersistentArrayMap>().is_ok() {
+        if b.cast::<PersistentHashMap>().is_ok() || b.cast::<PersistentArrayMap>().is_ok() {
             return self.compile_map_literal(py, form);
         }
-        if b.downcast::<PersistentHashSet>().is_ok() {
+        if b.cast::<PersistentHashSet>().is_ok() {
             return self.compile_set_literal(py, form);
         }
 
@@ -421,19 +536,15 @@ impl Compiler {
         list_py: PyObject,
         head: PyObject,
     ) -> PyResult<()> {
-        // Built-in macroexpansion (defn, defmacro, when, cond, or, and, …).
-        if let Some(macro_name) = crate::eval::macros::lookup_builtin_macro(&head, py) {
-            let expanded = crate::eval::macros::expand(py, macro_name, list_py)?;
-            return self.compile_form(py, expanded);
-        }
-
         // User-defined macroexpansion: head resolves to a Var with :macro meta.
+        // All macros — including the former hardcoded defn/defmacro/when/
+        // when-not/cond/and/or — live in clojure.core as Clojure source now.
         if let Some(expanded) = self.try_macroexpand_user(py, &list_py, &head)? {
             return self.compile_form(py, expanded);
         }
 
         let hb = head.bind(py);
-        if let Ok(sym_ref) = hb.downcast::<Symbol>() {
+        if let Ok(sym_ref) = hb.cast::<Symbol>() {
             let s = sym_ref.get();
             if s.ns.is_none() {
                 let n = s.name.as_ref();
@@ -441,13 +552,16 @@ impl Compiler {
                     "quote" => return self.compile_quote(py, list_py),
                     "if" => return self.compile_if(py, list_py),
                     "do" => return self.compile_do(py, list_py),
-                    "let" | "let*" => return self.compile_let(py, list_py, false),
-                    "loop" | "loop*" => return self.compile_let(py, list_py, true),
+                    "let*" => return self.compile_let(py, list_py, false),
+                    "loop*" => return self.compile_let(py, list_py, true),
+                    "letfn*" => return self.compile_letfn(py, list_py),
                     "recur" => return self.compile_recur(py, list_py),
                     "var" => return self.compile_var_form(py, list_py),
-                    "fn" | "fn*" => return self.compile_fn_form(py, list_py),
+                    "fn*" => return self.compile_fn_form(py, list_py),
                     "def" => return self.compile_def(py, list_py),
                     "set!" => return self.compile_set_bang(py, list_py),
+                    "throw" => return self.compile_throw(py, list_py),
+                    "try" => return self.compile_try(py, list_py),
                     "." => return self.compile_dot_legacy(py, list_py),
                     _ => {
                         // .-attr sugar → GetAttr
@@ -489,24 +603,43 @@ impl Compiler {
             )));
         }
         let b = args[0].bind(py);
-        let sym_ref = b.downcast::<Symbol>().map_err(|_| {
+        let sym_ref = b.cast::<Symbol>().map_err(|_| {
             errors::err("var's argument must be a Symbol")
         })?;
         let s = sym_ref.get();
-        let target_ns_py: Bound<'_, PyAny> = match s.ns.as_deref() {
+        // Resolution order for `(var sym)`:
+        //   1. If sym is qualified, look up that ns directly.
+        //   2. Else try the current ns.
+        //   3. Else fall through to clojure.core (mirrors symbol resolution).
+        let attr: Bound<'_, PyAny> = match s.ns.as_deref() {
             Some(n) => {
                 let sys = py.import("sys")?;
                 let modules = sys.getattr("modules")?;
-                modules.get_item(n).map_err(|_| {
+                let target = modules.get_item(n).map_err(|_| {
                     errors::err(format!("No namespace: {} found in (var ...)", n))
+                })?;
+                target.getattr(s.name.as_ref()).map_err(|_| {
+                    errors::err(format!("Unable to resolve var: {}/{}", n, s.name))
                 })?
             }
-            None => self.current_ns.bind(py).clone(),
+            None => {
+                let cur = self.current_ns.bind(py).clone();
+                match cur.getattr(s.name.as_ref()) {
+                    Ok(a) => a,
+                    Err(_) => {
+                        let sys = py.import("sys")?;
+                        let modules = sys.getattr("modules")?;
+                        let core = modules.get_item("clojure.core").map_err(|_| {
+                            errors::err("clojure.core not loaded")
+                        })?;
+                        core.getattr(s.name.as_ref()).map_err(|_| {
+                            errors::err(format!("Unable to resolve var: {}", s.name))
+                        })?
+                    }
+                }
+            }
         };
-        let attr = target_ns_py.getattr(s.name.as_ref()).map_err(|_| {
-            errors::err(format!("Unable to resolve var: {}", s.name))
-        })?;
-        let var = attr.downcast::<crate::var::Var>().map_err(|_| {
+        let var = attr.cast::<crate::var::Var>().map_err(|_| {
             errors::err(format!("Symbol {} does not resolve to a Var", s.name))
         })?;
         let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
@@ -572,7 +705,7 @@ impl Compiler {
             return Err(errors::err(format!("{} requires a binding vector", what)));
         }
         let bindings = args[0].bind(py);
-        let bv = bindings.downcast::<PersistentVector>().map_err(|_| {
+        let bv = bindings.cast::<PersistentVector>().map_err(|_| {
             let what = if is_loop { "loop" } else { "let" };
             errors::err(format!("{}: first argument must be a vector of bindings", what))
         })?;
@@ -589,7 +722,7 @@ impl Compiler {
         while i < n {
             let name_form = bv_ref.nth_internal_pub(py, i)?;
             let name_b = name_form.bind(py);
-            let name_sym = name_b.downcast::<Symbol>().map_err(|_| {
+            let name_sym = name_b.cast::<Symbol>().map_err(|_| {
                 errors::err("binding name must be a Symbol")
             })?;
             let val_form = bv_ref.nth_internal_pub(py, i + 1)?;
@@ -616,15 +749,25 @@ impl Compiler {
             let captured_by_fn = body_has_fn_capturing(py, &body, &name_to_slot)?;
             for (name, slot) in &new_names_slots {
                 if captured_by_fn.contains(name.as_ref()) {
-                    // Don't mid-body clear — an inner fn* captures this local.
                     self.cur_mut().no_clear_slots.insert(*slot);
                     continue;
                 }
                 let count = count_outer_refs_in_forms(py, &body, name.as_ref())?;
-                if count > 0 {
+                // `usize::MAX` is the macro-sentinel from
+                // `count_outer_refs_in_form`: the body contains a macro
+                // call whose expansion we can't predict statically. Don't
+                // mid-body clear this slot — it stays alive to end of scope.
+                if count == usize::MAX {
+                    self.cur_mut().no_clear_slots.insert(*slot);
+                } else if count > 0 {
                     self.cur_mut().remaining_uses.insert(*slot, count);
                 }
             }
+            // Inner-loop liveness: `emit_load_local` checks `loop_depth > 0`
+            // at emit time and skips auto-clear inside any loop*. That's
+            // simpler and more robust than pre-scanning the body for loops
+            // (macros like `while` expand to loop* only after macroexpansion,
+            // which a pre-scan would miss).
         } else {
             // Loop slots never mid-body clear.
             for (_, slot) in &new_names_slots {
@@ -634,6 +777,7 @@ impl Compiler {
 
         let saved_loop = if is_loop {
             let top = self.here();
+            self.cur_mut().loop_depth += 1;
             Some(std::mem::replace(
                 &mut self.cur_mut().loop_target,
                 Some(LoopInfo { top, slots: slot_list.clone() }),
@@ -648,7 +792,14 @@ impl Compiler {
         } else {
             let last = body.len() - 1;
             for (i, form) in body.iter().enumerate() {
-                self.cur_mut().tail = saved_tail && i == last;
+                // A loop's body is its own tail context — `recur` targets
+                // this loop regardless of the outer form's tail state. For
+                // plain `let`, the body inherits the outer tail state.
+                self.cur_mut().tail = if is_loop {
+                    i == last
+                } else {
+                    saved_tail && i == last
+                };
                 self.compile_form(py, form.clone_ref(py))?;
                 if i != last { self.emit(Op::Pop); }
             }
@@ -657,6 +808,7 @@ impl Compiler {
 
         if is_loop {
             self.cur_mut().loop_target = saved_loop.unwrap();
+            self.cur_mut().loop_depth -= 1;
         }
 
         // Scope-end safety net: any new local that wasn't cleared yet
@@ -674,6 +826,91 @@ impl Compiler {
         // we added (inner scope shouldn't leak liveness state to outer).
         self.cur_mut().remaining_uses = saved_uses;
         for (_, slot) in &new_names_slots {
+            self.cur_mut().no_clear_slots.remove(slot);
+        }
+        self.pop_locals_to(saved_locals);
+        Ok(())
+    }
+
+    /// `letfn* [name1 fn-form1, name2 fn-form2, …] body…`
+    ///
+    /// All names are mutually visible inside every fn body and the
+    /// trailing body. Implementation: each name maps to a slot holding
+    /// a fresh `LetfnCell` (allocated via `LetfnCellInit`). All cells
+    /// exist before any fn is compiled, so each closure can capture
+    /// the cells of its peers. After a fn is constructed its closure
+    /// is stored into its cell via `LetfnCellSet`. Name references
+    /// (in any nesting depth) compile to `Load{Local,Capture} +
+    /// LetfnCellGet`, dispatched on the `is_letfn_cell` flag carried
+    /// by `LocalBinding` / `CaptureBinding`.
+    fn compile_letfn(&mut self, py: Python<'_>, list_py: PyObject) -> PyResult<()> {
+        let args = list_rest(py, &list_py)?;
+        if args.is_empty() {
+            return Err(errors::err("letfn* requires a binding vector"));
+        }
+        let bindings = args[0].bind(py);
+        let bv = bindings.cast::<PersistentVector>().map_err(|_| {
+            errors::err("letfn*: first argument must be a vector of bindings")
+        })?;
+        let bv_ref = bv.get();
+        if bv_ref.cnt % 2 != 0 {
+            return Err(errors::err("letfn* binding vector must have even length"));
+        }
+        let saved_locals = self.locals_len();
+        let saved_tail = self.cur().tail;
+
+        // Pass 1: parse names, allocate slots, init cells, push locals.
+        let n = bv_ref.cnt as usize;
+        let mut name_slot_pairs: Vec<(Arc<str>, u16)> = Vec::with_capacity(n / 2);
+        let mut value_forms: Vec<PyObject> = Vec::with_capacity(n / 2);
+        let mut i = 0;
+        while i < n {
+            let name_form = bv_ref.nth_internal_pub(py, i)?;
+            let name_b = name_form.bind(py);
+            let name_sym = name_b.cast::<Symbol>().map_err(|_| {
+                errors::err("letfn* binding name must be a Symbol")
+            })?;
+            let val_form = bv_ref.nth_internal_pub(py, i + 1)?;
+            let slot = self.alloc_slot();
+            self.emit(Op::LetfnCellInit(slot));
+            let name_arc = Arc::clone(&name_sym.get().name);
+            self.push_letfn_local(Arc::clone(&name_arc), slot);
+            // Cells live for the entire scope; never clear them mid-body.
+            self.cur_mut().no_clear_slots.insert(slot);
+            name_slot_pairs.push((name_arc, slot));
+            value_forms.push(val_form);
+            i += 2;
+        }
+
+        // Pass 2: compile each value form (expected to be a fn-form, but
+        // we don't enforce that — vanilla doesn't either). After each is
+        // on the stack, store it into its cell.
+        self.cur_mut().tail = false;
+        for ((_, slot), val_form) in name_slot_pairs.iter().zip(value_forms.into_iter()) {
+            self.compile_form(py, val_form)?;
+            self.emit(Op::LetfnCellSet(*slot));
+        }
+        self.cur_mut().tail = saved_tail;
+
+        // Pass 3: compile body as implicit (do …).
+        let body: Vec<PyObject> = args[1..].iter().map(|o| o.clone_ref(py)).collect();
+        if body.is_empty() {
+            let nil = self.cur().pool.nil_ix();
+            self.emit(Op::PushConst(nil));
+        } else {
+            let last = body.len() - 1;
+            for (i, form) in body.iter().enumerate() {
+                self.cur_mut().tail = saved_tail && i == last;
+                self.compile_form(py, form.clone_ref(py))?;
+                if i != last { self.emit(Op::Pop); }
+            }
+        }
+        self.cur_mut().tail = saved_tail;
+
+        // Cleanup: clear each cell slot at scope exit, drop liveness state,
+        // pop locals.
+        for (_, slot) in &name_slot_pairs {
+            self.emit(Op::ClearLocal(*slot));
             self.cur_mut().no_clear_slots.remove(slot);
         }
         self.pop_locals_to(saved_locals);
@@ -722,34 +959,90 @@ impl Compiler {
         Ok(())
     }
 
-    /// `(def foo init)` → Deref(bind_root_ix); LoadVar(target); <init>; Invoke(2).
+    /// Three shapes:
+    ///   `(def foo)`                   — declare; emits LoadVar.
+    ///   `(def foo init)`              — bind.
+    ///   `(def foo "docstring" init)`  — bind + attach `:doc` to Var meta.
     fn compile_def(&mut self, py: Python<'_>, list_py: PyObject) -> PyResult<()> {
         let args = list_rest(py, &list_py)?;
-        if args.is_empty() || args.len() > 2 {
+        if args.is_empty() || args.len() > 3 {
             return Err(errors::err(format!(
-                "def requires 1 or 2 arguments (got {})",
+                "def requires 1, 2, or 3 arguments (got {})",
                 args.len()
             )));
         }
         let name_form = args[0].bind(py);
-        let sym_ref = name_form.downcast::<Symbol>().map_err(|_| {
+        let sym_ref = name_form.cast::<Symbol>().map_err(|_| {
             errors::err("def's first argument must be a Symbol")
         })?;
-        let target_ix = self.intern_def_target(py, sym_ref.get())?;
 
-        if args.len() == 2 {
-            let bind_root_ix = self.resolve_core_var(py, "bind-root")?;
-            self.emit(Op::Deref(bind_root_ix));
-            self.emit(Op::LoadVar(target_ix));
-            let saved_tail = self.cur().tail;
-            self.cur_mut().tail = false;
-            self.compile_form(py, args[1].clone_ref(py))?;
-            self.cur_mut().tail = saved_tail;
-            self.emit(Op::Invoke(2));
-            // `bind-root` returns the Var; we keep that as the value of the def expr.
-        } else {
-            // (def foo) — just ensure Var exists. Push it.
-            self.emit(Op::LoadVar(target_ix));
+        // Optional docstring in the 3-arg form.
+        let (docstring, init_ix): (Option<PyObject>, Option<usize>) = match args.len() {
+            3 => {
+                let doc_form = args[1].bind(py);
+                let doc = doc_form
+                    .cast::<pyo3::types::PyString>()
+                    .map_err(|_| errors::err("def: docstring must be a string literal"))?;
+                (Some(doc.clone().unbind().into_any()), Some(2))
+            }
+            2 => (None, Some(1)),
+            _ => (None, None),
+        };
+
+        // Propagate the Symbol's metadata (e.g. ^{:macro true}, :doc, :private)
+        // to the Var. Vanilla Clojure takes this off the name symbol and
+        // attaches it to the Var. Add `:doc` from the 3-arg form on top.
+        let sym_meta: Option<PyObject> =
+            sym_ref.get().meta.as_ref().map(|o| o.clone_ref(py));
+        let (target_ix, target_var) = self.intern_def_target(py, sym_ref.get())?;
+        let merged_meta = merge_doc_into_meta(py, sym_meta, docstring)?;
+        // Also stamp `:ns` (the current namespace) and `:name` (the Var's
+        // name as a Symbol) — vanilla Clojure does this so test runners
+        // and introspection tools (e.g. clojure.test/test-vars) can locate
+        // a Var's home namespace from its meta.
+        let ns_kw: PyObject = crate::keyword::keyword(py, "ns", None)?.into_any();
+        let name_kw: PyObject = crate::keyword::keyword(py, "name", None)?.into_any();
+        let name_sym: PyObject = Py::new(
+            py,
+            crate::symbol::Symbol::new(None, sym_ref.get().name.clone()),
+        )?.into_any();
+        let ns_obj = self.current_ns.clone_ref(py);
+        let stamped = match merged_meta {
+            Some(m) => {
+                let m1 = m.bind(py).call_method1("assoc", (ns_kw, ns_obj))?;
+                let m2 = m1.call_method1("assoc", (name_kw, name_sym))?.unbind();
+                Some(m2)
+            }
+            None => {
+                let tup = pyo3::types::PyTuple::new(py, &[ns_kw, ns_obj, name_kw, name_sym])?;
+                Some(crate::collections::parraymap::array_map(py, tup)?)
+            }
+        };
+        if let Some(meta) = stamped {
+            // If `:dynamic true` is on the meta, flip the Var's dynamic flag.
+            let dyn_kw = crate::keyword::keyword(py, "dynamic", None)?.into_any();
+            let dyn_val = crate::rt::get(py, meta.clone_ref(py), dyn_kw, py.None())?;
+            let is_dyn = dyn_val.bind(py).is_truthy().unwrap_or(false);
+            target_var.bind(py).get().set_dynamic(is_dyn);
+            target_var.bind(py).get().set_meta(Some(meta));
+        }
+
+        match init_ix {
+            Some(ix) => {
+                let bind_root_ix = self.resolve_core_var(py, "bind-root")?;
+                self.emit(Op::Deref(bind_root_ix));
+                self.emit(Op::LoadVar(target_ix));
+                let saved_tail = self.cur().tail;
+                self.cur_mut().tail = false;
+                self.compile_form(py, args[ix].clone_ref(py))?;
+                self.cur_mut().tail = saved_tail;
+                self.emit(Op::Invoke(2));
+                // `bind-root` returns the Var; keep that as the def expr's value.
+            }
+            None => {
+                // (def foo) — just ensure Var exists. Push it.
+                self.emit(Op::LoadVar(target_ix));
+            }
         }
         Ok(())
     }
@@ -765,7 +1058,7 @@ impl Compiler {
         }
         let (name, rest): (Option<String>, &[PyObject]) = {
             let b0 = args[0].bind(py);
-            if let Ok(sym_ref) = b0.downcast::<Symbol>() {
+            if let Ok(sym_ref) = b0.cast::<Symbol>() {
                 if args.len() < 2 {
                     return Err(errors::err("fn with name requires a parameter vector"));
                 }
@@ -781,13 +1074,23 @@ impl Compiler {
         // Decide single vs multi-arity based on the first form after name.
         let method_specs: Vec<(PyObject, Vec<PyObject>)> = {
             let first_b = rest[0].bind(py);
-            if first_b.downcast::<PersistentVector>().is_ok() {
+            if first_b.cast::<PersistentVector>().is_ok() {
                 // single arity: rest = [params body...]
                 vec![(rest[0].clone_ref(py), rest[1..].iter().map(|o| o.clone_ref(py)).collect())]
-            } else if first_b.downcast::<PersistentList>().is_ok() {
+            } else if first_b.cast::<PersistentList>().is_ok()
+                || is_non_list_seq(py, &rest[0])?
+            {
                 let mut specs = Vec::with_capacity(rest.len());
                 for item in rest {
-                    let items = list_items(py, item)?;
+                    // Each arity spec may be a PersistentList or a non-list
+                    // seq (e.g. Cons, arising from macro expansions like
+                    // `(cons 'fn fdecl)` inside defn). Either way we iterate
+                    // via collect_seq-style logic that handles both.
+                    let items = if item.bind(py).cast::<PersistentList>().is_ok() {
+                        list_items(py, item)?
+                    } else {
+                        collect_seq(py, item)?
+                    };
                     if items.is_empty() {
                         return Err(errors::err(
                             "fn arity spec requires a parameter vector + body",
@@ -799,7 +1102,10 @@ impl Compiler {
                 }
                 specs
             } else {
-                return Err(errors::err("fn: expected parameter vector or arity list"));
+                return Err(errors::err(format!(
+                    "fn: expected parameter vector or arity list, got {}",
+                    first_b.repr().map(|s| s.to_string()).unwrap_or_default()
+                )));
             }
         };
 
@@ -908,6 +1214,7 @@ impl Compiler {
             match src {
                 CaptureSource::Local(slot) => { self.emit(Op::LoadLocal(*slot)); }
                 CaptureSource::Capture(ix) => { self.emit(Op::LoadCapture(*ix)); }
+                CaptureSource::SelfRef => { self.emit(Op::LoadSelf); }
             }
         }
         if 1 + n_captures > u8::MAX as usize {
@@ -989,10 +1296,10 @@ impl Compiler {
         let obj_form = args[0].clone_ref(py);
 
         // `(. obj (method args...))` — parenthesized call form.
-        if let Ok(pl) = args[1].bind(py).downcast::<PersistentList>() {
+        if let Ok(pl) = args[1].bind(py).cast::<PersistentList>() {
             let head = pl.get().head.clone_ref(py);
             let hb = head.bind(py);
-            let method_sym = hb.downcast::<Symbol>().map_err(|_| {
+            let method_sym = hb.cast::<Symbol>().map_err(|_| {
                 errors::err("(. obj (member args)): member must be a Symbol")
             })?;
             let method_name = method_sym.get().name.to_string();
@@ -1015,7 +1322,7 @@ impl Compiler {
 
         // Flat form: 2nd arg is a Symbol — either `-attr` or `method`.
         let member = args[1].bind(py);
-        let sym_ref = member.downcast::<Symbol>().map_err(|_| {
+        let sym_ref = member.cast::<Symbol>().map_err(|_| {
             errors::err("(. obj <member>): member must be a Symbol or (method args) list")
         })?;
         let name = sym_ref.get().name.to_string();
@@ -1060,7 +1367,7 @@ impl Compiler {
         let target = &args[0];
         let target_b = target.bind(py);
         // Target must be a list of the form (.-attr obj) or (. obj -attr).
-        let items: Vec<PyObject> = if let Ok(_pl) = target_b.downcast::<PersistentList>() {
+        let items: Vec<PyObject> = if let Ok(_pl) = target_b.cast::<PersistentList>() {
             list_items(py, target)?
         } else {
             return Err(errors::err("set!: only (.-attr obj) targets are supported"));
@@ -1069,7 +1376,7 @@ impl Compiler {
             return Err(errors::err("set!: empty target"));
         }
         let head_b = items[0].bind(py);
-        let sym_ref = head_b.downcast::<Symbol>().map_err(|_| {
+        let sym_ref = head_b.cast::<Symbol>().map_err(|_| {
             errors::err("set!: target head must be a Symbol")
         })?;
         let head_name = sym_ref.get().name.clone();
@@ -1083,7 +1390,7 @@ impl Compiler {
                 return Err(errors::err("set! (. obj -attr): wrong shape"));
             }
             let m_b = items[2].bind(py);
-            let m_sym = m_b.downcast::<Symbol>().map_err(|_| {
+            let m_sym = m_b.cast::<Symbol>().map_err(|_| {
                 errors::err("set! (. obj -attr): member must be a Symbol")
             })?;
             let m_name = m_sym.get().name.to_string();
@@ -1104,6 +1411,229 @@ impl Compiler {
         let name_py = pyo3::types::PyString::new(py, &attr_owned).unbind().into_any();
         let ix = self.cur_mut().pool.intern_const(name_py);
         self.emit(Op::SetAttr(ix));
+        Ok(())
+    }
+
+    fn compile_throw(&mut self, py: Python<'_>, list_py: PyObject) -> PyResult<()> {
+        let args = list_rest(py, &list_py)?;
+        if args.len() != 1 {
+            return Err(errors::err(format!(
+                "throw requires exactly 1 argument (got {})",
+                args.len()
+            )));
+        }
+        let saved_tail = self.cur().tail;
+        self.cur_mut().tail = false;
+        self.compile_form(py, args[0].clone_ref(py))?;
+        self.cur_mut().tail = saved_tail;
+        self.emit(Op::Throw);
+        Ok(())
+    }
+
+    /// `(try body* (catch Class binding catch-body*)* (finally finally-body*)?)`.
+    ///
+    /// Compilation uses two dedicated locals per try: `exc_slot` (holds the
+    /// caught exception; set by the VM on unwind; nil on the normal path) and
+    /// `result_slot` (holds the try/catch result, preserved across finally).
+    /// The handler targets `catch_L`. After all catch clauses run, control
+    /// falls through to the finally block; after finally, if `exc_slot` is
+    /// still non-nil (no catch matched), the exception is re-thrown.
+    fn compile_try(&mut self, py: Python<'_>, list_py: PyObject) -> PyResult<()> {
+        let args = list_rest(py, &list_py)?;
+
+        // Partition args into body / catch clauses / finally.
+        let mut body_forms: Vec<PyObject> = Vec::new();
+        let mut catch_clauses: Vec<(PyObject, Arc<str>, Vec<PyObject>)> = Vec::new();
+        let mut finally_body: Option<Vec<PyObject>> = None;
+
+        for arg in args.iter() {
+            let clause_kind = clause_head_kind(py, arg);
+            match clause_kind {
+                ClauseKind::Catch => {
+                    let items = list_items(py, arg)?;
+                    if items.len() < 3 {
+                        return Err(errors::err(
+                            "catch requires (catch Class binding body...)",
+                        ));
+                    }
+                    let class_form = items[1].clone_ref(py);
+                    let binding_sym = items[2].bind(py).cast::<Symbol>().map_err(|_| {
+                        errors::err("catch binding must be a symbol")
+                    })?;
+                    let binding_name = Arc::clone(&binding_sym.get().name);
+                    let body: Vec<PyObject> =
+                        items[3..].iter().map(|x| x.clone_ref(py)).collect();
+                    catch_clauses.push((class_form, binding_name, body));
+                }
+                ClauseKind::Finally => {
+                    if finally_body.is_some() {
+                        return Err(errors::err("try supports only one finally clause"));
+                    }
+                    let items = list_items(py, arg)?;
+                    finally_body =
+                        Some(items[1..].iter().map(|x| x.clone_ref(py)).collect());
+                }
+                ClauseKind::Body => {
+                    if !catch_clauses.is_empty() || finally_body.is_some() {
+                        return Err(errors::err(
+                            "try body forms must precede catch/finally clauses",
+                        ));
+                    }
+                    body_forms.push(arg.clone_ref(py));
+                }
+            }
+        }
+
+        let has_catches = !catch_clauses.is_empty();
+        let has_finally = finally_body.is_some();
+        let nil_ix = self.cur().pool.nil_ix();
+
+        // Degenerate case: no catches, no finally — `try` is just a `do`.
+        if !has_catches && !has_finally {
+            if body_forms.is_empty() {
+                self.emit(Op::PushConst(nil_ix));
+                return Ok(());
+            }
+            let last = body_forms.len() - 1;
+            let saved_tail = self.cur().tail;
+            for (i, f) in body_forms.iter().enumerate() {
+                self.cur_mut().tail = saved_tail && i == last;
+                self.compile_form(py, f.clone_ref(py))?;
+                if i != last {
+                    self.emit(Op::Pop);
+                }
+            }
+            self.cur_mut().tail = saved_tail;
+            return Ok(());
+        }
+
+        // try body/catch/finally is never in tail position — the finally
+        // (and re-throw check) still need to run after the producing form.
+        let saved_tail = self.cur().tail;
+        self.cur_mut().tail = false;
+
+        // Intern builtins.isinstance if any catches exist.
+        let isinstance_ix: u16 = if has_catches {
+            let bi = py.import("builtins")?.getattr("isinstance")?.unbind();
+            self.cur_mut().pool.intern_const(bi)
+        } else {
+            0
+        };
+
+        // Allocate dedicated slots and mark them exempt from the liveness
+        // clearing pass — their writes happen via VM unwind, which the
+        // emit-time liveness tracker can't see.
+        let exc_slot = self.alloc_slot();
+        let result_slot = self.alloc_slot();
+        self.cur_mut().no_clear_slots.insert(exc_slot);
+        self.cur_mut().no_clear_slots.insert(result_slot);
+
+        // Initialize exc_slot to nil so the post-finally rethrow check can
+        // distinguish "no exception" (nil) from "caught/unmatched" (value).
+        self.emit(Op::PushConst(nil_ix));
+        self.emit(Op::StoreLocal(exc_slot));
+
+        // Install the handler. target_pc patched after catch_L is known.
+        let handler_pc = self.emit(Op::PushHandler(0, exc_slot));
+
+        // Compile body; its value is the try-success result.
+        if body_forms.is_empty() {
+            self.emit(Op::PushConst(nil_ix));
+        } else {
+            let last = body_forms.len() - 1;
+            for (i, f) in body_forms.iter().enumerate() {
+                self.compile_form(py, f.clone_ref(py))?;
+                if i != last {
+                    self.emit(Op::Pop);
+                }
+            }
+        }
+
+        // Body succeeded: pop handler, stash result, jump to finally.
+        self.emit(Op::PopHandler);
+        self.emit(Op::StoreLocal(result_slot));
+        let jump_body_ok = self.emit(Op::Jump(0));
+
+        // Catch landing. VM stashes exception into exc_slot and truncates
+        // the value stack before jumping here.
+        let catch_l = self.here();
+
+        // Track catch-body success jumps so we can patch them to finally_pc.
+        let mut catch_end_jumps: Vec<u32> = Vec::new();
+
+        if has_catches {
+            for (class_form, binding_name, body) in &catch_clauses {
+                // isinstance(exc, Class)
+                self.emit(Op::PushConst(isinstance_ix));
+                self.emit(Op::LoadLocal(exc_slot));
+                self.compile_form(py, class_form.clone_ref(py))?;
+                self.emit(Op::Invoke(2));
+                let skip_clause = self.emit(Op::JumpIfFalsy(0));
+
+                // Matched: bind exception to the catch binding, run body.
+                let v_slot = self.alloc_slot();
+                self.cur_mut().no_clear_slots.insert(v_slot);
+                self.emit(Op::LoadLocal(exc_slot));
+                self.emit(Op::StoreLocal(v_slot));
+                let saved_len = self.locals_len();
+                self.push_local(Arc::clone(binding_name), v_slot);
+
+                // Signal "caught" to the post-finally rethrow check.
+                self.emit(Op::PushConst(nil_ix));
+                self.emit(Op::StoreLocal(exc_slot));
+
+                if body.is_empty() {
+                    self.emit(Op::PushConst(nil_ix));
+                } else {
+                    let last = body.len() - 1;
+                    for (i, f) in body.iter().enumerate() {
+                        self.compile_form(py, f.clone_ref(py))?;
+                        if i != last {
+                            self.emit(Op::Pop);
+                        }
+                    }
+                }
+                self.pop_locals_to(saved_len);
+
+                self.emit(Op::StoreLocal(result_slot));
+                let j = self.emit(Op::Jump(0));
+                catch_end_jumps.push(j);
+
+                // Patch the per-clause skip to the next clause (or the
+                // fall-through, which leaves exc_slot set).
+                let next_pc = self.here();
+                self.cur_mut().code[skip_clause as usize] = Op::JumpIfFalsy(next_pc);
+            }
+            // No catch matched: exc_slot still holds the value; fall through
+            // to finally/rethrow. result_slot ends up unread.
+        }
+
+        // Finally block.
+        let finally_pc = self.here();
+        self.cur_mut().code[handler_pc as usize] = Op::PushHandler(catch_l, exc_slot);
+        self.cur_mut().code[jump_body_ok as usize] = Op::Jump(finally_pc);
+        for j in catch_end_jumps {
+            self.cur_mut().code[j as usize] = Op::Jump(finally_pc);
+        }
+
+        if let Some(ref fb) = finally_body {
+            for f in fb.iter() {
+                self.compile_form(py, f.clone_ref(py))?;
+                self.emit(Op::Pop);
+            }
+        }
+
+        // Re-throw check. If exc_slot is nil (body ok, or catch matched),
+        // produce result_slot. Else throw.
+        self.emit(Op::LoadLocal(exc_slot));
+        let j_ok = self.emit(Op::JumpIfFalsy(0));
+        self.emit(Op::LoadLocal(exc_slot));
+        self.emit(Op::Throw);
+        let ok_pc = self.here();
+        self.cur_mut().code[j_ok as usize] = Op::JumpIfFalsy(ok_pc);
+        self.emit(Op::LoadLocal(result_slot));
+
+        self.cur_mut().tail = saved_tail;
         Ok(())
     }
 
@@ -1147,7 +1677,7 @@ impl Compiler {
             self.emit(Op::PushConst(ix));
             return Ok(());
         }
-        let pv = form.bind(py).downcast::<PersistentVector>().unwrap().clone().unbind();
+        let pv = form.bind(py).cast::<PersistentVector>().unwrap().clone().unbind();
         let pv_ref = pv.bind(py).get();
         let vector_sym = Symbol::new(None, Arc::from("vector"));
         match self.resolve_symbol(py, &vector_sym)? {
@@ -1243,9 +1773,39 @@ impl Compiler {
 
 // ---- Helpers ----
 
+#[derive(Clone, Copy)]
+enum ClauseKind {
+    Body,
+    Catch,
+    Finally,
+}
+
+/// Classify a `try` subform: bare list whose head is the symbol `catch` or
+/// `finally` is a special clause; anything else is part of the body.
+fn clause_head_kind(py: Python<'_>, form: &PyObject) -> ClauseKind {
+    let b = form.bind(py);
+    let Ok(pl) = b.cast::<PersistentList>() else {
+        return ClauseKind::Body;
+    };
+    let head = pl.get().head.clone_ref(py);
+    let hb = head.bind(py);
+    let Ok(sym_ref) = hb.cast::<Symbol>() else {
+        return ClauseKind::Body;
+    };
+    let s = sym_ref.get();
+    if s.ns.is_some() {
+        return ClauseKind::Body;
+    }
+    match s.name.as_ref() {
+        "catch" => ClauseKind::Catch,
+        "finally" => ClauseKind::Finally,
+        _ => ClauseKind::Body,
+    }
+}
+
 pub fn list_rest(py: Python<'_>, list: &PyObject) -> PyResult<Vec<PyObject>> {
     let b = list.bind(py);
-    let pl = b.downcast::<PersistentList>().map_err(|_| {
+    let pl = b.cast::<PersistentList>().map_err(|_| {
         errors::err("list_rest: not a PersistentList")
     })?;
     walk_list_from(py, pl.get().tail.clone_ref(py))
@@ -1253,13 +1813,13 @@ pub fn list_rest(py: Python<'_>, list: &PyObject) -> PyResult<Vec<PyObject>> {
 
 pub fn list_items(py: Python<'_>, list: &PyObject) -> PyResult<Vec<PyObject>> {
     let b = list.bind(py);
-    if let Ok(pl) = b.downcast::<PersistentList>() {
+    if let Ok(pl) = b.cast::<PersistentList>() {
         let mut out = vec![pl.get().head.clone_ref(py)];
         let mut tail = pl.get().tail.clone_ref(py);
         loop {
             let tb = tail.bind(py);
-            if tb.downcast::<EmptyList>().is_ok() { break; }
-            if let Ok(p2) = tb.downcast::<PersistentList>() {
+            if tb.cast::<EmptyList>().is_ok() { break; }
+            if let Ok(p2) = tb.cast::<PersistentList>() {
                 out.push(p2.get().head.clone_ref(py));
                 tail = p2.get().tail.clone_ref(py);
                 continue;
@@ -1267,7 +1827,7 @@ pub fn list_items(py: Python<'_>, list: &PyObject) -> PyResult<Vec<PyObject>> {
             break;
         }
         Ok(out)
-    } else if b.downcast::<EmptyList>().is_ok() {
+    } else if b.cast::<EmptyList>().is_ok() {
         Ok(Vec::new())
     } else {
         Err(errors::err("list_items: not a PersistentList"))
@@ -1279,8 +1839,8 @@ fn walk_list_from(py: Python<'_>, start: PyObject) -> PyResult<Vec<PyObject>> {
     let mut cur = start;
     loop {
         let b = cur.bind(py);
-        if b.downcast::<EmptyList>().is_ok() { break; }
-        if let Ok(pl) = b.downcast::<PersistentList>() {
+        if b.cast::<EmptyList>().is_ok() { break; }
+        if let Ok(pl) = b.cast::<PersistentList>() {
             out.push(pl.get().head.clone_ref(py));
             cur = pl.get().tail.clone_ref(py);
             continue;
@@ -1294,16 +1854,16 @@ fn walk_list_from(py: Python<'_>, start: PyObject) -> PyResult<Vec<PyObject>> {
 /// e.g. Cons, LazySeq, VectorSeq produced by macros/core fns.
 pub fn is_non_list_seq(py: Python<'_>, form: &PyObject) -> PyResult<bool> {
     let b = form.bind(py);
-    if b.downcast::<PersistentList>().is_ok() || b.downcast::<EmptyList>().is_ok() {
+    if b.cast::<PersistentList>().is_ok() || b.cast::<EmptyList>().is_ok() {
         return Ok(false);
     }
-    if b.downcast::<crate::seqs::cons::Cons>().is_ok() {
+    if b.cast::<crate::seqs::cons::Cons>().is_ok() {
         return Ok(true);
     }
-    if b.downcast::<crate::seqs::lazy_seq::LazySeq>().is_ok() {
+    if b.cast::<crate::seqs::lazy_seq::LazySeq>().is_ok() {
         return Ok(true);
     }
-    if b.downcast::<crate::seqs::vector_seq::VectorSeq>().is_ok() {
+    if b.cast::<crate::seqs::vector_seq::VectorSeq>().is_ok() {
         return Ok(true);
     }
     Ok(false)
@@ -1342,7 +1902,7 @@ pub fn find_var(
             Err(_) => return Ok(None),
         };
         if let Ok(attr) = target_ns.getattr(sym.name.as_ref()) {
-            if let Ok(var) = attr.downcast::<crate::var::Var>() {
+            if let Ok(var) = attr.cast::<crate::var::Var>() {
                 return Ok(Some(var.clone().unbind()));
             }
         }
@@ -1350,7 +1910,7 @@ pub fn find_var(
     }
     let cur_bound = current_ns.bind(py);
     if let Ok(attr) = cur_bound.getattr(sym.name.as_ref()) {
-        if let Ok(var) = attr.downcast::<crate::var::Var>() {
+        if let Ok(var) = attr.cast::<crate::var::Var>() {
             return Ok(Some(var.clone().unbind()));
         }
     }
@@ -1358,7 +1918,7 @@ pub fn find_var(
     let modules = sys.getattr("modules")?;
     if let Ok(core_ns) = modules.get_item("clojure.core") {
         if let Ok(attr) = core_ns.getattr(sym.name.as_ref()) {
-            if let Ok(var) = attr.downcast::<crate::var::Var>() {
+            if let Ok(var) = attr.cast::<crate::var::Var>() {
                 return Ok(Some(var.clone().unbind()));
             }
         }
@@ -1379,7 +1939,7 @@ pub fn count_outer_refs_in_form(
     let b = form.bind(py);
 
     // Symbol: direct match is 1, miss is 0.
-    if let Ok(sym_ref) = b.downcast::<Symbol>() {
+    if let Ok(sym_ref) = b.cast::<Symbol>() {
         let s = sym_ref.get();
         if s.ns.is_none() && s.name.as_ref() == name {
             return Ok(1);
@@ -1389,47 +1949,47 @@ pub fn count_outer_refs_in_form(
 
     // Atoms.
     if form.is_none(py)
-        || b.downcast::<PyBool>().is_ok()
-        || b.downcast::<PyInt>().is_ok()
-        || b.downcast::<PyFloat>().is_ok()
-        || b.downcast::<PyString>().is_ok()
-        || b.downcast::<crate::keyword::Keyword>().is_ok()
+        || b.cast::<PyBool>().is_ok()
+        || b.cast::<PyInt>().is_ok()
+        || b.cast::<PyFloat>().is_ok()
+        || b.cast::<PyString>().is_ok()
+        || b.cast::<crate::keyword::Keyword>().is_ok()
     {
         return Ok(0);
     }
 
     // Collections (vector / map / set) — count inner references.
-    if let Ok(pv) = b.downcast::<PersistentVector>() {
+    if let Ok(pv) = b.cast::<PersistentVector>() {
         let pv_ref = pv.get();
-        let mut total = 0;
+        let mut total: usize = 0;
         for i in 0..(pv_ref.cnt as usize) {
             let el = pv_ref.nth_internal_pub(py, i)?;
-            total += count_outer_refs_in_form(py, &el, name)?;
+            total = total.saturating_add(count_outer_refs_in_form(py, &el, name)?);
         }
         return Ok(total);
     }
-    if b.downcast::<PersistentHashMap>().is_ok() || b.downcast::<PersistentArrayMap>().is_ok() {
-        let mut total = 0;
+    if b.cast::<PersistentHashMap>().is_ok() || b.cast::<PersistentArrayMap>().is_ok() {
+        let mut total: usize = 0;
         for item in b.try_iter()? {
             let k = item?.unbind();
             let v = b.call_method1("val_at", (k.clone_ref(py),))?.unbind();
-            total += count_outer_refs_in_form(py, &k, name)?;
-            total += count_outer_refs_in_form(py, &v, name)?;
+            total = total.saturating_add(count_outer_refs_in_form(py, &k, name)?);
+            total = total.saturating_add(count_outer_refs_in_form(py, &v, name)?);
         }
         return Ok(total);
     }
-    if b.downcast::<PersistentHashSet>().is_ok() {
-        let mut total = 0;
+    if b.cast::<PersistentHashSet>().is_ok() {
+        let mut total: usize = 0;
         for item in b.try_iter()? {
-            total += count_outer_refs_in_form(py, &item?.unbind(), name)?;
+            total = total.saturating_add(count_outer_refs_in_form(py, &item?.unbind(), name)?);
         }
         return Ok(total);
     }
 
     // Lists — check for special scoping forms.
-    let items = if let Ok(_pl) = b.downcast::<PersistentList>() {
+    let items = if let Ok(_pl) = b.cast::<PersistentList>() {
         list_items(py, form)?
-    } else if b.downcast::<EmptyList>().is_ok() {
+    } else if b.cast::<EmptyList>().is_ok() {
         return Ok(0);
     } else if is_non_list_seq(py, form)? {
         collect_seq(py, form)?
@@ -1441,29 +2001,95 @@ pub fn count_outer_refs_in_form(
     // Head-symbol special cases for shadowing.
     let head = items[0].clone_ref(py);
     let head_b = head.bind(py);
-    if let Ok(sym_ref) = head_b.downcast::<Symbol>() {
+    if let Ok(sym_ref) = head_b.cast::<Symbol>() {
         let s = sym_ref.get();
         if s.ns.is_none() {
             match s.name.as_ref() {
                 "quote" => return Ok(0),  // everything inside is data
-                "fn" | "fn*" => {
+                "fn*" => {
                     return count_fn_captures(py, &items[1..], name);
                 }
-                "let" | "let*" | "loop" | "loop*" => {
+                "let*" | "loop*" => {
                     return count_let_refs(py, &items[1..], name);
+                }
+                "letfn*" => {
+                    return count_letfn_refs(py, &items[1..], name);
                 }
                 _ => {}
             }
+        }
+        // If the head resolves to a macro Var, macroexpansion will produce
+        // forms this pre-scan can't see (e.g. `do-template` emits N copies
+        // of the template expression). Undercounting here would cause the
+        // compiler's liveness tracker to clear the local too early, so the
+        // second macro-generated reference would see nil. Return
+        // `usize::MAX` as a "don't use this count" sentinel.
+        // Note: qualified heads (ns/name) also need this check — syntax-
+        // quote emits fully-qualified forms.
+        if head_looks_like_macro(py, s)? {
+            return Ok(usize::MAX);
         }
     }
 
     // Default: count refs in every item (including the head, which may be
     // the symbol we're looking for in the fn-call position).
-    let mut total = 0;
+    let mut total: usize = 0;
     for item in &items {
-        total += count_outer_refs_in_form(py, item, name)?;
+        let c = count_outer_refs_in_form(py, item, name)?;
+        // Saturate at usize::MAX so macro sentinels propagate upward.
+        total = total.saturating_add(c);
     }
     Ok(total)
+}
+
+fn head_looks_like_macro(py: Python<'_>, s: &Symbol) -> PyResult<bool> {
+    let name = s.name.as_ref();
+    // Fast-reject ambient names that are known not to be macros. Keeps us
+    // from walking a namespace for every `(+ a b)` call.
+    if matches!(
+        name,
+        "+" | "-" | "*" | "/" | "=" | "<" | ">" | "<=" | ">="
+            | "inc" | "dec" | "not" | "first" | "rest" | "next" | "cons"
+            | "list" | "vector" | "hash-map" | "hash-set"
+            | "nth" | "get" | "count" | "conj" | "assoc" | "dissoc"
+            | "apply" | "map" | "filter" | "reduce" | "into"
+            | "identity" | "seq" | "empty?"
+    ) {
+        return Ok(false);
+    }
+    let sys = py.import("sys")?;
+    let modules = sys.getattr("modules")?;
+    // Resolve to a Var. Search order:
+    //   1. ns-qualified → that ns.
+    //   2. unqualified → the CURRENT compile ns (to catch refers like
+    //      `are`/`do-template` that live in clojure.test or elsewhere).
+    //   3. unqualified → clojure.core as a fallback for eval-from-Python
+    //      paths where the compile ns is clojure.user or fresh.
+    let current_ns_opt: Option<PyObject> =
+        crate::eval::load::CURRENT_LOAD_NS.with(|c| c.borrow().as_ref().map(|n| n.clone_ref(py)));
+    let resolved: Option<Py<crate::var::Var>> = if let Some(ns_name) = s.ns.as_deref() {
+        modules
+            .get_item(ns_name)
+            .ok()
+            .and_then(|m| m.getattr(name).ok())
+            .and_then(|v| v.cast::<crate::var::Var>().ok().map(|v| v.clone().unbind()))
+    } else {
+        let from_current = current_ns_opt
+            .as_ref()
+            .and_then(|ns| ns.bind(py).getattr(name).ok())
+            .and_then(|v| v.cast::<crate::var::Var>().ok().map(|v| v.clone().unbind()));
+        from_current.or_else(|| {
+            modules
+                .get_item("clojure.core")
+                .ok()
+                .and_then(|m| m.getattr(name).ok())
+                .and_then(|v| v.cast::<crate::var::Var>().ok().map(|v| v.clone().unbind()))
+        })
+    };
+    match resolved {
+        Some(v) => Ok(v.bind(py).get().is_macro(py)),
+        None => Ok(false),
+    }
 }
 
 /// Sum `count_outer_refs_in_form` over a sequence of body forms.
@@ -1472,9 +2098,9 @@ pub fn count_outer_refs_in_forms(
     forms: &[PyObject],
     name: &str,
 ) -> PyResult<usize> {
-    let mut total = 0;
+    let mut total: usize = 0;
     for f in forms {
-        total += count_outer_refs_in_form(py, f, name)?;
+        total = total.saturating_add(count_outer_refs_in_form(py, f, name)?);
     }
     Ok(total)
 }
@@ -1488,7 +2114,7 @@ fn count_fn_captures(
 ) -> PyResult<usize> {
     if after_fn_head.is_empty() { return Ok(0); }
     // Skip an optional name symbol.
-    let rest: &[PyObject] = if let Ok(_) = after_fn_head[0].bind(py).downcast::<Symbol>() {
+    let rest: &[PyObject] = if let Ok(_) = after_fn_head[0].bind(py).cast::<Symbol>() {
         &after_fn_head[1..]
     } else {
         after_fn_head
@@ -1497,9 +2123,9 @@ fn count_fn_captures(
 
     let specs: Vec<(PyObject, Vec<PyObject>)> = {
         let first_b = rest[0].bind(py);
-        if first_b.downcast::<PersistentVector>().is_ok() {
+        if first_b.cast::<PersistentVector>().is_ok() {
             vec![(rest[0].clone_ref(py), rest[1..].iter().map(|o| o.clone_ref(py)).collect())]
-        } else if first_b.downcast::<PersistentList>().is_ok() {
+        } else if first_b.cast::<PersistentList>().is_ok() {
             let mut specs = Vec::new();
             for item in rest {
                 let items = list_items(py, item)?;
@@ -1543,13 +2169,13 @@ fn count_let_refs(
     let bindings = &after_let_head[0];
     let body = &after_let_head[1..];
     let b = bindings.bind(py);
-    let pv = match b.downcast::<PersistentVector>() {
+    let pv = match b.cast::<PersistentVector>() {
         Ok(p) => p,
         Err(_) => return Ok(0),
     };
     let pv_ref = pv.get();
     if pv_ref.cnt % 2 != 0 { return Ok(0); }
-    let mut total = 0;
+    let mut total: usize = 0;
     let mut shadowed = false;
     let n = pv_ref.cnt as usize;
     let mut i = 0;
@@ -1559,11 +2185,11 @@ fn count_let_refs(
         // Value expr uses the outer binding (unless already shadowed by a
         // prior binding in this same let).
         if !shadowed {
-            total += count_outer_refs_in_form(py, &val, name)?;
+            total = total.saturating_add(count_outer_refs_in_form(py, &val, name)?);
         }
         // Check if this binding shadows `name`.
         let bn_b = bind_name.bind(py);
-        if let Ok(sym_ref) = bn_b.downcast::<Symbol>() {
+        if let Ok(sym_ref) = bn_b.cast::<Symbol>() {
             if sym_ref.get().ns.is_none() && sym_ref.get().name.as_ref() == name {
                 shadowed = true;
             }
@@ -1572,8 +2198,54 @@ fn count_let_refs(
     }
     if !shadowed {
         for f in body {
-            total += count_outer_refs_in_form(py, f, name)?;
+            total = total.saturating_add(count_outer_refs_in_form(py, f, name)?);
         }
+    }
+    Ok(total)
+}
+
+/// `letfn*` shadowing: all bound names are visible *throughout* the form
+/// (value forms and body). If `name` is one of the bound names, the entire
+/// form contributes 0 outer-scope refs. Otherwise sum refs across all
+/// value forms and body forms.
+fn count_letfn_refs(
+    py: Python<'_>,
+    after_head: &[PyObject],
+    name: &str,
+) -> PyResult<usize> {
+    if after_head.is_empty() { return Ok(0); }
+    let bindings = &after_head[0];
+    let body = &after_head[1..];
+    let b = bindings.bind(py);
+    let pv = match b.cast::<PersistentVector>() {
+        Ok(p) => p,
+        Err(_) => return Ok(0),
+    };
+    let pv_ref = pv.get();
+    if pv_ref.cnt % 2 != 0 { return Ok(0); }
+    let n = pv_ref.cnt as usize;
+    // First pass: any binding name == `name` shadows the whole form.
+    let mut i = 0;
+    while i < n {
+        let bind_name = pv_ref.nth_internal_pub(py, i)?;
+        let bn_b = bind_name.bind(py);
+        if let Ok(sym_ref) = bn_b.cast::<Symbol>() {
+            if sym_ref.get().ns.is_none() && sym_ref.get().name.as_ref() == name {
+                return Ok(0);
+            }
+        }
+        i += 2;
+    }
+    // Not shadowed: count refs across value forms and body.
+    let mut total: usize = 0;
+    let mut i = 1;
+    while i < n {
+        let val = pv_ref.nth_internal_pub(py, i)?;
+        total = total.saturating_add(count_outer_refs_in_form(py, &val, name)?);
+        i += 2;
+    }
+    for f in body {
+        total = total.saturating_add(count_outer_refs_in_form(py, f, name)?);
     }
     Ok(total)
 }
@@ -1609,18 +2281,18 @@ fn form_has_fn_capturing(
 ) -> PyResult<bool> {
     let b = form.bind(py);
 
-    if b.downcast::<Symbol>().is_ok()
+    if b.cast::<Symbol>().is_ok()
         || form.is_none(py)
-        || b.downcast::<PyBool>().is_ok()
-        || b.downcast::<PyInt>().is_ok()
-        || b.downcast::<PyFloat>().is_ok()
-        || b.downcast::<PyString>().is_ok()
-        || b.downcast::<crate::keyword::Keyword>().is_ok()
+        || b.cast::<PyBool>().is_ok()
+        || b.cast::<PyInt>().is_ok()
+        || b.cast::<PyFloat>().is_ok()
+        || b.cast::<PyString>().is_ok()
+        || b.cast::<crate::keyword::Keyword>().is_ok()
     {
         return Ok(false);
     }
 
-    if let Ok(pv) = b.downcast::<PersistentVector>() {
+    if let Ok(pv) = b.cast::<PersistentVector>() {
         let pv_ref = pv.get();
         for i in 0..(pv_ref.cnt as usize) {
             if form_has_fn_capturing(py, &pv_ref.nth_internal_pub(py, i)?, name)? {
@@ -1629,7 +2301,7 @@ fn form_has_fn_capturing(
         }
         return Ok(false);
     }
-    if b.downcast::<PersistentHashMap>().is_ok() || b.downcast::<PersistentArrayMap>().is_ok() {
+    if b.cast::<PersistentHashMap>().is_ok() || b.cast::<PersistentArrayMap>().is_ok() {
         for item in b.try_iter()? {
             let k = item?.unbind();
             let v = b.call_method1("val_at", (k.clone_ref(py),))?.unbind();
@@ -1638,7 +2310,7 @@ fn form_has_fn_capturing(
         }
         return Ok(false);
     }
-    if b.downcast::<PersistentHashSet>().is_ok() {
+    if b.cast::<PersistentHashSet>().is_ok() {
         for item in b.try_iter()? {
             if form_has_fn_capturing(py, &item?.unbind(), name)? {
                 return Ok(true);
@@ -1647,9 +2319,9 @@ fn form_has_fn_capturing(
         return Ok(false);
     }
 
-    let items = if let Ok(_pl) = b.downcast::<PersistentList>() {
+    let items = if let Ok(_pl) = b.cast::<PersistentList>() {
         list_items(py, form)?
-    } else if b.downcast::<EmptyList>().is_ok() {
+    } else if b.cast::<EmptyList>().is_ok() {
         return Ok(false);
     } else if is_non_list_seq(py, form)? {
         collect_seq(py, form)?
@@ -1659,17 +2331,20 @@ fn form_has_fn_capturing(
     if items.is_empty() { return Ok(false); }
 
     let head_b = items[0].bind(py);
-    if let Ok(sym_ref) = head_b.downcast::<Symbol>() {
+    if let Ok(sym_ref) = head_b.cast::<Symbol>() {
         let s = sym_ref.get();
         if s.ns.is_none() {
             if s.name.as_ref() == "quote" {
                 return Ok(false);
             }
-            if s.name.as_ref() == "fn" || s.name.as_ref() == "fn*" {
+            if s.name.as_ref() == "fn*" {
                 return fn_captures_name(py, &items[1..], name);
             }
-            if matches!(s.name.as_ref(), "let" | "let*" | "loop" | "loop*") {
+            if matches!(s.name.as_ref(), "let*" | "loop*") {
                 return let_captures_name(py, &items[1..], name);
+            }
+            if s.name.as_ref() == "letfn*" {
+                return letfn_captures_name(py, &items[1..], name);
             }
         }
     }
@@ -1698,7 +2373,7 @@ fn let_captures_name(
     let bindings = &after_let_head[0];
     let body = &after_let_head[1..];
     let b = bindings.bind(py);
-    let pv = match b.downcast::<PersistentVector>() {
+    let pv = match b.cast::<PersistentVector>() {
         Ok(p) => p,
         Err(_) => return Ok(false),
     };
@@ -1714,7 +2389,7 @@ fn let_captures_name(
             return Ok(true);
         }
         let bn_b = bind_name.bind(py);
-        if let Ok(sym_ref) = bn_b.downcast::<Symbol>() {
+        if let Ok(sym_ref) = bn_b.cast::<Symbol>() {
             if sym_ref.get().ns.is_none() && sym_ref.get().name.as_ref() == name {
                 shadowed = true;
             }
@@ -1731,6 +2406,46 @@ fn let_captures_name(
     Ok(false)
 }
 
+fn letfn_captures_name(
+    py: Python<'_>,
+    after_head: &[PyObject],
+    name: &str,
+) -> PyResult<bool> {
+    if after_head.is_empty() { return Ok(false); }
+    let bindings = &after_head[0];
+    let body = &after_head[1..];
+    let b = bindings.bind(py);
+    let pv = match b.cast::<PersistentVector>() {
+        Ok(p) => p,
+        Err(_) => return Ok(false),
+    };
+    let pv_ref = pv.get();
+    if pv_ref.cnt % 2 != 0 { return Ok(false); }
+    let n = pv_ref.cnt as usize;
+    // Shadowing: any binding name == `name` blocks the entire form.
+    let mut i = 0;
+    while i < n {
+        let bind_name = pv_ref.nth_internal_pub(py, i)?;
+        let bn_b = bind_name.bind(py);
+        if let Ok(sym_ref) = bn_b.cast::<Symbol>() {
+            if sym_ref.get().ns.is_none() && sym_ref.get().name.as_ref() == name {
+                return Ok(false);
+            }
+        }
+        i += 2;
+    }
+    let mut i = 1;
+    while i < n {
+        let val = pv_ref.nth_internal_pub(py, i)?;
+        if form_has_fn_capturing(py, &val, name)? { return Ok(true); }
+        i += 2;
+    }
+    for f in body {
+        if form_has_fn_capturing(py, f, name)? { return Ok(true); }
+    }
+    Ok(false)
+}
+
 /// Parse a fn params vector like `[x y & rest]`.
 /// Returns `(param_names, is_variadic)`. For variadic, the last element of
 /// `param_names` is the rest arg — its slot holds a seq (or nil) at runtime.
@@ -1739,7 +2454,7 @@ pub fn parse_params(
     params_form: &PyObject,
 ) -> PyResult<(Vec<Arc<str>>, bool)> {
     let b = params_form.bind(py);
-    let pv = b.downcast::<PersistentVector>().map_err(|_| {
+    let pv = b.cast::<PersistentVector>().map_err(|_| {
         errors::err("fn parameters must be a vector")
     })?;
     let v = pv.get();
@@ -1750,7 +2465,7 @@ pub fn parse_params(
     for i in 0..n {
         let f = v.nth_internal_pub(py, i)?;
         let fb = f.bind(py);
-        let s = fb.downcast::<Symbol>().map_err(|_| {
+        let s = fb.cast::<Symbol>().map_err(|_| {
             errors::err("fn parameter must be a Symbol")
         })?;
         let name_ref = s.get().name.clone();
@@ -1783,30 +2498,28 @@ pub fn parse_params(
 pub fn is_literal(py: Python<'_>, form: &PyObject) -> PyResult<bool> {
     let b = form.bind(py);
     if form.is_none(py) { return Ok(true); }
-    if b.downcast::<PyBool>().is_ok()
-        || b.downcast::<PyInt>().is_ok()
-        || b.downcast::<PyFloat>().is_ok()
-        || b.downcast::<PyString>().is_ok()
-        || b.downcast::<crate::keyword::Keyword>().is_ok()
+    if b.cast::<PyBool>().is_ok()
+        || b.cast::<PyInt>().is_ok()
+        || b.cast::<PyFloat>().is_ok()
+        || b.cast::<PyString>().is_ok()
+        || b.cast::<crate::keyword::Keyword>().is_ok()
     {
         return Ok(true);
     }
-    if b.downcast::<Symbol>().is_ok() {
+    if b.cast::<Symbol>().is_ok() {
         return Ok(false);
     }
-    if let Ok(pl) = b.downcast::<PersistentList>() {
-        let h = pl.get().head.clone_ref(py);
-        let hb = h.bind(py);
-        if let Ok(sym_ref) = hb.downcast::<Symbol>() {
-            let s = sym_ref.get();
-            if s.ns.is_none() && s.name.as_ref() == "quote" {
-                return Ok(true);
-            }
-        }
+    if b.cast::<PersistentList>().is_ok() {
+        // A `(quote X)` form inside a collection is NOT a const-literal:
+        // if the outer vector/map/set is hoisted to a constant, the quote
+        // form itself gets pushed (unevaluated), producing
+        // `[(quote a) …]` instead of the expected `[a …]`. Fall back to
+        // the dynamic build path so each element compiles via
+        // `compile_form`, which handles `quote` as a special form.
         return Ok(false);
     }
-    if b.downcast::<EmptyList>().is_ok() { return Ok(true); }
-    if let Ok(pv) = b.downcast::<PersistentVector>() {
+    if b.cast::<EmptyList>().is_ok() { return Ok(true); }
+    if let Ok(pv) = b.cast::<PersistentVector>() {
         let pv_ref = pv.get();
         for i in 0..(pv_ref.cnt as usize) {
             let child = pv_ref.nth_internal_pub(py, i)?;
@@ -1814,7 +2527,7 @@ pub fn is_literal(py: Python<'_>, form: &PyObject) -> PyResult<bool> {
         }
         return Ok(true);
     }
-    if b.downcast::<PersistentHashMap>().is_ok() || b.downcast::<PersistentArrayMap>().is_ok() {
+    if b.cast::<PersistentHashMap>().is_ok() || b.cast::<PersistentArrayMap>().is_ok() {
         for item in b.try_iter()? {
             let k = item?.unbind();
             let v = b.call_method1("val_at", (k.clone_ref(py),))?.unbind();
@@ -1822,7 +2535,7 @@ pub fn is_literal(py: Python<'_>, form: &PyObject) -> PyResult<bool> {
         }
         return Ok(true);
     }
-    if b.downcast::<PersistentHashSet>().is_ok() {
+    if b.cast::<PersistentHashSet>().is_ok() {
         for item in b.try_iter()? {
             let el = item?.unbind();
             if !is_literal(py, &el)? { return Ok(false); }
@@ -1831,3 +2544,31 @@ pub fn is_literal(py: Python<'_>, form: &PyObject) -> PyResult<bool> {
     }
     Ok(true)
 }
+
+/// Build the merged metadata map for a `def`, combining (optional) symbol
+/// meta read by the reader (`^{...}`) with an (optional) docstring from the
+/// 3-arg def form. The docstring assoc-s onto the symbol meta under `:doc`.
+fn merge_doc_into_meta(
+    py: Python<'_>,
+    sym_meta: Option<PyObject>,
+    docstring: Option<PyObject>,
+) -> PyResult<Option<PyObject>> {
+    match (sym_meta, docstring) {
+        (None, None) => Ok(None),
+        (Some(m), None) => Ok(Some(m)),
+        (existing, Some(doc)) => {
+            let kw_doc: PyObject = crate::keyword::keyword(py, "doc", None)?.into_any();
+            match existing {
+                None => {
+                    let tup = pyo3::types::PyTuple::new(py, &[kw_doc, doc])?;
+                    Ok(Some(crate::collections::parraymap::array_map(py, tup)?))
+                }
+                Some(m) => {
+                    let new_m = m.bind(py).call_method1("assoc", (kw_doc, doc))?.unbind();
+                    Ok(Some(new_m))
+                }
+            }
+        }
+    }
+}
+

@@ -6,22 +6,33 @@
 //! Tasks 26-27.
 
 use crate::exceptions::{IllegalArgumentException, IllegalStateException};
+use arc_swap::ArcSwap;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyTuple};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
+
+/// Lock-free optional slot used for root / meta / validator. Readers always
+/// see a consistent snapshot via `load()`; writers install a new snapshot
+/// via `store()` or `compare_and_swap()` (used by alter_var_root).
+type Slot = ArcSwap<Option<PyObject>>;
+
+fn empty_slot() -> Slot {
+    ArcSwap::new(Arc::new(None))
+}
 
 #[pyclass(module = "clojure._core", name = "Var", frozen)]
 pub struct Var {
     pub ns: PyObject,    // any module-like object (ClojureNamespace arrives in Phase 7)
     pub sym: PyObject,   // Symbol
-    pub root: RwLock<Option<PyObject>>,
+    pub root: Slot,
     pub dynamic: AtomicBool,
-    pub meta: RwLock<Option<PyObject>>,
-    pub watches: RwLock<Py<PyDict>>,
-    pub validator: RwLock<Option<PyObject>>,
+    pub meta: Slot,
+    pub watches: RwLock<Py<PyDict>>,  // dict container — mutated in place via set_item/del_item
+    pub validator: Slot,
 }
 
 #[pymethods]
@@ -31,11 +42,11 @@ impl Var {
         Ok(Self {
             ns,
             sym,
-            root: RwLock::new(None),
+            root: empty_slot(),
             dynamic: AtomicBool::new(false),
-            meta: RwLock::new(None),
+            meta: empty_slot(),
             watches: RwLock::new(PyDict::new(py).unbind()),
-            validator: RwLock::new(None),
+            validator: empty_slot(),
         })
     }
 
@@ -47,8 +58,8 @@ impl Var {
                 return Ok(v);
             }
         }
-        let guard = this.root.read();
-        match guard.as_ref() {
+        let guard = this.root.load();
+        match (**guard).as_ref() {
             Some(v) => Ok(v.clone_ref(py)),
             None => Err(IllegalStateException::new_err(format!(
                 "Var {}/{} is unbound",
@@ -75,10 +86,10 @@ impl Var {
 
     #[getter]
     fn is_bound(&self) -> bool {
-        self.root.read().is_some()
+        self.root.load().is_some()
     }
 
-    fn set_dynamic(&self, v: bool) {
+    pub fn set_dynamic(&self, v: bool) {
         self.dynamic.store(v, Ordering::Release);
     }
 
@@ -87,12 +98,8 @@ impl Var {
     fn bind_root(slf: Py<Self>, py: Python<'_>, value: PyObject) -> PyResult<()> {
         let this = slf.bind(py).get();
         this.validate(py, &value)?;
-        let old = {
-            let mut guard = this.root.write();
-            let prev = guard.take();
-            *guard = Some(value.clone_ref(py));
-            prev
-        };
+        let prev = this.root.swap(Arc::new(Some(value.clone_ref(py))));
+        let old = (*prev).as_ref().map(|v| v.clone_ref(py));
         this.fire_watches(py, &slf, old, Some(value))?;
         Ok(())
     }
@@ -105,7 +112,7 @@ impl Var {
     }
 
     /// `(alter-var-root v f args)` — atomically set root to `(f old-root args...)`.
-    /// Retries on contention; validates the proposed value before installing; fires watches.
+    /// CAS loop via ArcSwap; validates the proposed value before installing; fires watches.
     #[pyo3(signature = (f, *args))]
     fn alter_root(
         slf: Py<Self>,
@@ -115,9 +122,9 @@ impl Var {
     ) -> PyResult<PyObject> {
         let this = slf.bind(py).get();
         loop {
-            // Snapshot current value (or unbound).
-            let current = this.root.read().as_ref().map(|v| v.clone_ref(py));
-            let current_for_f = current
+            // Snapshot the current Arc — we CAS against this exact pointer.
+            let current_arc = this.root.load_full();
+            let current_for_f = (*current_arc)
                 .as_ref()
                 .map(|v| v.clone_ref(py))
                 .unwrap_or_else(|| py.None());
@@ -133,40 +140,28 @@ impl Var {
             let new_val = f.bind(py).call1(tup)?.unbind();
             this.validate(py, &new_val)?;
 
-            // Install under write lock if the observed state still matches.
-            let installed = {
-                let mut guard = this.root.write();
-                let observed = guard.as_ref().map(|v| v.clone_ref(py));
-                if same_py(py, observed.as_ref(), current.as_ref()) {
-                    *guard = Some(new_val.clone_ref(py));
-                    Some((
-                        current.as_ref().map(|v| v.clone_ref(py)),
-                        new_val.clone_ref(py),
-                    ))
-                } else {
-                    None
-                }
-            };
-
-            match installed {
-                Some((old, new)) => {
-                    this.fire_watches(py, &slf, old, Some(new.clone_ref(py)))?;
-                    return Ok(new);
-                }
-                None => {
-                    // Retry — someone else changed root between snapshot and swap.
-                    continue;
-                }
+            let new_arc = Arc::new(Some(new_val.clone_ref(py)));
+            // compare_and_swap returns the Arc that was in the slot at the
+            // time of the CAS. If it's pointer-equal to `current_arc`, the
+            // swap succeeded; otherwise someone else won the race.
+            let witnessed = this.root.compare_and_swap(&current_arc, new_arc);
+            if Arc::ptr_eq(&witnessed, &current_arc) {
+                let old = (*current_arc).as_ref().map(|v| v.clone_ref(py));
+                this.fire_watches(py, &slf, old, Some(new_val.clone_ref(py)))?;
+                return Ok(new_val);
             }
+            // Lost the race — retry.
         }
     }
 
     fn set_validator(&self, validator: Option<PyObject>) {
-        *self.validator.write() = validator;
+        self.validator.store(Arc::new(validator));
     }
 
     fn get_validator(&self, py: Python<'_>) -> Option<PyObject> {
-        self.validator.read().as_ref().map(|o| o.clone_ref(py))
+        let g = self.validator.load();
+        let opt: &Option<PyObject> = &g;
+        opt.as_ref().map(|o| o.clone_ref(py))
     }
 
     fn add_watch(&self, py: Python<'_>, key: PyObject, f: PyObject) -> PyResult<()> {
@@ -214,11 +209,13 @@ impl Var {
 
     #[getter]
     fn meta(&self, py: Python<'_>) -> Option<PyObject> {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py))
+        let g = self.meta.load();
+        let opt: &Option<PyObject> = &g;
+        opt.as_ref().map(|o| o.clone_ref(py))
     }
 
-    fn set_meta(&self, meta: Option<PyObject>) {
-        *self.meta.write() = meta;
+    pub fn set_meta(&self, meta: Option<PyObject>) {
+        self.meta.store(Arc::new(meta));
     }
 }
 
@@ -226,12 +223,10 @@ impl Var {
     /// Read the `:macro` bit from metadata. Returns `false` on any error
     /// (safe default during compile-time dispatch).
     pub fn is_macro(&self, py: Python<'_>) -> bool {
-        let guard = self.meta.read();
-        let meta = match guard.as_ref() {
+        let meta = match (*self.meta.load()).as_ref() {
             Some(m) => m.clone_ref(py),
             None => return false,
         };
-        drop(guard);
         let kw = match crate::keyword::keyword(py, "macro", None) {
             Ok(k) => k.into_any(),
             Err(_) => return false,
@@ -241,7 +236,7 @@ impl Var {
             Err(_) => return false,
         };
         if val.is_none(py) { return false; }
-        if let Ok(b) = val.bind(py).downcast::<pyo3::types::PyBool>() {
+        if let Ok(b) = val.bind(py).cast::<pyo3::types::PyBool>() {
             return b.is_true();
         }
         true
@@ -249,31 +244,38 @@ impl Var {
 
     /// Tag this Var as a macro — `(alter-meta! v assoc :macro true)`. If
     /// meta is currently nil, installs `{:macro true}` as a fresh arraymap.
+    /// Uses a CAS loop so concurrent set_macro_flag / set_meta stay safe.
     pub fn set_macro_flag(&self, py: Python<'_>) -> PyResult<()> {
         let kw = crate::keyword::keyword(py, "macro", None)?.into_any();
         let true_py: PyObject = pyo3::types::PyBool::new(py, true)
             .to_owned()
             .unbind()
             .into_any();
-        let existing = self.meta.read().as_ref().map(|o| o.clone_ref(py));
-        let new_meta: PyObject = match existing {
-            Some(m) => m
-                .bind(py)
-                .call_method1("assoc", (kw, true_py))?
-                .unbind(),
-            None => {
-                let tup = pyo3::types::PyTuple::new(py, &[kw, true_py])?;
-                crate::collections::parraymap::array_map(py, tup)?
+        loop {
+            let current = self.meta.load_full();
+            let new_meta: PyObject = match (*current).as_ref() {
+                Some(m) => m
+                    .bind(py)
+                    .call_method1("assoc", (kw.clone_ref(py), true_py.clone_ref(py)))?
+                    .unbind(),
+                None => {
+                    let tup = pyo3::types::PyTuple::new(py, &[kw.clone_ref(py), true_py.clone_ref(py)])?;
+                    crate::collections::parraymap::array_map(py, tup)?
+                }
+            };
+            let new_arc = Arc::new(Some(new_meta));
+            let witnessed = self.meta.compare_and_swap(&current, new_arc);
+            if Arc::ptr_eq(&witnessed, &current) {
+                return Ok(());
             }
-        };
-        *self.meta.write() = Some(new_meta);
-        Ok(())
+            // Lost race — retry with the newly-installed meta.
+        }
     }
 
     /// Like `deref`, but callable from Rust code without a `Py<Self>`.
     /// Returns the root, or IllegalStateException if unbound.
     fn deref_raw(&self, py: Python<'_>) -> PyResult<PyObject> {
-        match self.root.read().as_ref() {
+        match (**self.root.load()).as_ref() {
             Some(v) => Ok(v.clone_ref(py)),
             None => Err(crate::exceptions::IllegalStateException::new_err(format!(
                 "Var {}/{} is unbound",
@@ -283,16 +285,28 @@ impl Var {
         }
     }
     fn ns_name(&self, py: Python<'_>) -> PyResult<String> {
+        // Anonymous Vars (created via `Var::create` for `with-local-vars`)
+        // have ns=None; report as "--anon--" in diagnostic strings.
+        if self.ns.is_none(py) {
+            return Ok(String::from("--anon--"));
+        }
         let n = self.ns.bind(py).getattr("__name__")?;
         n.extract()
     }
     fn sym_name(&self, py: Python<'_>) -> PyResult<String> {
+        if self.sym.is_none(py) {
+            return Ok(String::from("--anon--"));
+        }
         // Symbol exposes `.name` as a getter from Task 8.
         let n = self.sym.bind(py).getattr("name")?;
         n.extract()
     }
     fn validate(&self, py: Python<'_>, v: &PyObject) -> PyResult<()> {
-        let validator = self.validator.read().as_ref().map(|o| o.clone_ref(py));
+        let validator = {
+            let g = self.validator.load();
+            let opt: &Option<PyObject> = &g;
+            opt.as_ref().map(|o| o.clone_ref(py))
+        };
         if let Some(validator) = validator {
             let r = validator.bind(py).call1((v.clone_ref(py),))?;
             if !r.is_truthy()? {
@@ -330,28 +344,37 @@ impl Var {
     }
 }
 
-fn same_py(_py: Python<'_>, a: Option<&PyObject>, b: Option<&PyObject>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(x), Some(y)) => std::ptr::eq(x.as_ptr(), y.as_ptr()),
-        _ => false,
-    }
+/// Create an anonymous, dynamic Var — used by `with-local-vars`. The var
+/// has no namespace and no symbol; its root is unbound. All access happens
+/// through the thread-binding stack.
+#[pyfunction]
+#[pyo3(name = "create_var")]
+pub fn create_var(py: Python<'_>) -> PyResult<Var> {
+    let v = Var::new(py, py.None(), py.None())?;
+    v.set_dynamic(true);
+    Ok(v)
 }
 
 pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Var>()?;
+    m.add_function(wrap_pyfunction!(create_var, m)?)?;
     Ok(())
 }
 
 #[pymethods]
 impl Var {
-    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, pyo3::types::PyAny>) -> PyResult<bool> {
-        let r = self.deref_raw(py)?;
-        r.bind(py).eq(other)
+    /// Vars are compared and hashed by identity (matching vanilla JVM
+    /// Clojure: `Var.equals` is `Object.equals`, `Var.hashCode` is
+    /// `Object.hashCode`). Using root-value equality would break common
+    /// uses — e.g. as keys in a `hash-map` passed to
+    /// `push-thread-bindings`, and for `with-local-vars` on unbound vars.
+    fn __eq__(slf: Py<Self>, py: Python<'_>, other: &Bound<'_, pyo3::types::PyAny>) -> PyResult<bool> {
+        let lhs_ptr = slf.as_ptr() as usize;
+        let rhs_ptr = other.as_ptr() as usize;
+        Ok(lhs_ptr == rhs_ptr)
     }
-    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
-        let r = self.deref_raw(py)?;
-        r.bind(py).hash()
+    fn __hash__(slf: Py<Self>, _py: Python<'_>) -> PyResult<isize> {
+        Ok(slf.as_ptr() as isize)
     }
     fn __bool__(&self, py: Python<'_>) -> PyResult<bool> {
         let r = self.deref_raw(py)?;
@@ -439,8 +462,42 @@ impl Var {
     }
 }
 
+use crate::ideref::IDeref;
 use crate::ifn::IFn;
+use crate::imeta::IMeta;
 use clojure_core_macros::implements;
+
+#[implements(IMeta)]
+impl IMeta for Var {
+    fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        let g = self_ref.meta.load();
+        let opt: &Option<PyObject> = &g;
+        Ok(opt.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+    }
+    fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
+        // Vars are mutable reference types — `with-meta` mutates in place
+        // (matches JVM Clojure's behavior of clojure.lang.Var.alterMeta).
+        let self_ref: &Var = this.bind(py).get();
+        let m = if meta.is_none(py) { None } else { Some(meta) };
+        self_ref.meta.store(std::sync::Arc::new(m));
+        Ok(this.into_any())
+    }
+}
+
+#[implements(IDeref)]
+impl IDeref for Var {
+    fn deref(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let self_ref: &Var = this.bind(py).get();
+        if self_ref.dynamic.load(Ordering::Acquire) {
+            let key: Py<PyAny> = this.clone_ref(py).into_any();
+            if let Some(v) = crate::binding::lookup_binding(py, &key) {
+                return Ok(v);
+            }
+        }
+        self_ref.deref_raw(py)
+    }
+}
 
 #[implements(IFn)]
 impl IFn for Var {

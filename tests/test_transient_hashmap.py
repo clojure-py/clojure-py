@@ -61,7 +61,11 @@ def test_use_after_persistent_bang_raises():
         assoc_bang(t, "k", 1)
 
 
-def test_wrong_thread_raises():
+def test_cross_thread_use_allowed():
+    """Matches Clojure JVM post-CLJ-1613: transients do NOT enforce
+    thread ownership. Callers are responsible for synchronization (e.g.
+    `future`'s @deref happens-before) when handing a transient across
+    threads. Our check only fires on use-after-persistent!."""
     t = transient(hash_map())
     err_box = []
     def worker():
@@ -72,7 +76,7 @@ def test_wrong_thread_raises():
     th = threading.Thread(target=worker)
     th.start()
     th.join()
-    assert err_box and "IllegalStateException" in err_box[0]
+    assert err_box == []
 
 
 def test_stress_2000_then_persistent():

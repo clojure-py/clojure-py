@@ -26,6 +26,9 @@ pub enum CaptureSource {
     Local(u16),
     /// Read `enclosing_fn.captures[idx]` — the enclosing fn already captured it.
     Capture(u16),
+    /// Read the enclosing fn's "self" — emitted as `Op::LoadSelf`. Used so
+    /// nested fns can capture an outer fn's name for self/mutual recursion.
+    SelfRef,
 }
 
 /// Compiler output for a `fn*`. Pushed as a constant; `_make-closure`

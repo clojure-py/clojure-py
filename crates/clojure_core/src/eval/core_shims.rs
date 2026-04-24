@@ -1,8 +1,24 @@
-//! clojure.core namespace — stdlib shims.
+//! clojure.core namespace — stdlib shims that stay in Rust.
 //!
-//! Populates clojure.core at module init with a handful of callable Vars
-//! holding plain Python callables or rt::-backed wrappers. Provides the
-//! minimum vocabulary for small evaluator tests to work.
+//! After the core.clj port, the user-facing layer of clojure.core lives in
+//! Clojure source. This file is down to two concerns:
+//!
+//! 1. **Bytecode-compiler-facing shims** — `bind-root`, `_set-macro!`,
+//!    `_make-closure`. These are the compile-emission targets for `def`,
+//!    `defmacro`, and `fn*` and stay in Rust indefinitely (they operate on
+//!    Var/FnTemplate internals that don't have Clojure equivalents).
+//!
+//! 2. **Primitive functions that core.clj hasn't redefined yet** —
+//!    arithmetic (`+`, `-`, `*`, `/`, `inc`, `dec`), comparisons (`<`, `>`,
+//!    `<=`, `>=`), `not`, `nil?`, `vector`, `hash-map`, `hash-set`, `str`,
+//!    plus the basic seq fns `first`/`rest`/`next`/`seq`/`count`/`cons`.
+//!    Phase B of the port will redefine the numeric and comparison fns in
+//!    terms of `clojure.lang.RT` primitives; the seq fns are already shadowed
+//!    by core.clj definitions but remain here so the Var exists at compiler
+//!    init time (order-of-definition hygiene).
+//!
+//! The low-level primitives core.clj actually calls through live in
+//! `clojure.lang.RT` (see `rt_ns.rs`).
 
 use crate::exceptions::IllegalArgumentException;
 use crate::symbol::Symbol;
@@ -51,6 +67,18 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
     let core_sym = Py::new(py, sym("clojure.core"))?;
     let core_ns = crate::namespace::create_ns(py, core_sym)?;
 
+    // --- *ns* — the current namespace ---
+    // Interned here (before core.clj loads) so it's available to the earliest
+    // macroexpansion / reader hooks that consult it. Root = clojure.core; the
+    // load loop + `in-ns` push/update thread-bindings to point at the
+    // currently-loading ns.
+    {
+        let ns_sym = Py::new(py, sym("*ns*"))?;
+        let var = crate::ns_ops::intern(py, core_ns.clone_ref(py), ns_sym)?;
+        var.bind(py).get().set_dynamic(true);
+        var.bind(py).call_method1("bind_root", (core_ns.clone_ref(py),))?;
+    }
+
     // --- Arithmetic ---
 
     intern_fn(py, &core_ns, "+", |args, py| {
@@ -59,7 +87,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
         let mut is_float = false;
         for i in 0..args.len() {
             let a = args.get_item(i)?;
-            if a.downcast::<pyo3::types::PyFloat>().is_ok() {
+            if a.cast::<pyo3::types::PyFloat>().is_ok() {
                 if !is_float {
                     acc_float = acc_int as f64;
                     is_float = true;
@@ -80,7 +108,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
         }
         let first = args.get_item(0)?;
         if args.len() == 1 {
-            if first.downcast::<pyo3::types::PyFloat>().is_ok() {
+            if first.cast::<pyo3::types::PyFloat>().is_ok() {
                 let f: f64 = first.extract()?;
                 return Ok((-f).into_pyobject(py)?.unbind().into_any());
             }
@@ -88,12 +116,12 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
             return Ok((-n).into_pyobject(py)?.unbind().into_any());
         }
         // Subtract rest from first.
-        let mut is_float = first.downcast::<pyo3::types::PyFloat>().is_ok();
+        let mut is_float = first.cast::<pyo3::types::PyFloat>().is_ok();
         let mut acc_i: i128 = if !is_float { first.extract()? } else { 0 };
         let mut acc_f: f64 = if is_float { first.extract()? } else { 0.0 };
         for i in 1..args.len() {
             let a = args.get_item(i)?;
-            if a.downcast::<pyo3::types::PyFloat>().is_ok() {
+            if a.cast::<pyo3::types::PyFloat>().is_ok() {
                 if !is_float { acc_f = acc_i as f64; is_float = true; }
                 acc_f -= a.extract::<f64>()?;
             } else {
@@ -111,7 +139,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
         let mut is_float = false;
         for i in 0..args.len() {
             let a = args.get_item(i)?;
-            if a.downcast::<pyo3::types::PyFloat>().is_ok() {
+            if a.cast::<pyo3::types::PyFloat>().is_ok() {
                 if !is_float { acc_f = acc_i as f64; is_float = true; }
                 acc_f *= a.extract::<f64>()?;
             } else {
@@ -137,7 +165,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     intern_fn(py, &core_ns, "inc", |args, py| {
         let a = args.get_item(0)?;
-        if a.downcast::<pyo3::types::PyFloat>().is_ok() {
+        if a.cast::<pyo3::types::PyFloat>().is_ok() {
             let f: f64 = a.extract()?;
             return Ok((f + 1.0).into_pyobject(py)?.unbind().into_any());
         }
@@ -147,7 +175,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     intern_fn(py, &core_ns, "dec", |args, py| {
         let a = args.get_item(0)?;
-        if a.downcast::<pyo3::types::PyFloat>().is_ok() {
+        if a.cast::<pyo3::types::PyFloat>().is_ok() {
             let f: f64 = a.extract()?;
             return Ok((f - 1.0).into_pyobject(py)?.unbind().into_any());
         }
@@ -225,7 +253,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
         let a = args.get_item(0)?;
         // Clojure truthiness: only nil and false are falsy.
         let falsy = a.is_none()
-            || matches!(a.downcast::<pyo3::types::PyBool>(), Ok(b) if !b.is_true());
+            || matches!(a.cast::<pyo3::types::PyBool>(), Ok(b) if !b.is_true());
         Ok(pyo3::types::PyBool::new(py, falsy).to_owned().unbind().into_any())
     })?;
 
@@ -298,7 +326,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
             ));
         }
         let var_any = args.get_item(0)?;
-        let var = var_any.downcast::<crate::var::Var>().map_err(|_| {
+        let var = var_any.cast::<crate::var::Var>().map_err(|_| {
             IllegalArgumentException::new_err("bind-root: first arg must be a Var")
         })?;
         let value = args.get_item(1)?.unbind();
@@ -315,7 +343,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
             ));
         }
         let var_any = args.get_item(0)?;
-        let var = var_any.downcast::<crate::var::Var>().map_err(|_| {
+        let var = var_any.cast::<crate::var::Var>().map_err(|_| {
             IllegalArgumentException::new_err("_set-macro!: arg must be a Var")
         })?;
         var.get().set_macro_flag(py)?;
@@ -332,7 +360,7 @@ pub(crate) fn init(py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
         }
         let template_any = args.get_item(0)?;
         let template = template_any
-            .downcast::<crate::compiler::method::FnTemplate>()
+            .cast::<crate::compiler::method::FnTemplate>()
             .map_err(|_| {
                 IllegalArgumentException::new_err(
                     "_make-closure: first arg must be an FnTemplate",

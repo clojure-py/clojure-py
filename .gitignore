@@ -8,3 +8,8 @@ dist/
 .venv/
 .pytest_cache/
 .mypy_cache/
+
+# Local agent workspaces
+docs/superpowers/
+.claude/
+CLAUDE.md

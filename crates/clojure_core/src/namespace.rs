@@ -48,7 +48,7 @@ fn clojure_namespace_class(py: Python<'_>) -> PyResult<&'static PyObject> {
 /// `ClojureNamespace` instance.
 fn populate_dunders(py: Python<'_>, module: &Bound<'_, PyAny>, full_name: &str) -> PyResult<()> {
     let dict = module.getattr("__dict__")?;
-    let dict = dict.downcast::<PyDict>()?;
+    let dict = dict.cast::<PyDict>()?;
     let sym = Py::new(py, Symbol::new(None, Arc::from(full_name)))?;
     dict.set_item("__clj_ns__", sym)?;
     dict.set_item("__clj_ns_meta__", py.None())?;
@@ -65,7 +65,7 @@ fn full_dotted_name(sym: &Symbol) -> String {
     }
 }
 
-fn is_clojure_namespace(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<bool> {
+pub fn is_clojure_namespace(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<bool> {
     let cls = clojure_namespace_class(py)?.bind(py);
     obj.is_instance(cls)
 }
@@ -97,7 +97,7 @@ pub fn create_ns(py: Python<'_>, sym: Py<Symbol>) -> PyResult<PyObject> {
         // We only need to preserve the attribute wiring — the sys.modules entries are
         // untouched by the delete-one-key operation below.
         let existing_dict = existing.getattr("__dict__")?;
-        let existing_dict = existing_dict.downcast::<PyDict>()?;
+        let existing_dict = existing_dict.cast::<PyDict>()?;
         for (k, v) in existing_dict.iter() {
             // Skip Python's own module machinery attributes (they'll be recreated by
             // ModuleType.__init__ when we construct the new namespace).

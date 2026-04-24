@@ -14,6 +14,11 @@ type PyObject = Py<PyAny>;
 /// `(intern ns sym)` — create a Var named `sym` in `ns`, or return the existing
 /// one if a Var of that name is already interned. Symbol name is stored un-munged
 /// as the module attribute (so `foo?` is accessed via `getattr(ns, "foo?")`).
+///
+/// Vanilla-matching subtlety: if the existing attribute is a Var whose
+/// HOME is a different ns (i.e. it was brought in by `refer`), we do NOT
+/// reuse it — creating a fresh Var in `ns` is what `def` should do.
+/// Reusing a refer'd Var would silently mutate the other ns's binding.
 #[pyfunction]
 pub fn intern(py: Python<'_>, ns: PyObject, sym: Py<Symbol>) -> PyResult<Py<Var>> {
     let name = {
@@ -21,10 +26,15 @@ pub fn intern(py: Python<'_>, ns: PyObject, sym: Py<Symbol>) -> PyResult<Py<Var>
         s.name.to_string()
     };
     let ns_b = ns.bind(py);
-    // Reuse existing Var if already interned.
+    // Reuse existing Var if this ns owns it (same Python identity on the
+    // Var's `.ns` as the ns we're interning into). Otherwise shadow.
     if let Ok(existing) = ns_b.getattr(name.as_str()) {
-        if let Ok(v) = existing.downcast::<Var>() {
-            return Ok(v.clone().unbind());
+        if let Ok(v) = existing.cast::<Var>() {
+            let var_ns = v.get().ns.clone_ref(py);
+            let same = crate::rt::identical(py, var_ns, ns.clone_ref(py));
+            if same {
+                return Ok(v.clone().unbind());
+            }
         }
     }
     // Construct a new Var. Var::new takes (ns_obj, sym_obj).
@@ -45,7 +55,7 @@ pub fn refer(py: Python<'_>, ns: PyObject, target_sym: Py<Symbol>, var: Py<Var>)
     let ns_b = ns.bind(py);
     ns_b.setattr(name.as_str(), var.clone_ref(py))?;
     let refers = ns_b.getattr("__clj_refers__")?;
-    let refers_dict = refers.downcast::<PyDict>()?;
+    let refers_dict = refers.cast::<PyDict>()?;
     refers_dict.set_item(target_sym, var)?;
     Ok(())
 }
@@ -55,7 +65,7 @@ pub fn refer(py: Python<'_>, ns: PyObject, target_sym: Py<Symbol>, var: Py<Var>)
 pub fn alias(py: Python<'_>, ns: PyObject, alias_sym: Py<Symbol>, target_ns: PyObject) -> PyResult<()> {
     let ns_b = ns.bind(py);
     let aliases = ns_b.getattr("__clj_aliases__")?;
-    let aliases_dict = aliases.downcast::<PyDict>()?;
+    let aliases_dict = aliases.cast::<PyDict>()?;
     aliases_dict.set_item(alias_sym, target_ns)?;
     Ok(())
 }
@@ -65,7 +75,7 @@ pub fn alias(py: Python<'_>, ns: PyObject, alias_sym: Py<Symbol>, target_ns: PyO
 pub fn import_cls(py: Python<'_>, ns: PyObject, alias_sym: Py<Symbol>, cls: PyObject) -> PyResult<()> {
     let ns_b = ns.bind(py);
     let imports = ns_b.getattr("__clj_imports__")?;
-    let imports_dict = imports.downcast::<PyDict>()?;
+    let imports_dict = imports.cast::<PyDict>()?;
     imports_dict.set_item(alias_sym, cls)?;
     Ok(())
 }
@@ -75,7 +85,7 @@ pub fn import_cls(py: Python<'_>, ns: PyObject, alias_sym: Py<Symbol>, cls: PyOb
 pub fn ns_map(py: Python<'_>, ns: PyObject) -> PyResult<Py<PyDict>> {
     let ns_b = ns.bind(py);
     let d = ns_b.getattr("__dict__")?;
-    let d = d.downcast::<PyDict>()?;
+    let d = d.cast::<PyDict>()?;
     let out = PyDict::new(py);
     for (k, v) in d.iter() {
         if v.is_instance_of::<Var>() {

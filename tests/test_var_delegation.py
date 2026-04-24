@@ -47,15 +47,23 @@ def test_cmp():
     assert v >= 5
 
 
-def test_eq_delegates_to_root():
+def test_eq_is_identity():
+    # Vanilla JVM behavior: Var equality is object identity, not root-value
+    # equality. Using root-value equality would break Vars as `hash-map` keys
+    # (and `with-local-vars` on unbound vars, which can't deref).
     v = _v("delegation.6", 42)
-    assert v == 42
-    assert not (v == 43)
+    assert v == v
+    assert not (v == 42)
+    v2 = _v("delegation.6b", 42)
+    assert not (v == v2)
 
 
-def test_hash_delegates():
+def test_hash_is_identity():
+    # Identity-based (matches JVM Var.hashCode). Not the root's hash.
     v = _v("delegation.7", "hello")
-    assert hash(v) == hash("hello")
+    assert hash(v) == hash(v)  # stable
+    v2 = _v("delegation.7b", "hello")
+    assert hash(v) != hash(v2)  # distinct Vars → distinct hashes (almost always)
 
 
 def test_str_delegates():

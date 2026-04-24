@@ -26,11 +26,15 @@ def test_val_at_on_list_out_of_bounds():
     assert val_at([10, 20, 30], 99, "nope") == "nope"
 
 
-def test_val_at_unsupported_type_raises():
+def test_val_at_unsupported_type_returns_not_found():
+    """Matches vanilla `(get non-lookupable k)` → nil (or explicit
+    not-found) rather than throwing. Before the transducers port this
+    case raised; aligned with vanilla so `(:kw non-map)` no longer
+    blows up inside predicates like `halt-when`."""
     class NoGetItem:
         pass
-    with pytest.raises(IllegalArgumentException):
-        val_at(NoGetItem(), "k", None)
+    assert val_at(NoGetItem(), "k", None) is None
+    assert val_at(NoGetItem(), "k", "sentinel") == "sentinel"
 
 
 def test_rt_get_keyword_still_works():

@@ -17,6 +17,17 @@ impl<'a> Source<'a> {
     pub fn column(&self) -> u32 { self.column }
     pub fn at_eof(&self) -> bool { self.pushback.is_none() && self.pos >= self.input.len() }
 
+    /// Byte offset of the next logical character. Accounts for the pushback
+    /// slot: if a char was `unread`, the offset points at that char rather
+    /// than the byte after it. Used by multi-line `read` to know how much
+    /// of the input buffer has been consumed.
+    pub fn offset(&self) -> usize {
+        match self.pushback {
+            Some(c) => self.pos - c.len_utf8(),
+            None => self.pos,
+        }
+    }
+
     /// Peek the next char without consuming.
     pub fn peek(&self) -> Option<char> {
         if let Some(c) = self.pushback { return Some(c); }

@@ -2,7 +2,7 @@
 
 import pytest
 from clojure._core import (
-    eval_string, keyword, symbol, EvalError,
+    eval_string, keyword, symbol, EvalError, IllegalArgumentException,
 )
 
 
@@ -99,7 +99,9 @@ def test_let_body_is_do():
     assert _ev("(let [a 1] a a 99)") == 99
 
 def test_let_odd_bindings_raises():
-    with pytest.raises(EvalError, match="even"):
+    # `let` is a macro that delegates to `destructure`, which raises IAE
+    # (matching vanilla Clojure) on odd binding forms.
+    with pytest.raises(IllegalArgumentException, match="even"):
         _ev("(let [a] a)")
 
 

@@ -10,8 +10,10 @@
 //! callers must re-bind (`t = assoc_bang(t, k, v)`).
 
 use crate::associative::Associative;
+use crate::coll_reduce::CollReduce;
 use crate::collections::phashmap::{PersistentHashMap, TransientHashMap};
 use crate::counted::Counted;
+use crate::ikvreduce::IKVReduce;
 use crate::exceptions::IllegalStateException;
 use crate::ieditable_collection::IEditableCollection;
 use crate::iequiv::IEquiv;
@@ -26,7 +28,6 @@ use crate::itransient_associative::ITransientAssociative;
 use crate::itransient_collection::ITransientCollection;
 use crate::itransient_map::ITransientMap;
 use clojure_core_macros::implements;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -44,19 +45,19 @@ pub const HASHMAP_THRESHOLD: usize = 8;
 #[pyclass(module = "clojure._core", name = "PersistentArrayMap", frozen)]
 pub struct PersistentArrayMap {
     pub entries: Arc<[(PyObject, PyObject)]>,
-    pub meta: RwLock<Option<PyObject>>,
+    pub meta: Option<PyObject>,
 }
 
 impl PersistentArrayMap {
     pub fn new_empty() -> Self {
         Self {
             entries: Arc::from(Vec::<(PyObject, PyObject)>::new().into_boxed_slice()),
-            meta: RwLock::new(None),
+            meta: None,
         }
     }
 
     fn clone_meta(&self, py: Python<'_>) -> Option<PyObject> {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py))
+        self.meta.as_ref().map(|o| o.clone_ref(py))
     }
 
     fn clone_entries(&self, py: Python<'_>) -> Vec<(PyObject, PyObject)> {
@@ -103,7 +104,7 @@ impl PersistentArrayMap {
     fn with_entries(&self, py: Python<'_>, entries: Vec<(PyObject, PyObject)>) -> Self {
         Self {
             entries: Arc::from(entries.into_boxed_slice()),
-            meta: RwLock::new(self.clone_meta(py)),
+            meta: self.clone_meta(py),
         }
     }
 
@@ -131,7 +132,7 @@ impl PersistentArrayMap {
         // `Py<PersistentHashMap>` specifically.
         let result_any: PyObject =
             <TransientHashMap as ITransientCollection>::persistent_bang(t_py, py)?;
-        Ok(result_any.bind(py).downcast::<PersistentHashMap>()?.clone().unbind())
+        Ok(result_any.bind(py).cast::<PersistentHashMap>()?.clone().unbind())
     }
 
     /// `assoc` — may return PersistentArrayMap or a promoted PersistentHashMap.
@@ -154,8 +155,11 @@ impl PersistentArrayMap {
             let new = self.with_entries(py, entries);
             return Ok(Py::new(py, new)?.into_any());
         }
-        // Promote.
+        // Promote — carry meta across the transition.
         let phm = self.promote_with_pair(py, key, val)?;
+        if let Some(m) = self.clone_meta(py) {
+            return <PersistentHashMap as IMeta>::with_meta(phm, py, m);
+        }
         Ok(phm.into_any())
     }
 
@@ -260,21 +264,9 @@ impl PersistentArrayMap {
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyObject {
         self.meta
-            .read()
             .as_ref()
             .map(|o| o.clone_ref(py))
             .unwrap_or_else(|| py.None())
-    }
-
-    fn with_meta(&self, py: Python<'_>, meta: PyObject) -> PyResult<Py<PersistentArrayMap>> {
-        let m = if meta.is_none(py) { None } else { Some(meta) };
-        Py::new(
-            py,
-            Self {
-                entries: Arc::clone(&self.entries),
-                meta: RwLock::new(m),
-            },
-        )
     }
 
     /// `(m k)` / `(m k default)` — map-as-IFn: behaves like lookup.
@@ -332,9 +324,9 @@ pub fn array_map(py: Python<'_>, args: Bound<'_, PyTuple>) -> PyResult<PyObject>
         let v = args.get_item(i + 1)?.unbind();
         // Dispatch on current type — after promotion m becomes PersistentHashMap.
         let m_bind = m.bind(py);
-        if let Ok(am) = m_bind.downcast::<PersistentArrayMap>() {
+        if let Ok(am) = m_bind.cast::<PersistentArrayMap>() {
             m = am.get().assoc_internal(py, k, v)?;
-        } else if let Ok(hm) = m_bind.downcast::<PersistentHashMap>() {
+        } else if let Ok(hm) = m_bind.cast::<PersistentHashMap>() {
             let new = hm.get().assoc_internal(py, k, v)?;
             m = Py::new(py, new)?.into_any();
         } else {
@@ -369,7 +361,7 @@ impl IEquiv for PersistentArrayMap {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
         let other_b = other.bind(py);
         // Array-vs-array fast-ish path.
-        if let Ok(other_m) = other_b.downcast::<PersistentArrayMap>() {
+        if let Ok(other_m) = other_b.cast::<PersistentArrayMap>() {
             let a = this.bind(py).get();
             let b = other_m.get();
             if a.entries.len() != b.entries.len() {
@@ -392,7 +384,7 @@ impl IEquiv for PersistentArrayMap {
             return Ok(true);
         }
         // Compare with a PersistentHashMap.
-        if let Ok(other_m) = other_b.downcast::<PersistentHashMap>() {
+        if let Ok(other_m) = other_b.cast::<PersistentHashMap>() {
             let a = this.bind(py).get();
             let b = other_m.get();
             if (a.entries.len() as u32) != b.count {
@@ -433,7 +425,6 @@ impl IMeta for PersistentArrayMap {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
         Ok(s.meta
-            .read()
             .as_ref()
             .map(|o| o.clone_ref(py))
             .unwrap_or_else(|| py.None()))
@@ -445,7 +436,7 @@ impl IMeta for PersistentArrayMap {
             py,
             PersistentArrayMap {
                 entries: Arc::clone(&s.entries),
-                meta: RwLock::new(m),
+                meta: m,
             },
         )?
         .into_any())
@@ -459,11 +450,27 @@ impl IPersistentCollection for PersistentArrayMap {
     }
     fn conj(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
         let s = this.bind(py).get();
+        if x.is_none(py) {
+            return Ok(this.clone_ref(py).into_any());
+        }
         let x_b = x.bind(py);
-        if let Ok(me) = x_b.downcast::<crate::collections::map_entry::MapEntry>() {
+        if let Ok(me) = x_b.cast::<crate::collections::map_entry::MapEntry>() {
             let k = me.get().key.clone_ref(py);
             let v = me.get().val.clone_ref(py);
             return s.assoc_internal(py, k, v);
+        }
+        // If x is another map, merge entries.
+        if x_b.cast::<PersistentArrayMap>().is_ok()
+            || x_b.cast::<crate::collections::phashmap::PersistentHashMap>().is_ok()
+        {
+            let mut acc: PyObject = this.clone_ref(py).into_any();
+            let mut cur = crate::rt::seq(py, x.clone_ref(py))?;
+            while !cur.is_none(py) {
+                let entry = crate::rt::first(py, cur.clone_ref(py))?;
+                acc = crate::rt::conj(py, acc, entry)?;
+                cur = crate::rt::next_(py, cur)?;
+            }
+            return Ok(acc);
         }
         let k = x_b.get_item(0)?.unbind();
         let v = x_b.get_item(1)?.unbind();
@@ -531,6 +538,56 @@ impl ISeqable for PersistentArrayMap {
     }
 }
 
+#[implements(CollReduce)]
+impl CollReduce for PersistentArrayMap {
+    fn coll_reduce1(this: Py<Self>, py: Python<'_>, f: PyObject) -> PyResult<PyObject> {
+        let s: &PersistentArrayMap = this.bind(py).get();
+        if s.entries.is_empty() {
+            return crate::rt::invoke_n(py, f, &[]);
+        }
+        let (k0, v0) = (s.entries[0].0.clone_ref(py), s.entries[0].1.clone_ref(py));
+        let me0 = crate::collections::map_entry::MapEntry::new(k0, v0);
+        let mut acc: PyObject = Py::new(py, me0)?.into_any();
+        for (k, v) in s.entries.iter().skip(1) {
+            let me = crate::collections::map_entry::MapEntry::new(k.clone_ref(py), v.clone_ref(py));
+            let me_py: PyObject = Py::new(py, me)?.into_any();
+            acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, me_py])?;
+            if crate::reduced::is_reduced(py, &acc) {
+                return Ok(crate::reduced::unreduced(py, acc));
+            }
+        }
+        Ok(acc)
+    }
+    fn coll_reduce2(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        let s: &PersistentArrayMap = this.bind(py).get();
+        let mut acc = init;
+        for (k, v) in s.entries.iter() {
+            let me = crate::collections::map_entry::MapEntry::new(k.clone_ref(py), v.clone_ref(py));
+            let me_py: PyObject = Py::new(py, me)?.into_any();
+            acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, me_py])?;
+            if crate::reduced::is_reduced(py, &acc) {
+                return Ok(crate::reduced::unreduced(py, acc));
+            }
+        }
+        Ok(acc)
+    }
+}
+
+#[implements(IKVReduce)]
+impl IKVReduce for PersistentArrayMap {
+    fn kv_reduce(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        let s: &PersistentArrayMap = this.bind(py).get();
+        let mut acc = init;
+        for (k, v) in s.entries.iter() {
+            acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, k.clone_ref(py), v.clone_ref(py)])?;
+            if crate::reduced::is_reduced(py, &acc) {
+                return Ok(crate::reduced::unreduced(py, acc));
+            }
+        }
+        Ok(acc)
+    }
+}
+
 #[implements(ILookup)]
 impl ILookup for PersistentArrayMap {
     fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject> {
@@ -540,70 +597,11 @@ impl ILookup for PersistentArrayMap {
 
 #[implements(IFn)]
 impl IFn for PersistentArrayMap {
-    fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err(
-            "Wrong number of args (0) passed to: PersistentArrayMap",
-        ))
-    }
     fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
         this.bind(py).get().val_at_internal(py, a0)
     }
     fn invoke2(this: Py<Self>, py: Python<'_>, a0: PyObject, a1: PyObject) -> PyResult<PyObject> {
         this.bind(py).get().val_at_default_internal(py, a0, a1)
-    }
-    fn invoke3(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (3) passed to: PersistentArrayMap"))
-    }
-    fn invoke4(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (4) passed to: PersistentArrayMap"))
-    }
-    fn invoke5(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (5) passed to: PersistentArrayMap"))
-    }
-    fn invoke6(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (6) passed to: PersistentArrayMap"))
-    }
-    fn invoke7(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (7) passed to: PersistentArrayMap"))
-    }
-    fn invoke8(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (8) passed to: PersistentArrayMap"))
-    }
-    fn invoke9(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (9) passed to: PersistentArrayMap"))
-    }
-    fn invoke10(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (10) passed to: PersistentArrayMap"))
-    }
-    fn invoke11(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (11) passed to: PersistentArrayMap"))
-    }
-    fn invoke12(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (12) passed to: PersistentArrayMap"))
-    }
-    fn invoke13(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (13) passed to: PersistentArrayMap"))
-    }
-    fn invoke14(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (14) passed to: PersistentArrayMap"))
-    }
-    fn invoke15(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (15) passed to: PersistentArrayMap"))
-    }
-    fn invoke16(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (16) passed to: PersistentArrayMap"))
-    }
-    fn invoke17(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (17) passed to: PersistentArrayMap"))
-    }
-    fn invoke18(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (18) passed to: PersistentArrayMap"))
-    }
-    fn invoke19(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (19) passed to: PersistentArrayMap"))
-    }
-    fn invoke20(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject, _a19: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (20) passed to: PersistentArrayMap"))
     }
     fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
         match args.len() {
@@ -624,19 +622,12 @@ impl IFn for PersistentArrayMap {
 // HASHMAP_THRESHOLD returns a different pyclass (TransientHashMap) — the
 // caller re-binds the name.
 
-fn current_thread_id() -> usize {
-    use std::hash::{Hash, Hasher};
-    let tid = std::thread::current().id();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    tid.hash(&mut h);
-    h.finish() as usize
-}
+// Thread ownership is NOT enforced, matching Clojure JVM post-CLJ-1613.
 
 #[pyclass(module = "clojure._core", name = "TransientArrayMap", frozen)]
 pub struct TransientArrayMap {
     state: parking_lot::Mutex<Vec<(PyObject, PyObject)>>,
     alive: AtomicBool,
-    owner_thread: AtomicUsize,
 }
 
 impl TransientArrayMap {
@@ -644,12 +635,6 @@ impl TransientArrayMap {
         if !self.alive.load(Ordering::Acquire) {
             return Err(IllegalStateException::new_err(
                 "Transient used after persistent!",
-            ));
-        }
-        let owner = self.owner_thread.load(Ordering::Acquire);
-        if owner != current_thread_id() {
-            return Err(IllegalStateException::new_err(
-                "Transient used by non-owner thread",
             ));
         }
         Ok(())
@@ -664,7 +649,6 @@ impl TransientArrayMap {
         Self {
             state: parking_lot::Mutex::new(entries),
             alive: AtomicBool::new(true),
-            owner_thread: AtomicUsize::new(current_thread_id()),
         }
     }
 
@@ -703,11 +687,46 @@ impl TransientArrayMap {
     }
 }
 
+impl TransientArrayMap {
+    fn val_at_default_internal(
+        &self,
+        py: Python<'_>,
+        key: PyObject,
+        default: PyObject,
+    ) -> PyResult<PyObject> {
+        self.check_alive_and_owner()?;
+        let st = self.state.lock();
+        if let Some(i) = Self::find_index(py, &st, &key)? {
+            return Ok(st[i].1.clone_ref(py));
+        }
+        Ok(default)
+    }
+
+    fn contains_key_internal(&self, py: Python<'_>, key: PyObject) -> PyResult<bool> {
+        self.check_alive_and_owner()?;
+        let st = self.state.lock();
+        Ok(Self::find_index(py, &st, &key)?.is_some())
+    }
+}
+
 #[pymethods]
 impl TransientArrayMap {
     fn __len__(&self) -> PyResult<usize> {
         self.check_alive_and_owner()?;
         Ok(self.state.lock().len())
+    }
+
+    fn __contains__(&self, py: Python<'_>, key: PyObject) -> PyResult<bool> {
+        self.contains_key_internal(py, key)
+    }
+
+    fn __getitem__(&self, py: Python<'_>, key: PyObject) -> PyResult<PyObject> {
+        let sentinel: PyObject = pyo3::types::PyTuple::empty(py).unbind().into_any();
+        let v = self.val_at_default_internal(py, key, sentinel.clone_ref(py))?;
+        if crate::rt::identical(py, v.clone_ref(py), sentinel) {
+            return Err(pyo3::exceptions::PyKeyError::new_err(()));
+        }
+        Ok(v)
     }
 
     /// Returns `Py<TransientArrayMap>` when still small, or a promoted
@@ -756,7 +775,7 @@ impl TransientArrayMap {
     fn conj_bang(slf: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
         let (k, v) = {
             let x_b = x.bind(py);
-            if let Ok(me) = x_b.downcast::<crate::collections::map_entry::MapEntry>() {
+            if let Ok(me) = x_b.cast::<crate::collections::map_entry::MapEntry>() {
                 (me.get().key.clone_ref(py), me.get().val.clone_ref(py))
             } else {
                 (x_b.get_item(0)?.unbind(), x_b.get_item(1)?.unbind())
@@ -775,7 +794,7 @@ impl TransientArrayMap {
         this.alive.store(false, Ordering::Release);
         let pam = PersistentArrayMap {
             entries: Arc::from(entries.into_boxed_slice()),
-            meta: RwLock::new(None),
+            meta: None,
         };
         Py::new(py, pam)
     }
@@ -815,5 +834,32 @@ impl ITransientMap for TransientArrayMap {
     fn dissoc_bang(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
         let r = TransientArrayMap::dissoc_bang(this, py, k)?;
         Ok(r.into_any())
+    }
+}
+
+#[implements(ILookup)]
+impl ILookup for TransientArrayMap {
+    fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject> {
+        this.bind(py).get().val_at_default_internal(py, k, not_found)
+    }
+}
+
+#[implements(Associative)]
+impl Associative for TransientArrayMap {
+    fn contains_key(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool> {
+        this.bind(py).get().contains_key_internal(py, k)
+    }
+    fn entry_at(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        if !s.contains_key_internal(py, k.clone_ref(py))? {
+            return Ok(py.None());
+        }
+        let sentinel: PyObject = pyo3::types::PyTuple::empty(py).unbind().into_any();
+        let v = s.val_at_default_internal(py, k.clone_ref(py), sentinel)?;
+        let me = crate::collections::map_entry::MapEntry::new(k, v);
+        Ok(Py::new(py, me)?.into_any())
+    }
+    fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        TransientArrayMap::assoc_bang(this, py, k, v)
     }
 }

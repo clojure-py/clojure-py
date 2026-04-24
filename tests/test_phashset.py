@@ -126,7 +126,10 @@ def test_use_after_persistent_raises():
         conj_bang(t, 1)
 
 
-def test_wrong_thread_raises():
+def test_cross_thread_use_allowed():
+    """Matches Clojure JVM post-CLJ-1613: transient sets don't enforce
+    thread ownership — they delegate to TransientHashMap which also doesn't.
+    Synchronization is the caller's responsibility."""
     t = transient(hash_set())
     err_box = []
     def worker():
@@ -135,4 +138,4 @@ def test_wrong_thread_raises():
         except Exception as e:
             err_box.append(type(e).__name__)
     th = threading.Thread(target=worker); th.start(); th.join()
-    assert err_box and "IllegalStateException" in err_box[0]
+    assert err_box == []

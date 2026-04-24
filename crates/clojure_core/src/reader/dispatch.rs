@@ -76,11 +76,8 @@ pub fn read_one(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
             src.advance(); // consume '^'
             forms::meta_reader(src, py)
         }
-        '`' | '~' => Err(errors::make(
-            format!("Reader macro '{}' not yet implemented", ch),
-            line,
-            col,
-        )),
+        '`' => forms::syntax_quote_reader(src, py),
+        '~' => forms::unquote_reader(src, py),
         _ if looks_like_number(src) => number::parse_number(src, py),
         _ => token::parse_symbol_or_literal(src, py),
     }
@@ -95,6 +92,8 @@ fn dispatch_hash_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObje
     match src.peek() {
         Some('{') => forms::set_reader(src, py),
         Some('\'') => forms::var_quote_reader(src, py),
+        Some('(') => forms::anon_fn_reader(src, py),
+        Some('"') => forms::regex_reader(src, py),
         Some('_') => {
             src.advance(); // consume '_'
             forms::discard_reader(src, py)

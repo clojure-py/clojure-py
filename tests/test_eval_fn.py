@@ -57,7 +57,11 @@ def test_closure_of_fn_of_fn():
 
 def test_fn_arity_mismatch_raises():
     f = _ev("(fn [x] x)")
-    with pytest.raises(EvalError, match="Wrong number of args"):
+    # Vanilla-style: wrong-arity calls raise ArityException, not the generic
+    # EvalError — so `(thrown-with-msg? ArityException #"..." …)` matches
+    # as in vanilla Clojure. ArityException inherits TypeError on Python.
+    from clojure._core import ArityException
+    with pytest.raises(ArityException, match="Wrong number of args"):
         f(1, 2)
 
 

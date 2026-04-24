@@ -86,9 +86,9 @@ fn try_resolve(
 
     // Step 2: MRO walk (skip index 0 = exact type).
     let mro = ty.getattr("__mro__")?;
-    let mro_tuple: Bound<'_, PyTuple> = mro.downcast_into()?;
+    let mro_tuple: Bound<'_, PyTuple> = mro.cast_into()?;
     for parent in mro_tuple.iter().skip(1) {
-        let parent_ty: Bound<'_, PyType> = parent.downcast_into()?;
+        let parent_ty: Bound<'_, PyType> = parent.cast_into()?;
         let pk = CacheKey::for_py_type(&parent_ty);
         if let Some(table) = protocol.cache.lookup(pk) {
             // Parents in the MRO chain are only ever direct extensions
@@ -123,7 +123,7 @@ fn try_resolve(
     // Step 3: extend-via-metadata (opt-in per protocol).
     if protocol.via_metadata {
         if let Ok(meta) = target.bind(py).getattr("__clj_meta__") {
-            if let Ok(meta_dict) = meta.downcast::<PyDict>() {
+            if let Ok(meta_dict) = meta.cast::<PyDict>() {
                 if let Some(impl_fn) = meta_dict.get_item(method_key.as_ref())? {
                     return Ok(Some(call_impl_any(py, &impl_fn, target, args)?));
                 }

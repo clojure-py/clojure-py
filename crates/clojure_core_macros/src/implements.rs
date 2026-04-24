@@ -108,7 +108,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                             |args: &::pyo3::Bound<'_, ::pyo3::types::PyTuple>, _kw: ::std::option::Option<&::pyo3::Bound<'_, ::pyo3::types::PyDict>>| -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>> {
                                 let py = args.py();
                                 let self_any = args.get_item(0)?;
-                                let self_bound = self_any.downcast::<#self_ty>()?;
+                                let self_bound = self_any.cast::<#self_ty>()?;
                                 let this: ::pyo3::Py<#self_ty> = self_bound.clone().unbind();
                                 let rest_items: ::std::vec::Vec<::pyo3::Py<::pyo3::types::PyAny>> =
                                     (1..args.len()).map(|i| -> ::pyo3::PyResult<_> {
@@ -140,7 +140,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                             |args: &::pyo3::Bound<'_, ::pyo3::types::PyTuple>, _kw: ::std::option::Option<&::pyo3::Bound<'_, ::pyo3::types::PyDict>>| -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>> {
                                 let py = args.py();
                                 let self_any = args.get_item(0)?;
-                                let self_bound = self_any.downcast::<#self_ty>()?;
+                                let self_bound = self_any.cast::<#self_ty>()?;
                                 let this: ::pyo3::Py<#self_ty> = self_bound.clone().unbind();
                                 #(#arg_extractions)*
                                 <#self_ty as #proto_ident>::#ident(this, py #(, #arg_idents)*)
@@ -163,7 +163,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
                 .unwrap_or_else(|| ("builtins".to_string(), path.clone()));
             quote! {
                 let ty_mod = py.import(#mod_name)?;
-                let ty = ty_mod.getattr(#cls_name)?.downcast_into::<::pyo3::types::PyType>()?;
+                let ty = ty_mod.getattr(#cls_name)?.cast_into::<::pyo3::types::PyType>()?;
             }
         }
         None => quote! {
@@ -185,7 +185,7 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
             #target_ty_expr
             #(#method_builders)*
             let proto_any = m.getattr(stringify!(#proto_ident))?;
-            let proto: &::pyo3::Bound<'_, crate::Protocol> = proto_any.downcast()?;
+            let proto: &::pyo3::Bound<'_, crate::Protocol> = proto_any.cast()?;
             proto.get().extend_type(py, ty, impls)?;
             Ok(())
         }

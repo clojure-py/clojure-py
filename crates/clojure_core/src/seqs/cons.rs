@@ -9,7 +9,6 @@ use crate::iseq::ISeq;
 use crate::iseqable::ISeqable;
 use crate::sequential::Sequential;
 use clojure_core_macros::implements;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -19,27 +18,66 @@ type PyObject = Py<PyAny>;
 pub struct Cons {
     pub first: PyObject,
     pub more: PyObject,   // another seq-like or nil
-    pub meta: RwLock<Option<PyObject>>,
+    pub meta: Option<PyObject>,
 }
 
 impl Cons {
     pub fn new(first: PyObject, more: PyObject) -> Self {
-        Self { first, more, meta: RwLock::new(None) }
+        Self { first, more, meta: None }
     }
 }
 
+/// Iterative Drop to avoid Rust-stack overflow on long
+/// `LazySeq → Cons → LazySeq → …` chains (count crashes ~14k without this).
+/// CPython exposes `Py_TRASHCAN_BEGIN`/`END` macros for this purpose, but
+/// pyo3-ffi marks them as private and doesn't wrap them, so we roll our own:
+///
+///   * `DRAIN_ACTIVE` is true iff a drain loop is in progress on this thread.
+///     Nested Drops see it as true and only push.
+///   * `DRAIN_STACK` holds the objects still to be dropped.
+///
+/// Both `Cons::drop` and `LazySeq::drop` use this — chain links are pushed
+/// instead of auto-dropped inline, and the outermost Drop iteratively
+/// drains. Inner Drops run in normal (flat) stack depth.
+thread_local! {
+    static DRAIN_STACK: std::cell::RefCell<Vec<PyObject>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+    static DRAIN_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn defer_drop(obj: PyObject) {
+    DRAIN_STACK.with(|s| s.borrow_mut().push(obj));
+}
+
+pub(crate) fn run_outer_drain() {
+    if DRAIN_ACTIVE.with(|a| a.get()) {
+        return;
+    }
+    DRAIN_ACTIVE.with(|a| a.set(true));
+    loop {
+        let next = DRAIN_STACK.with(|s| s.borrow_mut().pop());
+        match next {
+            Some(obj) => drop(obj),
+            None => break,
+        }
+    }
+    DRAIN_ACTIVE.with(|a| a.set(false));
+}
+
+impl Drop for Cons {
+    fn drop(&mut self) {
+        Python::attach(|py| {
+            let more = std::mem::replace(&mut self.more, py.None());
+            defer_drop(more);
+            run_outer_drain();
+        });
+    }
+}
+
+
 #[pymethods]
 impl Cons {
-    #[new]
-    pub fn py_new(first: PyObject, more: PyObject) -> Self {
-        Self::new(first, more)
-    }
-
-    #[getter(first)]
-    fn get_first(&self, py: Python<'_>) -> PyObject { self.first.clone_ref(py) }
-    #[getter(more)]
-    fn get_more(&self, py: Python<'_>) -> PyObject { self.more.clone_ref(py) }
-
     fn __len__(slf: Py<Self>, py: Python<'_>) -> PyResult<usize> {
         crate::rt::count(py, slf.into_any())
     }
@@ -69,20 +107,6 @@ impl Cons {
             if cur.is_none(py) { break; }
         }
         Ok(format!("({})", parts.join(" ")))
-    }
-
-    #[getter(meta)]
-    fn get_meta(&self, py: Python<'_>) -> PyObject {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
-    }
-
-    fn with_meta(&self, py: Python<'_>, meta: PyObject) -> PyResult<Py<Cons>> {
-        let m = if meta.is_none(py) { None } else { Some(meta) };
-        Py::new(py, Cons {
-            first: self.first.clone_ref(py),
-            more: self.more.clone_ref(py),
-            meta: RwLock::new(m),
-        })
     }
 }
 
@@ -152,26 +176,12 @@ impl Counted for Cons {
 #[implements(IEquiv)]
 impl IEquiv for Cons {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        // Same-type only for now.
-        let other_b = other.bind(py);
-        if other_b.downcast::<Cons>().is_err() && other_b.downcast::<crate::collections::plist::PersistentList>().is_err() {
+        // Cross-type sequential equality per Clojure: a Cons is equal to any
+        // Sequential collection with the same elements in the same order.
+        if !crate::rt::is_sequential(py, &other) {
             return Ok(false);
         }
-        // Walk both seqs pairwise.
-        let mut ap: PyObject = this.into_any();
-        let mut bp: PyObject = other;
-        loop {
-            let sa = crate::rt::seq(py, ap.clone_ref(py))?;
-            let sb = crate::rt::seq(py, bp.clone_ref(py))?;
-            if sa.is_none(py) && sb.is_none(py) { return Ok(true); }
-            if sa.is_none(py) || sb.is_none(py) { return Ok(false); }
-            let ha = crate::rt::first(py, sa.clone_ref(py))?;
-            let hb = crate::rt::first(py, sb.clone_ref(py))?;
-            if !crate::rt::equiv(py, ha, hb)? { return Ok(false); }
-            ap = crate::rt::next_(py, sa)?;
-            bp = crate::rt::next_(py, sb)?;
-            if ap.is_none(py) && bp.is_none(py) { return Ok(true); }
-        }
+        crate::rt::sequential_equiv(py, this.into_any(), other)
     }
 }
 
@@ -197,7 +207,7 @@ impl IHashEq for Cons {
 impl IMeta for Cons {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
-        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+        Ok(s.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
     }
     fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
         let s = this.bind(py).get();
@@ -205,7 +215,7 @@ impl IMeta for Cons {
         Ok(Py::new(py, Cons {
             first: s.first.clone_ref(py),
             more: s.more.clone_ref(py),
-            meta: RwLock::new(m),
+            meta: m,
         })?.into_any())
     }
 }

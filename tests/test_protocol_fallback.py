@@ -12,6 +12,7 @@ def test_fallback_registers_impl_on_miss():
             {method: lambda s, a: ("fallback", a)},
         )
 
+    _original_fb = IFn.fallback
     IFn.set_fallback(fb)
     try:
         class X:
@@ -21,7 +22,7 @@ def test_fallback_registers_impl_on_miss():
         # Subsequent call: type is cached, fallback not consulted again.
         assert invoke1(X(), 11) == ("fallback", 11)
     finally:
-        IFn.set_fallback(None)
+        IFn.set_fallback(_original_fb)
 
 
 def test_fallback_consulted_once_then_raises():
@@ -32,6 +33,7 @@ def test_fallback_consulted_once_then_raises():
         calls.append(1)
         # Deliberately do nothing — no impl gets registered.
 
+    _original_fb = IFn.fallback
     IFn.set_fallback(fb)
     try:
         class Y:
@@ -41,7 +43,7 @@ def test_fallback_consulted_once_then_raises():
             invoke1(Y(), 1)
         assert len(calls) == 1
     finally:
-        IFn.set_fallback(None)
+        IFn.set_fallback(_original_fb)
 
 
 def test_fallback_can_register_different_type():
@@ -54,6 +56,7 @@ def test_fallback_can_register_different_type():
     def fb(p, m, t):
         p.extend_type(OtherType, {m: lambda s, a: ("other", a)})
 
+    _original_fb = IFn.fallback
     IFn.set_fallback(fb)
     try:
         class Z:
@@ -64,15 +67,17 @@ def test_fallback_can_register_different_type():
         # But OtherType now works (no fallback needed — directly extended):
         assert invoke1(OtherType(), 5) == ("other", 5)
     finally:
-        IFn.set_fallback(None)
+        IFn.set_fallback(_original_fb)
 
 
 def test_fallback_slot_is_settable_and_clearable():
-    assert IFn.fallback is None
+    # IFn ships with a built-in fallback (handles arbitrary Python callables);
+    # the test checks the slot mechanics, not its initial value.
+    original_fb = IFn.fallback
     fb = lambda p, m, t: None
     IFn.set_fallback(fb)
     try:
         assert IFn.fallback is fb
     finally:
-        IFn.set_fallback(None)
-    assert IFn.fallback is None
+        IFn.set_fallback(original_fb)
+    assert IFn.fallback is original_fb

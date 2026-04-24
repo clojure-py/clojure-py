@@ -1,6 +1,15 @@
+import os
 import sys
 import pytest
 from hypothesis import settings, HealthCheck, Verbosity
+
+# Put tests/clj on sys.path so test helper namespaces like
+# `clojure.test-clojure.protocols.examples` can be `require`d by
+# other test files. Without this, `find-source-file` won't locate
+# them.
+_TESTS_CLJ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clj")
+if _TESTS_CLJ not in sys.path:
+    sys.path.insert(0, _TESTS_CLJ)
 
 @pytest.fixture(autouse=True)
 def _require_free_threaded():

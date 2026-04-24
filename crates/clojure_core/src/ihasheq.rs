@@ -13,7 +13,7 @@ use pyo3::types::{PyCFunction, PyDict, PyTuple};
 
 pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let ihasheq_any = m.getattr("IHashEq")?;
-    let ihasheq_proto: &Bound<'_, crate::Protocol> = ihasheq_any.downcast()?;
+    let ihasheq_proto: &Bound<'_, crate::Protocol> = ihasheq_any.cast()?;
 
     let fallback = PyCFunction::new_closure(
         py,
@@ -22,7 +22,7 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
         |args: &Bound<'_, PyTuple>, _kw: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
             let py = args.py();
             let proto_any = args.get_item(0)?;
-            let proto: &Bound<'_, crate::Protocol> = proto_any.downcast()?;
+            let proto: &Bound<'_, crate::Protocol> = proto_any.cast()?;
             let _method_key: String = args.get_item(1)?.extract()?;
             let target = args.get_item(2)?;
 

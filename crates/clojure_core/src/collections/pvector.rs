@@ -4,6 +4,8 @@
 //! land in Phase 6B/6C.
 
 use crate::associative::Associative;
+use crate::ilookup::ILookup;
+use crate::coll_reduce::CollReduce;
 use crate::collections::pvector_node::{VNode, VSlot};
 use crate::counted::Counted;
 use crate::exceptions::IllegalStateException;
@@ -17,12 +19,12 @@ use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_stack::IPersistentStack;
 use crate::ipersistent_vector::IPersistentVector;
 use crate::iseqable::ISeqable;
+use crate::reversible::Reversible;
 use crate::itransient_associative::ITransientAssociative;
 use crate::itransient_collection::ITransientCollection;
 use crate::itransient_vector::ITransientVector;
 use crate::sequential::Sequential;
 use clojure_core_macros::implements;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use std::sync::Arc;
@@ -40,7 +42,7 @@ pub struct PersistentVector {
     pub shift: u32,
     pub root: Arc<VNode>,
     pub tail: Arc<[PyObject]>,
-    pub meta: RwLock<Option<PyObject>>,
+    pub meta: Option<PyObject>,
 }
 
 static EMPTY_ROOT: once_cell::sync::OnceCell<Arc<VNode>> = once_cell::sync::OnceCell::new();
@@ -56,7 +58,7 @@ impl PersistentVector {
             shift: BITS,
             root: empty_root(),
             tail: Arc::from(Vec::<PyObject>::new().into_boxed_slice()),
-            meta: RwLock::new(None),
+            meta: None,
         }
     }
 
@@ -132,7 +134,7 @@ impl PersistentVector {
                 shift: self.shift,
                 root: Arc::clone(&self.root),
                 tail: Arc::from(new_tail.into_boxed_slice()),
-                meta: RwLock::new(self.meta.read().as_ref().map(|o| o.clone_ref(py))),
+                meta: self.meta.as_ref().map(|o| o.clone_ref(py)),
             });
         }
         // Tail is full. Push it into the trie as a leaf node.
@@ -163,7 +165,7 @@ impl PersistentVector {
             shift: new_shift,
             root: new_root,
             tail: Arc::from(vec![x].into_boxed_slice()),
-            meta: RwLock::new(self.meta.read().as_ref().map(|o| o.clone_ref(py))),
+            meta: self.meta.as_ref().map(|o| o.clone_ref(py)),
         })
     }
 
@@ -187,7 +189,7 @@ impl PersistentVector {
                 shift: self.shift,
                 root: Arc::clone(&self.root),
                 tail: Arc::from(new_tail.into_boxed_slice()),
-                meta: RwLock::new(self.meta.read().as_ref().map(|o| o.clone_ref(py))),
+                meta: self.meta.as_ref().map(|o| o.clone_ref(py)),
             });
         }
         // In trie: path-copy from root.
@@ -197,7 +199,7 @@ impl PersistentVector {
             shift: self.shift,
             root: new_root,
             tail: Arc::clone(&self.tail),
-            meta: RwLock::new(self.meta.read().as_ref().map(|o| o.clone_ref(py))),
+            meta: self.meta.as_ref().map(|o| o.clone_ref(py)),
         })
     }
 
@@ -207,7 +209,10 @@ impl PersistentVector {
             return Err(IllegalStateException::new_err("Can't pop empty vector"));
         }
         if self.cnt == 1 {
-            return Ok(Self::new_empty());
+            // Preserve meta across the transition to empty (matches vanilla).
+            let mut empty = Self::new_empty();
+            empty.meta = self.meta.as_ref().map(|o| o.clone_ref(py));
+            return Ok(empty);
         }
         if (self.cnt as usize - self.tail_off()) > 1 {
             // Tail has more than one element.
@@ -220,7 +225,7 @@ impl PersistentVector {
                 shift: self.shift,
                 root: Arc::clone(&self.root),
                 tail: Arc::from(new_tail.into_boxed_slice()),
-                meta: RwLock::new(self.meta.read().as_ref().map(|o| o.clone_ref(py))),
+                meta: self.meta.as_ref().map(|o| o.clone_ref(py)),
             });
         }
         // Tail has exactly one element. Pull the last leaf from trie into new tail.
@@ -254,7 +259,7 @@ impl PersistentVector {
             shift: new_shift,
             root: new_root,
             tail: new_tail,
-            meta: RwLock::new(self.meta.read().as_ref().map(|o| o.clone_ref(py))),
+            meta: self.meta.as_ref().map(|o| o.clone_ref(py)),
         })
     }
 }
@@ -499,24 +504,9 @@ impl PersistentVector {
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyObject {
         self.meta
-            .read()
             .as_ref()
             .map(|o| o.clone_ref(py))
             .unwrap_or_else(|| py.None())
-    }
-
-    fn with_meta(&self, py: Python<'_>, meta: PyObject) -> PyResult<Py<PersistentVector>> {
-        let m = if meta.is_none(py) { None } else { Some(meta) };
-        Py::new(
-            py,
-            Self {
-                cnt: self.cnt,
-                shift: self.shift,
-                root: Arc::clone(&self.root),
-                tail: Arc::clone(&self.tail),
-                meta: RwLock::new(m),
-            },
-        )
     }
 }
 
@@ -575,22 +565,27 @@ impl Counted for PersistentVector {
 #[implements(IEquiv)]
 impl IEquiv for PersistentVector {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        // Only compare same type (cross-type sequential equality is deferred).
+        // Same-type fast path: walk by index without going through seq.
         let other_b = other.bind(py);
-        let Ok(other_pv) = other_b.downcast::<PersistentVector>() else {
-            return Ok(false);
-        };
-        let a = this.bind(py).get();
-        let b = other_pv.get();
-        if a.cnt != b.cnt { return Ok(false); }
-        for i in 0..(a.cnt as usize) {
-            let av = a.nth_internal(py, i)?;
-            let bv = b.nth_internal(py, i)?;
-            if !crate::rt::equiv(py, av, bv)? {
-                return Ok(false);
+        if let Ok(other_pv) = other_b.cast::<PersistentVector>() {
+            let a = this.bind(py).get();
+            let b = other_pv.get();
+            if a.cnt != b.cnt { return Ok(false); }
+            for i in 0..(a.cnt as usize) {
+                let av = a.nth_internal(py, i)?;
+                let bv = b.nth_internal(py, i)?;
+                if !crate::rt::equiv(py, av, bv)? {
+                    return Ok(false);
+                }
             }
+            return Ok(true);
         }
-        Ok(true)
+        // Cross-type: vectors are Sequential — equal to any Sequential
+        // with the same elements in the same order (e.g. lists, lazy seqs).
+        if !crate::rt::is_sequential(py, &other) {
+            return Ok(false);
+        }
+        crate::rt::sequential_equiv(py, this.into_any(), other)
     }
 }
 
@@ -612,7 +607,7 @@ impl IHashEq for PersistentVector {
 impl IMeta for PersistentVector {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
-        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+        Ok(s.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
     }
     fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
         let s = this.bind(py).get();
@@ -622,7 +617,7 @@ impl IMeta for PersistentVector {
             shift: s.shift,
             root: Arc::clone(&s.root),
             tail: Arc::clone(&s.tail),
-            meta: RwLock::new(m),
+            meta: m,
         })?.into_any())
     }
 }
@@ -729,6 +724,54 @@ impl Associative for PersistentVector {
 #[implements(Sequential)]
 impl Sequential for PersistentVector {}
 
+#[implements(CollReduce)]
+impl CollReduce for PersistentVector {
+    fn coll_reduce1(this: Py<Self>, py: Python<'_>, f: PyObject) -> PyResult<PyObject> {
+        let v: &PersistentVector = this.bind(py).get();
+        if v.cnt == 0 {
+            return crate::rt::invoke_n(py, f, &[]);
+        }
+        let mut acc: Option<PyObject> = None;
+        let mut i: usize = 0;
+        let total = v.cnt as usize;
+        while i < total {
+            let arr = v.array_for(py, i)?;
+            for x in arr.iter() {
+                let val = x.clone_ref(py);
+                acc = Some(match acc {
+                    None => val,
+                    Some(a) => {
+                        let next = crate::rt::invoke_n(py, f.clone_ref(py), &[a, val])?;
+                        if crate::reduced::is_reduced(py, &next) {
+                            return Ok(crate::reduced::unreduced(py, next));
+                        }
+                        next
+                    }
+                });
+            }
+            i += arr.len();
+        }
+        Ok(acc.unwrap_or_else(|| py.None()))
+    }
+    fn coll_reduce2(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        let v: &PersistentVector = this.bind(py).get();
+        let mut acc = init;
+        let mut i: usize = 0;
+        let total = v.cnt as usize;
+        while i < total {
+            let arr = v.array_for(py, i)?;
+            for x in arr.iter() {
+                acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, x.clone_ref(py)])?;
+                if crate::reduced::is_reduced(py, &acc) {
+                    return Ok(crate::reduced::unreduced(py, acc));
+                }
+            }
+            i += arr.len();
+        }
+        Ok(acc)
+    }
+}
+
 #[implements(ISeqable)]
 impl ISeqable for PersistentVector {
     fn seq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
@@ -738,17 +781,32 @@ impl ISeqable for PersistentVector {
         let vs = crate::seqs::vector_seq::VectorSeq {
             vec: this,
             i: 0,
-            meta: parking_lot::RwLock::new(None),
+            meta: None,
         };
         Ok(Py::new(py, vs)?.into_any())
     }
 }
 
+#[implements(Reversible)]
+impl Reversible for PersistentVector {
+    fn rseq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        let cnt = this.bind(py).get().cnt;
+        if cnt == 0 {
+            return Ok(py.None());
+        }
+        // Matches JVM APersistentVector.RSeq: O(1) construct, O(1) per step
+        // via nth backward.
+        let rs = crate::seqs::vector_rseq::VectorRSeq {
+            vec: this,
+            i: cnt - 1,
+            meta: None,
+        };
+        Ok(Py::new(py, rs)?.into_any())
+    }
+}
+
 #[implements(IFn)]
 impl IFn for PersistentVector {
-    fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (0) passed to: PersistentVector"))
-    }
     fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
         // (v i) — nth
         let i = a0.bind(py).extract::<i64>().map_err(|_| {
@@ -767,61 +825,6 @@ impl IFn for PersistentVector {
         let s = this.bind(py).get();
         if (i as u64) >= (s.cnt as u64) { return Ok(a1); }
         s.nth_internal(py, i as usize)
-    }
-    // Arity stubs 3-20 raise ArityException.
-    fn invoke3(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (3) passed to: PersistentVector"))
-    }
-    fn invoke4(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (4) passed to: PersistentVector"))
-    }
-    fn invoke5(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (5) passed to: PersistentVector"))
-    }
-    fn invoke6(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (6) passed to: PersistentVector"))
-    }
-    fn invoke7(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (7) passed to: PersistentVector"))
-    }
-    fn invoke8(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (8) passed to: PersistentVector"))
-    }
-    fn invoke9(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (9) passed to: PersistentVector"))
-    }
-    fn invoke10(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (10) passed to: PersistentVector"))
-    }
-    fn invoke11(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (11) passed to: PersistentVector"))
-    }
-    fn invoke12(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (12) passed to: PersistentVector"))
-    }
-    fn invoke13(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (13) passed to: PersistentVector"))
-    }
-    fn invoke14(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (14) passed to: PersistentVector"))
-    }
-    fn invoke15(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (15) passed to: PersistentVector"))
-    }
-    fn invoke16(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (16) passed to: PersistentVector"))
-    }
-    fn invoke17(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (17) passed to: PersistentVector"))
-    }
-    fn invoke18(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (18) passed to: PersistentVector"))
-    }
-    fn invoke19(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (19) passed to: PersistentVector"))
-    }
-    fn invoke20(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject, _a19: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (20) passed to: PersistentVector"))
     }
     fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
         match args.len() {
@@ -853,24 +856,14 @@ impl IFn for PersistentVector {
 //
 // Safety:
 //   - `alive: AtomicBool` guards against use-after-`persistent!`.
-//   - `owner_thread` records the creating thread's id; ops from other threads
-//     raise IllegalStateException. Matches clojure-jvm's ensureEditable check.
-
-/// Hash-based owner-thread identity. Only equality is required; we use
-/// std::thread::current().id() hashed to a usize.
-fn current_thread_id() -> usize {
-    use std::hash::{Hash, Hasher};
-    let tid = std::thread::current().id();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    tid.hash(&mut h);
-    h.finish() as usize
-}
+//   - Thread ownership is NOT enforced, matching Clojure JVM post-CLJ-1613:
+//     callers are responsible for their own synchronization when handing a
+//     transient between threads (e.g. via `future`'s `@deref` happens-before).
 
 #[pyclass(module = "clojure._core", name = "TransientVector", frozen)]
 pub struct TransientVector {
     state: parking_lot::Mutex<TransientVectorState>,
     alive: AtomicBool,
-    owner_thread: AtomicUsize,
     edit: Arc<AtomicUsize>,
 }
 
@@ -890,12 +883,6 @@ impl TransientVector {
                 "Transient used after persistent!",
             ));
         }
-        let owner = self.owner_thread.load(Ordering::Acquire);
-        if owner != current_thread_id() {
-            return Err(IllegalStateException::new_err(
-                "Transient used by non-owner thread",
-            ));
-        }
         Ok(())
     }
 
@@ -913,7 +900,6 @@ impl TransientVector {
                 tail,
             }),
             alive: AtomicBool::new(true),
-            owner_thread: AtomicUsize::new(current_thread_id()),
             edit,
         }
     }
@@ -1001,11 +987,74 @@ fn do_assoc_editable(
     new_node
 }
 
+impl TransientVector {
+    /// Index-lookup helper mirroring PersistentVector::nth_internal. Reads
+    /// from the live transient state (tail + trie).
+    pub(crate) fn t_nth_internal(&self, py: Python<'_>, i: usize) -> PyResult<PyObject> {
+        let st = self.state.lock();
+        if i >= st.cnt as usize {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "transient vector index {i} out of bounds (len {})",
+                st.cnt
+            )));
+        }
+        let tail_off = t_tail_off(&st);
+        if i >= tail_off {
+            return Ok(st.tail[i - tail_off].clone_ref(py));
+        }
+        // Walk the trie by shift bits.
+        let mut node = Arc::clone(&st.root);
+        let mut level = st.shift;
+        while level > 0 {
+            let idx = (i >> level) & MASK;
+            let next: Arc<VNode> = {
+                let g = node.array.lock();
+                match &g[idx] {
+                    VSlot::Branch(b) => Arc::clone(b),
+                    _ => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "transient trie walk hit non-branch at interior level",
+                        ));
+                    }
+                }
+            };
+            node = next;
+            level -= BITS;
+        }
+        let g = node.array.lock();
+        match &g[i & MASK] {
+            VSlot::Leaf(v) => Ok(v.clone_ref(py)),
+            _ => Ok(py.None()),
+        }
+    }
+
+    pub(crate) fn t_count(&self) -> usize {
+        self.state.lock().cnt as usize
+    }
+}
+
 #[pymethods]
 impl TransientVector {
     fn __len__(&self) -> PyResult<usize> {
         self.check_alive_and_owner()?;
         Ok(self.state.lock().cnt as usize)
+    }
+
+    /// `(contains? tv i)` / `i in tv` — vector contains? is index-valid.
+    fn __contains__(&self, py: Python<'_>, key: PyObject) -> PyResult<bool> {
+        self.check_alive_and_owner()?;
+        let _ = py;
+        let Ok(idx) = key.bind(py).extract::<i64>() else { return Ok(false); };
+        if idx < 0 { return Ok(false); }
+        Ok((idx as usize) < self.t_count())
+    }
+
+    fn __getitem__(&self, py: Python<'_>, i: isize) -> PyResult<PyObject> {
+        self.check_alive_and_owner()?;
+        if i < 0 {
+            return Err(pyo3::exceptions::PyIndexError::new_err("negative index"));
+        }
+        self.t_nth_internal(py, i as usize)
     }
 
     fn conj_bang(slf: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<Py<Self>> {
@@ -1130,7 +1179,7 @@ impl TransientVector {
                     shift: st.shift,
                     root: Arc::clone(&st.root),
                     tail: snapshot_tail,
-                    meta: RwLock::new(None),
+                    meta: None,
                 };
                 let new_tail_arc = snapshot.array_for(py, cnt_before - 2)?;
 
@@ -1185,7 +1234,7 @@ impl TransientVector {
             tail: Arc::from(
                 st.tail.iter().map(|o| o.clone_ref(py)).collect::<Vec<_>>().into_boxed_slice(),
             ),
-            meta: RwLock::new(None),
+            meta: None,
         };
         drop(st);
         this.alive.store(false, Ordering::Release);
@@ -1232,6 +1281,48 @@ impl ITransientVector for TransientVector {
     }
 }
 
+/// Vectors support `(get v i)` / `(get v i default)` — index-keyed lookup.
+#[implements(ILookup)]
+impl ILookup for TransientVector {
+    fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        s.check_alive_and_owner()?;
+        let Ok(idx) = k.bind(py).extract::<i64>() else { return Ok(not_found); };
+        if idx < 0 || (idx as usize) >= s.t_count() {
+            return Ok(not_found);
+        }
+        s.t_nth_internal(py, idx as usize)
+    }
+}
+
+/// `(find tv i)` returns a MapEntry [i value] when i is in range, nil otherwise.
+/// `(contains? tv i)` via ILookup-default.
+#[implements(Associative)]
+impl Associative for TransientVector {
+    fn contains_key(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool> {
+        let s = this.bind(py).get();
+        s.check_alive_and_owner()?;
+        let Ok(idx) = k.bind(py).extract::<i64>() else { return Ok(false); };
+        Ok(idx >= 0 && (idx as usize) < s.t_count())
+    }
+    fn entry_at(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let s = this.bind(py).get();
+        s.check_alive_and_owner()?;
+        let Ok(idx) = k.bind(py).extract::<i64>() else { return Ok(py.None()); };
+        if idx < 0 || (idx as usize) >= s.t_count() {
+            return Ok(py.None());
+        }
+        let v = s.t_nth_internal(py, idx as usize)?;
+        let me = crate::collections::map_entry::MapEntry::new(k, v);
+        Ok(Py::new(py, me)?.into_any())
+    }
+    fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
+        // Transient vector `assoc` is `assoc!` — in-place.
+        let r = TransientVector::assoc_bang(this, py, k, v)?;
+        Ok(r.into_any())
+    }
+}
+
 // --- `transient` module-level function (clojure.core/transient alias) ---
 
 #[pyfunction]
@@ -1239,7 +1330,7 @@ impl ITransientVector for TransientVector {
 pub fn transient_fn(py: Python<'_>, coll: PyObject) -> PyResult<PyObject> {
     // Dispatch through IEditableCollection (so any implementer works).
     let proto_any = py.import("clojure._core")?.getattr("IEditableCollection")?;
-    let proto: Py<crate::Protocol> = proto_any.downcast::<crate::Protocol>()?.clone().unbind();
+    let proto: Py<crate::Protocol> = proto_any.cast::<crate::Protocol>()?.clone().unbind();
     let args = PyTuple::new(py, &[] as &[PyObject])?;
     crate::dispatch::dispatch(
         py,

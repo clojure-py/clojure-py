@@ -5,6 +5,7 @@ use crate::counted::Counted;
 use crate::iequiv::IEquiv;
 use crate::ihasheq::IHashEq;
 use crate::imeta::IMeta;
+use crate::ipersistent_collection::IPersistentCollection;
 use crate::iseq::ISeq;
 use crate::iseqable::ISeqable;
 use crate::sequential::Sequential;
@@ -23,7 +24,23 @@ enum LazySeqState {
 #[pyclass(module = "clojure._core", name = "LazySeq", frozen)]
 pub struct LazySeq {
     state: RwLock<LazySeqState>,
-    meta: RwLock<Option<PyObject>>,
+    meta: Option<PyObject>,
+}
+
+/// Iterative Drop — see `cons::Cons`'s analog for rationale.
+impl Drop for LazySeq {
+    fn drop(&mut self) {
+        let state = std::mem::replace(self.state.get_mut(), LazySeqState::Realized(None));
+        let taken: Option<PyObject> = match state {
+            LazySeqState::Realized(Some(x)) => Some(x),
+            LazySeqState::Unrealized(t) => Some(t),
+            _ => None,
+        };
+        if let Some(obj) = taken {
+            crate::seqs::cons::defer_drop(obj);
+            crate::seqs::cons::run_outer_drain();
+        }
+    }
 }
 
 impl LazySeq {
@@ -53,7 +70,7 @@ impl LazySeq {
         let mut cur = raw_result;
         loop {
             let cur_b = cur.bind(py);
-            if let Ok(nested) = cur_b.downcast::<LazySeq>() {
+            if let Ok(nested) = cur_b.cast::<LazySeq>() {
                 cur = match nested.get().realize(py)? {
                     Some(s) => s,
                     None => {
@@ -95,7 +112,7 @@ impl LazySeq {
 
     #[getter(meta)]
     fn get_meta(&self, py: Python<'_>) -> PyObject {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
+        self.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
     }
 }
 
@@ -151,20 +168,10 @@ impl Counted for LazySeq {
 #[implements(IEquiv)]
 impl IEquiv for LazySeq {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        // Same structural-walk approach as Cons.
-        let mut ap: PyObject = this.into_any();
-        let mut bp: PyObject = other;
-        loop {
-            let sa = crate::rt::seq(py, ap.clone_ref(py))?;
-            let sb = crate::rt::seq(py, bp.clone_ref(py))?;
-            if sa.is_none(py) && sb.is_none(py) { return Ok(true); }
-            if sa.is_none(py) || sb.is_none(py) { return Ok(false); }
-            let ha = crate::rt::first(py, sa.clone_ref(py))?;
-            let hb = crate::rt::first(py, sb.clone_ref(py))?;
-            if !crate::rt::equiv(py, ha, hb)? { return Ok(false); }
-            ap = crate::rt::next_(py, sa)?;
-            bp = crate::rt::next_(py, sb)?;
+        if !crate::rt::is_sequential(py, &other) {
+            return Ok(false);
         }
+        crate::rt::sequential_equiv(py, this.into_any(), other)
     }
 }
 
@@ -189,10 +196,9 @@ impl IHashEq for LazySeq {
 impl IMeta for LazySeq {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
-        Ok(s.meta.read().as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
+        Ok(s.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None()))
     }
     fn with_meta(this: Py<Self>, py: Python<'_>, meta: PyObject) -> PyResult<PyObject> {
-        // Copy the current state (realized or not).
         let s = this.bind(py).get();
         let m = if meta.is_none(py) { None } else { Some(meta) };
         let new_state = match &*s.state.read() {
@@ -201,8 +207,21 @@ impl IMeta for LazySeq {
         };
         Ok(Py::new(py, LazySeq {
             state: RwLock::new(new_state),
-            meta: RwLock::new(m),
+            meta: m,
         })?.into_any())
+    }
+}
+
+#[implements(IPersistentCollection)]
+impl IPersistentCollection for LazySeq {
+    fn count(this: Py<Self>, py: Python<'_>) -> PyResult<usize> {
+        <LazySeq as Counted>::count(this, py)
+    }
+    fn conj(this: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<PyObject> {
+        <LazySeq as ISeq>::cons(this, py, x)
+    }
+    fn empty(_this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
+        Ok(crate::collections::plist::empty_list(py).into_any())
     }
 }
 
@@ -214,7 +233,7 @@ impl Sequential for LazySeq {}
 pub fn py_lazy_seq(thunk: PyObject) -> LazySeq {
     LazySeq {
         state: RwLock::new(LazySeqState::Unrealized(thunk)),
-        meta: RwLock::new(None),
+        meta: None,
     }
 }
 

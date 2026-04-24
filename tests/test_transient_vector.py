@@ -50,7 +50,11 @@ def test_use_after_persistent_bang_raises():
         conj_bang(t, 99)
 
 
-def test_transient_wrong_thread_raises():
+def test_transient_cross_thread_use_allowed():
+    """Matches Clojure JVM post-CLJ-1613: transients do NOT enforce thread
+    ownership. Users handing a transient across threads must provide their
+    own synchronization (typically via `future`'s @deref happens-before).
+    Our check only fires on use-after-persistent!."""
     t = transient(vector(1, 2, 3))
     err_box = []
     def worker():
@@ -61,7 +65,7 @@ def test_transient_wrong_thread_raises():
     th = threading.Thread(target=worker)
     th.start()
     th.join()
-    assert err_box and "IllegalStateException" in err_box[0]
+    assert err_box == []
 
 
 def test_persistent_after_many_ops():

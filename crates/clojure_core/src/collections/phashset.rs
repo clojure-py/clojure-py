@@ -6,12 +6,14 @@
 //! the stored value (useful for interning-style sets where keys compare
 //! equal but aren't identical).
 
+use crate::coll_reduce::CollReduce;
 use crate::collections::phashmap::{PersistentHashMap, TransientHashMap};
 use crate::counted::Counted;
 use crate::ieditable_collection::IEditableCollection;
 use crate::iequiv::IEquiv;
 use crate::ifn::IFn;
 use crate::ihasheq::IHashEq;
+use crate::ilookup::ILookup;
 use crate::imeta::IMeta;
 use crate::ipersistent_collection::IPersistentCollection;
 use crate::ipersistent_set::IPersistentSet;
@@ -21,7 +23,6 @@ use crate::itransient_collection::ITransientCollection;
 use crate::itransient_map::ITransientMap;
 use crate::itransient_set::ITransientSet;
 use clojure_core_macros::implements;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
@@ -34,7 +35,7 @@ type PyObject = Py<PyAny>;
 #[pyclass(module = "clojure._core", name = "PersistentHashSet", frozen)]
 pub struct PersistentHashSet {
     pub impl_map: Py<PersistentHashMap>,
-    pub meta: RwLock<Option<PyObject>>,
+    pub meta: Option<PyObject>,
 }
 
 impl PersistentHashSet {
@@ -42,18 +43,18 @@ impl PersistentHashSet {
         let m = Py::new(py, PersistentHashMap::new_empty())?;
         Ok(Self {
             impl_map: m,
-            meta: RwLock::new(None),
+            meta: None,
         })
     }
 
     fn clone_meta(&self, py: Python<'_>) -> Option<PyObject> {
-        self.meta.read().as_ref().map(|o| o.clone_ref(py))
+        self.meta.as_ref().map(|o| o.clone_ref(py))
     }
 
     fn with_map(&self, py: Python<'_>, map: Py<PersistentHashMap>) -> Self {
         Self {
             impl_map: map,
-            meta: RwLock::new(self.clone_meta(py)),
+            meta: self.clone_meta(py),
         }
     }
 
@@ -169,21 +170,9 @@ impl PersistentHashSet {
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyObject {
         self.meta
-            .read()
             .as_ref()
             .map(|o| o.clone_ref(py))
             .unwrap_or_else(|| py.None())
-    }
-
-    fn with_meta(&self, py: Python<'_>, meta: PyObject) -> PyResult<Py<PersistentHashSet>> {
-        let m = if meta.is_none(py) { None } else { Some(meta) };
-        Py::new(
-            py,
-            Self {
-                impl_map: self.impl_map.clone_ref(py),
-                meta: RwLock::new(m),
-            },
-        )
     }
 
     /// `(s k)` — set-as-IFn: returns k if present, else nil.
@@ -248,7 +237,7 @@ impl Counted for PersistentHashSet {
 impl IEquiv for PersistentHashSet {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
         let other_b = other.bind(py);
-        let Ok(other_s) = other_b.downcast::<PersistentHashSet>() else {
+        let Ok(other_s) = other_b.cast::<PersistentHashSet>() else {
             return Ok(false);
         };
         let a = this.bind(py).get();
@@ -287,7 +276,6 @@ impl IMeta for PersistentHashSet {
     fn meta(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject> {
         let s = this.bind(py).get();
         Ok(s.meta
-            .read()
             .as_ref()
             .map(|o| o.clone_ref(py))
             .unwrap_or_else(|| py.None()))
@@ -299,7 +287,7 @@ impl IMeta for PersistentHashSet {
             py,
             PersistentHashSet {
                 impl_map: s.impl_map.clone_ref(py),
-                meta: RwLock::new(m),
+                meta: m,
             },
         )?
         .into_any())
@@ -354,74 +342,42 @@ impl ISeqable for PersistentHashSet {
     }
 }
 
+#[implements(CollReduce)]
+impl CollReduce for PersistentHashSet {
+    fn coll_reduce1(this: Py<Self>, py: Python<'_>, f: PyObject) -> PyResult<PyObject> {
+        let s: &PersistentHashSet = this.bind(py).get();
+        let entries = s.impl_map.bind(py).get().collect_entries(py);
+        if entries.is_empty() {
+            return crate::rt::invoke_n(py, f, &[]);
+        }
+        let mut it = entries.into_iter();
+        let (k0, _) = it.next().unwrap();
+        let mut acc = k0;
+        for (k, _) in it {
+            acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, k])?;
+            if crate::reduced::is_reduced(py, &acc) {
+                return Ok(crate::reduced::unreduced(py, acc));
+            }
+        }
+        Ok(acc)
+    }
+    fn coll_reduce2(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        let s: &PersistentHashSet = this.bind(py).get();
+        let mut acc = init;
+        for (k, _) in s.impl_map.bind(py).get().collect_entries(py) {
+            acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, k])?;
+            if crate::reduced::is_reduced(py, &acc) {
+                return Ok(crate::reduced::unreduced(py, acc));
+            }
+        }
+        Ok(acc)
+    }
+}
+
 #[implements(IFn)]
 impl IFn for PersistentHashSet {
-    fn invoke0(_this: Py<Self>, _py: Python<'_>) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err(
-            "Wrong number of args (0) passed to: PersistentHashSet",
-        ))
-    }
     fn invoke1(this: Py<Self>, py: Python<'_>, a0: PyObject) -> PyResult<PyObject> {
         this.bind(py).get().get_internal(py, a0)
-    }
-    fn invoke2(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err(
-            "Wrong number of args (2) passed to: PersistentHashSet",
-        ))
-    }
-    fn invoke3(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (3) passed to: PersistentHashSet"))
-    }
-    fn invoke4(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (4) passed to: PersistentHashSet"))
-    }
-    fn invoke5(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (5) passed to: PersistentHashSet"))
-    }
-    fn invoke6(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (6) passed to: PersistentHashSet"))
-    }
-    fn invoke7(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (7) passed to: PersistentHashSet"))
-    }
-    fn invoke8(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (8) passed to: PersistentHashSet"))
-    }
-    fn invoke9(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (9) passed to: PersistentHashSet"))
-    }
-    fn invoke10(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (10) passed to: PersistentHashSet"))
-    }
-    fn invoke11(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (11) passed to: PersistentHashSet"))
-    }
-    fn invoke12(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (12) passed to: PersistentHashSet"))
-    }
-    fn invoke13(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (13) passed to: PersistentHashSet"))
-    }
-    fn invoke14(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (14) passed to: PersistentHashSet"))
-    }
-    fn invoke15(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (15) passed to: PersistentHashSet"))
-    }
-    fn invoke16(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (16) passed to: PersistentHashSet"))
-    }
-    fn invoke17(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (17) passed to: PersistentHashSet"))
-    }
-    fn invoke18(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (18) passed to: PersistentHashSet"))
-    }
-    fn invoke19(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (19) passed to: PersistentHashSet"))
-    }
-    fn invoke20(_this: Py<Self>, _py: Python<'_>, _a0: PyObject, _a1: PyObject, _a2: PyObject, _a3: PyObject, _a4: PyObject, _a5: PyObject, _a6: PyObject, _a7: PyObject, _a8: PyObject, _a9: PyObject, _a10: PyObject, _a11: PyObject, _a12: PyObject, _a13: PyObject, _a14: PyObject, _a15: PyObject, _a16: PyObject, _a17: PyObject, _a18: PyObject, _a19: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::ArityException::new_err("Wrong number of args (20) passed to: PersistentHashSet"))
     }
     fn invoke_variadic(this: Py<Self>, py: Python<'_>, args: Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyObject> {
         match args.len() {
@@ -467,6 +423,12 @@ impl TransientHashSet {
         len_any.extract::<usize>()
     }
 
+    /// `key in transient-set` — checks membership via the inner transient map.
+    fn __contains__(slf: Py<Self>, py: Python<'_>, key: PyObject) -> PyResult<bool> {
+        let t = slf.bind(py).get().impl_transient.clone_ref(py);
+        t.bind(py).get().contains_key_internal(py, key)
+    }
+
     fn conj_bang(slf: Py<Self>, py: Python<'_>, x: PyObject) -> PyResult<Py<Self>> {
         let t = slf.bind(py).get().impl_transient.clone_ref(py);
         <TransientHashMap as ITransientAssociative>::assoc_bang(t, py, x.clone_ref(py), x)?;
@@ -485,12 +447,12 @@ impl TransientHashSet {
             <TransientHashMap as ITransientCollection>::persistent_bang(t, py)?;
         let new_map: Py<PersistentHashMap> = new_map_any
             .bind(py)
-            .downcast::<PersistentHashMap>()?
+            .cast::<PersistentHashMap>()?
             .clone()
             .unbind();
         let new_set = PersistentHashSet {
             impl_map: new_map,
-            meta: RwLock::new(None),
+            meta: None,
         };
         Py::new(py, new_set)
     }
@@ -525,14 +487,29 @@ impl ITransientSet for TransientHashSet {
         let r = TransientHashSet::disj_bang(this, py, k)?;
         Ok(r.into_any())
     }
-    fn contains_bang(_this: Py<Self>, _py: Python<'_>, _k: PyObject) -> PyResult<bool> {
-        Err(crate::exceptions::IllegalStateException::new_err(
-            "contains? on a TransientHashSet not yet implemented — call persistent! first",
-        ))
+    fn contains_bang(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<bool> {
+        let t = this.bind(py).get().impl_transient.clone_ref(py);
+        t.bind(py).get().contains_key_internal(py, k)
     }
-    fn get_bang(_this: Py<Self>, _py: Python<'_>, _k: PyObject) -> PyResult<PyObject> {
-        Err(crate::exceptions::IllegalStateException::new_err(
-            "get on a TransientHashSet not yet implemented — call persistent! first",
-        ))
+    fn get_bang(this: Py<Self>, py: Python<'_>, k: PyObject) -> PyResult<PyObject> {
+        let t = this.bind(py).get().impl_transient.clone_ref(py);
+        // Sets `get` returns the key itself (or nil) — same semantics as
+        // persistent sets: the value associated with k IS k.
+        let sentinel: PyObject = pyo3::types::PyTuple::empty(py).unbind().into_any();
+        let v = t.bind(py).get().val_at_default_internal(py, k, sentinel.clone_ref(py))?;
+        if crate::rt::identical(py, v.clone_ref(py), sentinel) {
+            return Ok(py.None());
+        }
+        Ok(v)
+    }
+}
+
+/// `(get set k)` / `(get set k default)` — a set's ILookup returns the key
+/// itself when present (matching the PersistentHashSet impl).
+#[implements(ILookup)]
+impl ILookup for TransientHashSet {
+    fn val_at(this: Py<Self>, py: Python<'_>, k: PyObject, not_found: PyObject) -> PyResult<PyObject> {
+        let t = this.bind(py).get().impl_transient.clone_ref(py);
+        t.bind(py).get().val_at_default_internal(py, k, not_found)
     }
 }

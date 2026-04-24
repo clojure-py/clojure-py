@@ -151,8 +151,59 @@ impl ProtocolMethod {
     }
 }
 
+/// Construct a fresh Protocol at runtime. Clojure-layer `defprotocol` uses
+/// this to create protocols that participate in the same dispatch machinery
+/// as Rust-defined `#[protocol]` traits. `ns`/`name` form the Clojure
+/// `Symbol` identifying the protocol; `method_keys` lists the method
+/// dispatch keys; `via_metadata` opts into `__clj_meta__` fallback lookup.
+#[pyfunction]
+#[pyo3(name = "create_protocol", signature = (ns, name, method_keys, via_metadata=false))]
+pub fn create_protocol(
+    py: Python<'_>,
+    ns: String,
+    name: String,
+    method_keys: Vec<String>,
+    via_metadata: bool,
+) -> PyResult<Py<Protocol>> {
+    let sym = Py::new(
+        py,
+        Symbol::new(Some(Arc::from(ns.as_str())), Arc::from(name.as_str())),
+    )?;
+    let keys: SmallVec<[Arc<str>; 8]> = method_keys
+        .into_iter()
+        .map(|s| Arc::from(s.as_str()))
+        .collect();
+    let proto = Protocol {
+        name: sym,
+        method_keys: keys,
+        cache: Arc::new(MethodCache::new()),
+        fallback: RwLock::new(None),
+        via_metadata,
+    };
+    Py::new(py, proto)
+}
+
+/// Construct a ProtocolMethod (callable dispatcher) at runtime.
+#[pyfunction]
+#[pyo3(name = "create_protocol_method")]
+pub fn create_protocol_method(
+    py: Python<'_>,
+    protocol: Py<Protocol>,
+    key: String,
+) -> PyResult<Py<ProtocolMethod>> {
+    Py::new(
+        py,
+        ProtocolMethod {
+            protocol,
+            key: Arc::from(key.as_str()),
+        },
+    )
+}
+
 pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Protocol>()?;
     m.add_class::<ProtocolMethod>()?;
+    m.add_function(wrap_pyfunction!(create_protocol, m)?)?;
+    m.add_function(wrap_pyfunction!(create_protocol_method, m)?)?;
     Ok(())
 }
