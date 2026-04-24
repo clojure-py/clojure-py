@@ -39,14 +39,14 @@ def test_quote_nested():
 def test_deref_simple():
     lst = read_string("@x")
     items = list(lst)
-    assert items[0] == symbol("deref")
+    assert items[0] == symbol("clojure.core/deref")
     assert items[1] == symbol("x")
 
 
 def test_deref_expression():
     lst = read_string("@(f 1)")
     items = list(lst)
-    assert items[0] == symbol("deref")
+    assert items[0] == symbol("clojure.core/deref")
     inner = items[1]
     assert list(inner)[0] == symbol("f")
 

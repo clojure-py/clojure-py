@@ -28,17 +28,21 @@ pub fn gensym_id() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Advance past `lead`, read one form, and wrap it as `(wrapper form)`.
-/// Backs the `'`, `@`, and `#'` reader macros.
+/// `wrapper_ns` is the namespace of the wrapping symbol (`None` for special
+/// forms like `quote`/`var`; `Some("clojure.core")` for real Vars like
+/// `deref`, to match Clojure/JVM and prevent local shadowing).
 fn wrap_next_form(
     src: &mut Source<'_>,
     py: Python<'_>,
     lead: char,
-    wrapper: &str,
+    wrapper_ns: Option<&str>,
+    wrapper_name: &str,
 ) -> PyResult<PyObject> {
     let ch = src.advance();
     debug_assert_eq!(ch, Some(lead));
     let form = dispatch::read_one(src, py)?;
-    let sym = crate::symbol::Symbol::new(None, std::sync::Arc::from(wrapper));
+    let ns_arc = wrapper_ns.map(std::sync::Arc::from);
+    let sym = crate::symbol::Symbol::new(ns_arc, std::sync::Arc::from(wrapper_name));
     let sym_py: PyObject = Py::new(py, sym)?.into_any();
     let args = PyTuple::new(py, &[sym_py, form])?;
     crate::collections::plist::list_(py, args)
@@ -46,17 +50,17 @@ fn wrap_next_form(
 
 /// `'form` → `(quote form)`. Caller has NOT consumed the leading `'`.
 pub fn quote_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
-    wrap_next_form(src, py, '\'', "quote")
+    wrap_next_form(src, py, '\'', None, "quote")
 }
 
-/// `@form` → `(deref form)`. Caller has NOT consumed the leading `@`.
+/// `@form` → `(clojure.core/deref form)`. Caller has NOT consumed the leading `@`.
 pub fn deref_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
-    wrap_next_form(src, py, '@', "deref")
+    wrap_next_form(src, py, '@', Some("clojure.core"), "deref")
 }
 
 /// `#'sym` → `(var sym)`. Caller has consumed `#` only; the next char is `'`.
 pub fn var_quote_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
-    wrap_next_form(src, py, '\'', "var")
+    wrap_next_form(src, py, '\'', None, "var")
 }
 
 /// `^meta form` or `#^meta form` — read meta then target; attach meta to
