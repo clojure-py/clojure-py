@@ -27,37 +27,36 @@ pub fn gensym_id() -> u64 {
 // Reader macros (Phase R4)
 // ---------------------------------------------------------------------------
 
+/// Advance past `lead`, read one form, and wrap it as `(wrapper form)`.
+/// Backs the `'`, `@`, and `#'` reader macros.
+fn wrap_next_form(
+    src: &mut Source<'_>,
+    py: Python<'_>,
+    lead: char,
+    wrapper: &str,
+) -> PyResult<PyObject> {
+    let ch = src.advance();
+    debug_assert_eq!(ch, Some(lead));
+    let form = dispatch::read_one(src, py)?;
+    let sym = crate::symbol::Symbol::new(None, std::sync::Arc::from(wrapper));
+    let sym_py: PyObject = Py::new(py, sym)?.into_any();
+    let args = PyTuple::new(py, &[sym_py, form])?;
+    crate::collections::plist::list_(py, args)
+}
+
 /// `'form` → `(quote form)`. Caller has NOT consumed the leading `'`.
 pub fn quote_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
-    let quote_ch = src.advance();
-    debug_assert_eq!(quote_ch, Some('\''));
-    let form = dispatch::read_one(src, py)?;
-    let quote_sym = crate::symbol::Symbol::new(None, std::sync::Arc::from("quote"));
-    let quote_sym_py: PyObject = Py::new(py, quote_sym)?.into_any();
-    let args = PyTuple::new(py, &[quote_sym_py, form])?;
-    crate::collections::plist::list_(py, args)
+    wrap_next_form(src, py, '\'', "quote")
 }
 
 /// `@form` → `(deref form)`. Caller has NOT consumed the leading `@`.
 pub fn deref_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
-    let at = src.advance();
-    debug_assert_eq!(at, Some('@'));
-    let form = dispatch::read_one(src, py)?;
-    let deref_sym = crate::symbol::Symbol::new(None, std::sync::Arc::from("deref"));
-    let deref_sym_py: PyObject = Py::new(py, deref_sym)?.into_any();
-    let args = PyTuple::new(py, &[deref_sym_py, form])?;
-    crate::collections::plist::list_(py, args)
+    wrap_next_form(src, py, '@', "deref")
 }
 
 /// `#'sym` → `(var sym)`. Caller has consumed `#` only; the next char is `'`.
 pub fn var_quote_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
-    let quote_ch = src.advance();
-    debug_assert_eq!(quote_ch, Some('\''));
-    let form = dispatch::read_one(src, py)?;
-    let var_sym = crate::symbol::Symbol::new(None, std::sync::Arc::from("var"));
-    let var_sym_py: PyObject = Py::new(py, var_sym)?.into_any();
-    let args = PyTuple::new(py, &[var_sym_py, form])?;
-    crate::collections::plist::list_(py, args)
+    wrap_next_form(src, py, '\'', "var")
 }
 
 /// `^meta form` or `#^meta form` — read meta then target; attach meta to

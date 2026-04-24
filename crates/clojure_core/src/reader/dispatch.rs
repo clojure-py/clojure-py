@@ -38,10 +38,10 @@ pub fn skip_ws_and_comments(src: &mut Source<'_>) {
 /// followed immediately (no whitespace) by a digit.
 pub fn looks_like_number(src: &Source<'_>) -> bool {
     match src.peek() {
-        Some(c) if c.is_ascii_digit() => true,
+        Some(c) if lexer::is_digit(c) => true,
         Some('+') | Some('-') => src
             .peek_second()
-            .map(|c| c.is_ascii_digit())
+            .map(lexer::is_digit)
             .unwrap_or(false),
         _ => false,
     }
