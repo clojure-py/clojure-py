@@ -91,6 +91,55 @@ def test_add_and_fire_watch():
     assert fired == [("w1", 0, 10), ("w1", 10, 20)]
 
 
+@pytest.mark.timeout(20)
+def test_watches_concurrent_add_and_fire():
+    """add_watch / remove_watch must not race with fire_watches' iteration.
+    Under free-threaded 3.14t, running many add/remove/fire calls in parallel
+    must not raise `RuntimeError: dictionary changed size during iteration`
+    or any other concurrent-modification error."""
+    import time
+    import clojure._core as c
+    from concurrent.futures import ThreadPoolExecutor
+
+    a = c.atom(0)
+    deadline = time.monotonic() + 5.0
+    errors: list[str] = []
+
+    def noop(_k, _r, _o, _n):
+        pass
+
+    def mutate_worker(tid):
+        n = 0
+        while time.monotonic() < deadline:
+            try:
+                key = f"w{tid}-{n % 16}"
+                a.add_watch(key, noop)
+                if n % 3 == 0:
+                    a.remove_watch(key)
+            except Exception as e:
+                errors.append(f"mutate: {e!r}")
+            n += 1
+
+    reset_bang = getattr(c.find_ns(c.symbol("clojure.lang.RT")), "reset-bang")
+
+    def fire_worker():
+        n = 0
+        while time.monotonic() < deadline:
+            try:
+                reset_bang(a, n)
+            except Exception as e:
+                errors.append(f"fire: {e!r}")
+            n += 1
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        mut_futs = [ex.submit(mutate_worker, i) for i in range(8)]
+        fire_futs = [ex.submit(fire_worker) for _ in range(8)]
+        for f in mut_futs + fire_futs:
+            f.result()
+
+    assert errors == [], f"concurrent watch errors: {errors[:5]}"
+
+
 # --- Concurrent swap! stress ---
 
 def test_swap_bang_concurrent_increment():

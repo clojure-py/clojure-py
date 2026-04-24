@@ -221,13 +221,13 @@ impl Atom {
     }
 
     fn add_watch(&self, py: Python<'_>, key: PyObject, f: PyObject) -> PyResult<()> {
-        let guard = self.watches.read();
+        let guard = self.watches.write();
         guard.bind(py).set_item(key, f)?;
         Ok(())
     }
 
     fn remove_watch(&self, py: Python<'_>, key: PyObject) -> PyResult<()> {
-        let guard = self.watches.read();
+        let guard = self.watches.write();
         guard.bind(py).del_item(key)?;
         Ok(())
     }
