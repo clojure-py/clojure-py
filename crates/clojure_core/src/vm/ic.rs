@@ -11,7 +11,7 @@
 //! shared-bytecode-across-threads model (multiple threads execute the same
 //! `Arc<FnPool>` concurrently).
 
-use crate::protocol_fn::InvokeFns;
+use crate::protocol_fn::{InvokeFn0, InvokeFn1, InvokeFn2, InvokeFns};
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 
@@ -32,15 +32,53 @@ impl CachedInvoke {
         Self { slot: ArcSwap::from_pointee(None) }
     }
 
-    /// Fast-path lookup: returns `Some(fns)` iff the entry matches
-    /// `(target_type, current_epoch)`. The returned `Arc<InvokeFns>` is a
-    /// cheap refcount bump.
+    /// Fast-path lookup: returns the cached `Arc<InvokeFns>` iff the entry
+    /// matches `(target_type, current_epoch)`. Used by the generic
+    /// `Op::InvokeVar` (arity ≥ 3) handler. Hot-path `Arc::clone` is one
+    /// atomic increment.
     #[inline]
     pub fn lookup(&self, type_ptr: usize, current_epoch: u64) -> Option<Arc<InvokeFns>> {
         let guard = self.slot.load();
         let entry = (&**guard).as_ref()?;
         if entry.type_ptr == type_ptr && entry.epoch == current_epoch {
             Some(Arc::clone(&entry.fns))
+        } else {
+            None
+        }
+    }
+
+    /// Arity-0 typed lookup. Returns the `invoke0` fn pointer directly —
+    /// no `Arc::clone` on the hot path. Used by `Op::InvokeVar0`.
+    #[inline]
+    pub fn lookup_invoke0(&self, type_ptr: usize, current_epoch: u64) -> Option<InvokeFn0> {
+        let guard = self.slot.load();
+        let entry = (&**guard).as_ref()?;
+        if entry.type_ptr == type_ptr && entry.epoch == current_epoch {
+            entry.fns.invoke0
+        } else {
+            None
+        }
+    }
+
+    /// Arity-1 typed lookup.
+    #[inline]
+    pub fn lookup_invoke1(&self, type_ptr: usize, current_epoch: u64) -> Option<InvokeFn1> {
+        let guard = self.slot.load();
+        let entry = (&**guard).as_ref()?;
+        if entry.type_ptr == type_ptr && entry.epoch == current_epoch {
+            entry.fns.invoke1
+        } else {
+            None
+        }
+    }
+
+    /// Arity-2 typed lookup.
+    #[inline]
+    pub fn lookup_invoke2(&self, type_ptr: usize, current_epoch: u64) -> Option<InvokeFn2> {
+        let guard = self.slot.load();
+        let entry = (&**guard).as_ref()?;
+        if entry.type_ptr == type_ptr && entry.epoch == current_epoch {
+            entry.fns.invoke2
         } else {
             None
         }

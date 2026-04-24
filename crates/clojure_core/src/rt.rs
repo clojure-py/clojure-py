@@ -270,10 +270,8 @@ pub fn invoke_var_cached_0(
     let pfn_ref = pfn.bind(py).get();
     let type_ptr = target.bind(py).get_type().as_ptr() as usize;
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
-    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
-        if let Some(fp) = fns.invoke0 {
-            return fp(py, &target);
-        }
+    if let Some(fp) = cache.lookup_invoke0(type_ptr, current_epoch) {
+        return fp(py, &target);
     }
     invoke_n_owned_cached(py, target, Vec::new(), cache)
 }
@@ -293,10 +291,8 @@ pub fn invoke_var_cached_1(
     let pfn_ref = pfn.bind(py).get();
     let type_ptr = target.bind(py).get_type().as_ptr() as usize;
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
-    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
-        if let Some(fp) = fns.invoke1 {
-            return fp(py, &target, a);
-        }
+    if let Some(fp) = cache.lookup_invoke1(type_ptr, current_epoch) {
+        return fp(py, &target, a);
     }
     invoke_n_owned_cached(py, target, vec![a], cache)
 }
@@ -317,10 +313,8 @@ pub fn invoke_var_cached_2(
     let pfn_ref = pfn.bind(py).get();
     let type_ptr = target.bind(py).get_type().as_ptr() as usize;
     let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
-    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
-        if let Some(fp) = fns.invoke2 {
-            return fp(py, &target, a, b);
-        }
+    if let Some(fp) = cache.lookup_invoke2(type_ptr, current_epoch) {
+        return fp(py, &target, a, b);
     }
     invoke_n_owned_cached(py, target, vec![a, b], cache)
 }
