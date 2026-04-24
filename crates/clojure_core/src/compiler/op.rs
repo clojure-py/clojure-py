@@ -39,6 +39,16 @@ pub enum Op {
     /// same target type. Semantics are preserved — a miss falls through to
     /// the full `invoke_n_owned` path and (re-)installs the slot.
     InvokeVar(u16, u8, u16),
+    /// Arity-specialized fused Deref+Invoke for zero args. Skips the arg
+    /// `Vec` allocation entirely on IC hit. `(var_ix, ic_slot_ix)`.
+    InvokeVar0(u16, u16),
+    /// Arity-specialized fused Deref+Invoke for one arg. `(var_ix,
+    /// ic_slot_ix)` — the single arg is the top of the value stack.
+    InvokeVar1(u16, u16),
+    /// Arity-specialized fused Deref+Invoke for two args. `(var_ix,
+    /// ic_slot_ix)` — args are top two of the value stack (second then
+    /// first).
+    InvokeVar2(u16, u16),
     Return,             // pop, return from current frame
 
     // Python interop

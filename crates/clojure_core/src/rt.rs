@@ -256,6 +256,75 @@ pub fn invoke_n_owned_cached(
     crate::protocol_fn::ProtocolFn::dispatch_owned(pfn.clone_ref(py), py, target, args)
 }
 
+/// Arity-0 IC-backed invoke. No `Vec` allocation on the hot path.
+#[inline]
+pub fn invoke_var_cached_0(
+    py: Python<'_>,
+    target: PyObject,
+    cache: &crate::vm::ic::CachedInvoke,
+) -> PyResult<PyObject> {
+    let pfn = IFN_INVOKE_PFNS[0].get_or_init(|| {
+        crate::protocol_fn::get_protocol_fn(py, "IFn", "invoke0")
+            .expect("IFn/invoke0 ProtocolFn not registered")
+    });
+    let pfn_ref = pfn.bind(py).get();
+    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
+    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
+        if let Some(fp) = fns.invoke0 {
+            return fp(py, &target);
+        }
+    }
+    invoke_n_owned_cached(py, target, Vec::new(), cache)
+}
+
+/// Arity-1 IC-backed invoke.
+#[inline]
+pub fn invoke_var_cached_1(
+    py: Python<'_>,
+    target: PyObject,
+    a: PyObject,
+    cache: &crate::vm::ic::CachedInvoke,
+) -> PyResult<PyObject> {
+    let pfn = IFN_INVOKE_PFNS[1].get_or_init(|| {
+        crate::protocol_fn::get_protocol_fn(py, "IFn", "invoke1")
+            .expect("IFn/invoke1 ProtocolFn not registered")
+    });
+    let pfn_ref = pfn.bind(py).get();
+    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
+    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
+        if let Some(fp) = fns.invoke1 {
+            return fp(py, &target, a);
+        }
+    }
+    invoke_n_owned_cached(py, target, vec![a], cache)
+}
+
+/// Arity-2 IC-backed invoke.
+#[inline]
+pub fn invoke_var_cached_2(
+    py: Python<'_>,
+    target: PyObject,
+    a: PyObject,
+    b: PyObject,
+    cache: &crate::vm::ic::CachedInvoke,
+) -> PyResult<PyObject> {
+    let pfn = IFN_INVOKE_PFNS[2].get_or_init(|| {
+        crate::protocol_fn::get_protocol_fn(py, "IFn", "invoke2")
+            .expect("IFn/invoke2 ProtocolFn not registered")
+    });
+    let pfn_ref = pfn.bind(py).get();
+    let type_ptr = target.bind(py).get_type().as_ptr() as usize;
+    let current_epoch = pfn_ref.epoch.load(std::sync::atomic::Ordering::Acquire);
+    if let Some(fns) = cache.lookup(type_ptr, current_epoch) {
+        if let Some(fp) = fns.invoke2 {
+            return fp(py, &target, a, b);
+        }
+    }
+    invoke_n_owned_cached(py, target, vec![a, b], cache)
+}
+
 /// True iff `x`'s type (or an MRO ancestor) is extended to `Sequential`.
 /// Used by IEquiv impls of sequential collections to decide whether the
 /// other side of an `=` comparison should be walked pairwise.

@@ -191,6 +191,48 @@ pub fn run(
                     stack.push(result);
                     pc += 1;
                 }
+                Op::InvokeVar0(var_ix, ic_slot) => {
+                    let var = pool.vars.get(*var_ix as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar0: invalid var index {}", var_ix))
+                    })?;
+                    let target = crate::var::Var::deref_fast(var, py)?;
+                    let cache = pool.ic_slots.get(*ic_slot as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar0: invalid ic_slot {}", ic_slot))
+                    })?;
+                    let result = crate::rt::invoke_var_cached_0(py, target, cache)?;
+                    stack.push(result);
+                    pc += 1;
+                }
+                Op::InvokeVar1(var_ix, ic_slot) => {
+                    let var = pool.vars.get(*var_ix as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar1: invalid var index {}", var_ix))
+                    })?;
+                    let target = crate::var::Var::deref_fast(var, py)?;
+                    let a = stack.pop().ok_or_else(|| errors::err("InvokeVar1: empty stack"))?;
+                    let cache = pool.ic_slots.get(*ic_slot as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar1: invalid ic_slot {}", ic_slot))
+                    })?;
+                    let result = crate::rt::invoke_var_cached_1(py, target, a, cache)?;
+                    stack.push(result);
+                    pc += 1;
+                }
+                Op::InvokeVar2(var_ix, ic_slot) => {
+                    let var = pool.vars.get(*var_ix as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar2: invalid var index {}", var_ix))
+                    })?;
+                    let target = crate::var::Var::deref_fast(var, py)?;
+                    if stack.len() < 2 {
+                        return Err(errors::err("InvokeVar2: stack underflow"));
+                    }
+                    let b = stack.pop().unwrap();
+                    let a = stack.pop().unwrap();
+                    let cache = pool.ic_slots.get(*ic_slot as usize).ok_or_else(|| {
+                        errors::err(format!("InvokeVar2: invalid ic_slot {}", ic_slot))
+                    })?;
+                    let result = crate::rt::invoke_var_cached_2(py, target, a, b, cache)?;
+                    stack.push(result);
+                    pc += 1;
+                }
                 Op::Return => {
                     let v = stack.pop().ok_or_else(|| errors::err("Return on empty stack"))?;
                     return Ok(Step::Return(v));

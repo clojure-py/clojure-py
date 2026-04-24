@@ -96,7 +96,12 @@ fn fuse_deref_invoke_pass(code: &mut Vec<Op>, pool: &mut PoolBuilder) {
     // Apply in reverse order so earlier fusions' indices stay valid.
     for (deref_idx, invoke_idx, var_ix, nargs) in fusions.iter().rev() {
         let ic_slot = pool.alloc_ic_slot();
-        code[*invoke_idx] = Op::InvokeVar(*var_ix, *nargs, ic_slot);
+        code[*invoke_idx] = match *nargs {
+            0 => Op::InvokeVar0(*var_ix, ic_slot),
+            1 => Op::InvokeVar1(*var_ix, ic_slot),
+            2 => Op::InvokeVar2(*var_ix, ic_slot),
+            _ => Op::InvokeVar(*var_ix, *nargs, ic_slot),
+        };
         code.remove(*deref_idx);
     }
 
