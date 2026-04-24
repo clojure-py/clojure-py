@@ -62,6 +62,66 @@ pub trait IFn: Sized {
     }
 }
 
+// Typed thunks for the generic "call target as a Python callable" fallback.
+// One per arity (invoke0..invoke20) + variadic. All do the same thing: call
+// the target with the supplied args as a PyTuple. Macro generates them to
+// avoid repetition.
+macro_rules! define_call_thunk {
+    ($name:ident, $($arg:ident),*) => {
+        fn $name(
+            py: Python<'_>,
+            target: &Py<PyAny>,
+            $($arg: Py<PyAny>,)*
+        ) -> PyResult<Py<PyAny>> {
+            let items: [Py<PyAny>; 0 $(+ { let _ = stringify!($arg); 1 })*] = [$($arg,)*];
+            let rest = pyo3::types::PyTuple::new(py, &items)?;
+            Ok(target.bind(py).call1(rest)?.unbind())
+        }
+    };
+}
+
+fn call_thunk_0(
+    py: Python<'_>,
+    target: &Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    Ok(target.bind(py).call0()?.unbind())
+}
+define_call_thunk!(call_thunk_1,  a);
+define_call_thunk!(call_thunk_2,  a, b);
+define_call_thunk!(call_thunk_3,  a, b, c);
+define_call_thunk!(call_thunk_4,  a, b, c, d);
+define_call_thunk!(call_thunk_5,  a, b, c, d, e);
+define_call_thunk!(call_thunk_6,  a, b, c, d, e, f);
+define_call_thunk!(call_thunk_7,  a, b, c, d, e, f, g);
+define_call_thunk!(call_thunk_8,  a, b, c, d, e, f, g, h);
+define_call_thunk!(call_thunk_9,  a, b, c, d, e, f, g, h, i);
+define_call_thunk!(call_thunk_10, a, b, c, d, e, f, g, h, i, j);
+define_call_thunk!(call_thunk_11, a, b, c, d, e, f, g, h, i, j, k);
+define_call_thunk!(call_thunk_12, a, b, c, d, e, f, g, h, i, j, k, l);
+define_call_thunk!(call_thunk_13, a, b, c, d, e, f, g, h, i, j, k, l, mm);
+define_call_thunk!(call_thunk_14, a, b, c, d, e, f, g, h, i, j, k, l, mm, n);
+define_call_thunk!(call_thunk_15, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o);
+define_call_thunk!(call_thunk_16, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p);
+define_call_thunk!(call_thunk_17, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q);
+define_call_thunk!(call_thunk_18, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r);
+define_call_thunk!(call_thunk_19, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r, s);
+define_call_thunk!(call_thunk_20, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r, s, t);
+
+/// Variadic: take a Vec of args, wrap in tuple, call.
+fn call_thunk_variadic(
+    py: Python<'_>,
+    target: &Py<PyAny>,
+    rest: Vec<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let tup = pyo3::types::PyTuple::new(py, &rest)?;
+    Ok(target.bind(py).call1(tup)?.unbind())
+}
+
+/// Install the generic "call target as a Python callable" fallback into
+/// every IFn invokeN ProtocolFn plus the variadic one. For types without
+/// a direct #[implements(IFn)] impl (e.g. plain Python callables), this
+/// fills in the dispatch table on first hit with typed thunks that just
+/// forward to CPython's `call1`.
 pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     use pyo3::types::{PyCFunction, PyDict};
 
@@ -74,7 +134,6 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
         None,
         |args: &Bound<'_, PyTuple>, _kw: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
             let py = args.py();
-            // args = (protocol, method_key, target)
             let proto_any = args.get_item(0)?;
             let proto: &Bound<'_, crate::Protocol> = proto_any.cast()?;
             let _method_key: String = args.get_item(1)?.extract()?;
@@ -84,7 +143,11 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
                 return Ok(py.None());
             }
 
-            // Build the generic invoke_variadic impl: it receives (self, *a) and calls self(*a).
+            let ty = target.get_type();
+            let proto_ref = proto.get();
+
+            // Old path: merge with existing (preserves real impls), add
+            // generic Python-call wrapper for missing arities.
             let inv = PyCFunction::new_closure(
                 py,
                 None,
@@ -101,20 +164,7 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
                     Ok(self_obj.call1(rest_tup)?.unbind())
                 },
             )?;
-
-            // Build the new impls dict, MERGING with any existing extension:
-            // preserve whatever invoke* methods the type already has (e.g. from
-            // a `#[implements(IFn)]` on a PyO3 class like `Keyword`), and only
-            // install the Python-call fallback for arities that are missing.
-            // Without this merge, the first time a bad-arity call hits a
-            // partially-implemented IFn type (e.g. `(:kw)` on Keyword with no
-            // `invoke0`), the fallback would clobber the type's real invoke1 /
-            // invoke2 impls with generic Python-call wrappers — breaking later
-            // correct calls like `(:key record)` which rely on those native
-            // impls.
-            let ty = target.get_type();
             let impls = PyDict::new(py);
-            let proto_ref = proto.get();
             let existing = proto_ref
                 .cache
                 .lookup(crate::protocol::CacheKey::for_py_type(&ty));
@@ -133,8 +183,55 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
                     impls.set_item(key, &inv)?;
                 }
             }
+            proto_ref.extend_type(py, ty.clone(), impls)?;
 
-            proto_ref.extend_type(py, ty, impls)?;
+            // New path: install typed thunks in each arity ProtocolFn's
+            // cache so subsequent calls take the fast path. Only populate
+            // arities that aren't already covered by a direct
+            // #[implements(IFn)] impl on this type.
+            //
+            // Macro helper: lookup ProtocolFn by method name, build InvokeFns
+            // with the matching field set, call extend_with_native.
+            macro_rules! install_arity {
+                ($method:literal, $field:ident, $thunk:ident, $ty_alias:ident) => {{
+                    if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "IFn", $method) {
+                        let pfn_ref = pfn.bind(py).get();
+                        // Only install if this type isn't already in the cache
+                        // with a direct impl for this arity.
+                        let exact_key = crate::protocol::CacheKey::for_py_type(&ty);
+                        let already_has = pfn_ref.cache.get(&exact_key)
+                            .map(|e| e.value().$field.is_some())
+                            .unwrap_or(false);
+                        if !already_has {
+                            let mut fns = crate::protocol_fn::InvokeFns::empty();
+                            fns.$field = Some($thunk as crate::protocol_fn::$ty_alias);
+                            pfn_ref.extend_with_native(ty.clone(), fns);
+                        }
+                    }
+                }};
+            }
+            install_arity!("invoke0",  invoke0,  call_thunk_0,  InvokeFn0);
+            install_arity!("invoke1",  invoke1,  call_thunk_1,  InvokeFn1);
+            install_arity!("invoke2",  invoke2,  call_thunk_2,  InvokeFn2);
+            install_arity!("invoke3",  invoke3,  call_thunk_3,  InvokeFn3);
+            install_arity!("invoke4",  invoke4,  call_thunk_4,  InvokeFn4);
+            install_arity!("invoke5",  invoke5,  call_thunk_5,  InvokeFn5);
+            install_arity!("invoke6",  invoke6,  call_thunk_6,  InvokeFn6);
+            install_arity!("invoke7",  invoke7,  call_thunk_7,  InvokeFn7);
+            install_arity!("invoke8",  invoke8,  call_thunk_8,  InvokeFn8);
+            install_arity!("invoke9",  invoke9,  call_thunk_9,  InvokeFn9);
+            install_arity!("invoke10", invoke10, call_thunk_10, InvokeFn10);
+            install_arity!("invoke11", invoke11, call_thunk_11, InvokeFn11);
+            install_arity!("invoke12", invoke12, call_thunk_12, InvokeFn12);
+            install_arity!("invoke13", invoke13, call_thunk_13, InvokeFn13);
+            install_arity!("invoke14", invoke14, call_thunk_14, InvokeFn14);
+            install_arity!("invoke15", invoke15, call_thunk_15, InvokeFn15);
+            install_arity!("invoke16", invoke16, call_thunk_16, InvokeFn16);
+            install_arity!("invoke17", invoke17, call_thunk_17, InvokeFn17);
+            install_arity!("invoke18", invoke18, call_thunk_18, InvokeFn18);
+            install_arity!("invoke19", invoke19, call_thunk_19, InvokeFn19);
+            install_arity!("invoke20", invoke20, call_thunk_20, InvokeFn20);
+            install_arity!("invoke_variadic", invoke_variadic, call_thunk_variadic, InvokeFnVariadic);
 
             Ok(py.None())
         },

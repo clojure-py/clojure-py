@@ -108,45 +108,53 @@ pub fn get(py: Python<'_>, coll: PyObject, k: PyObject, default: PyObject) -> Py
 /// types hit the fast path, and arbitrary Python callables go through the
 /// built-in IFn fallback registered at module init.
 pub fn invoke_n(py: Python<'_>, target: PyObject, args: &[PyObject]) -> PyResult<PyObject> {
-    // Fast path: a ProtocolFn dispatches through its typed per-type table
-    // directly — skips IFn protocol cache + double PyTuple allocation.
-    if let Ok(pf) = target.bind(py).downcast::<crate::protocol_fn::ProtocolFn>() {
-        let pf_py: Py<crate::protocol_fn::ProtocolFn> = pf.clone().unbind();
-        if args.is_empty() {
-            return Err(crate::exceptions::IllegalArgumentException::new_err(format!(
-                "Protocol method {} requires at least one arg (the target)",
-                pf_py.bind(py).get().name
-            )));
-        }
-        let target_arg = args[0].clone_ref(py);
-        let rest: Vec<PyObject> = args[1..].iter().map(|o| o.clone_ref(py)).collect();
-        return crate::protocol_fn::ProtocolFn::dispatch_owned(pf_py, py, target_arg, rest);
-    }
-
-    let proto = IFN_PROTO
-        .get()
-        .expect("rt::invoke_n called before rt::init — check pymodule init order");
-    let method_key: &Arc<str> = if args.len() <= 20 {
-        &INVOKE_KEYS[args.len()]
-    } else {
-        &INVOKE_VARIADIC_KEY
-    };
-    let args_vec: Vec<PyObject> = args.iter().map(|o| o.clone_ref(py)).collect();
-    let args_tup = PyTuple::new(py, &args_vec)?;
-    crate::dispatch::dispatch(py, proto, method_key, target, args_tup)
+    // Borrow → owned conversion so we can share the invoke_n_owned path.
+    let vec: Vec<PyObject> = args.iter().map(|o| o.clone_ref(py)).collect();
+    invoke_n_owned(py, target, vec)
 }
+
+// Per-arity cached ProtocolFns for IFn/invokeN. Populated lazily on first
+// call to invoke_n_owned — each OnceCell grabs the ProtocolFn from the
+// global registry the #[protocol] macro populates at module init.
+static IFN_INVOKE_PFNS: [once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>>; 21] = [
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(), once_cell::sync::OnceCell::new(),
+    once_cell::sync::OnceCell::new(),
+];
+static IFN_INVOKE_VARIADIC_PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> =
+    once_cell::sync::OnceCell::new();
+static IFN_INVOKE_KEYS: [&str; 21] = [
+    "invoke0", "invoke1", "invoke2", "invoke3", "invoke4",
+    "invoke5", "invoke6", "invoke7", "invoke8", "invoke9",
+    "invoke10", "invoke11", "invoke12", "invoke13", "invoke14",
+    "invoke15", "invoke16", "invoke17", "invoke18", "invoke19",
+    "invoke20",
+];
 
 /// Like `invoke_n`, but takes ownership of `args` so no per-arg `clone_ref`
 /// is needed inside the function. Callers that already own a fresh `Vec`
 /// should prefer this (e.g. the bytecode VM when draining the value stack).
+///
+/// All calls route through a ProtocolFn now:
+///   - Target is a ProtocolFn — call its dispatch_owned directly (it's the
+///     protocol method being invoked; args[0] is the receiver).
+///   - Target is any other callable (Fn, Keyword, MultiFn, Var, bare Python
+///     callable) — call through the IFn/invokeN ProtocolFn with target as
+///     the receiver.
 pub fn invoke_n_owned(
     py: Python<'_>,
     target: PyObject,
     mut args: Vec<PyObject>,
 ) -> PyResult<PyObject> {
-    // Fast path: target is a ProtocolFn — dispatch through its typed
-    // table directly, skipping the IFn protocol cache + two PyTuple
-    // allocations + the name-keyed method lookup.
+    // Target is a ProtocolFn → dispatch directly through its per-type table.
     if let Ok(pf) = target.bind(py).downcast::<crate::protocol_fn::ProtocolFn>() {
         let pf_py: Py<crate::protocol_fn::ProtocolFn> = pf.clone().unbind();
         if args.is_empty() {
@@ -159,19 +167,21 @@ pub fn invoke_n_owned(
         return crate::protocol_fn::ProtocolFn::dispatch_owned(pf_py, py, target_arg, args);
     }
 
-    let proto = IFN_PROTO
-        .get()
-        .expect("rt::invoke_n_owned called before rt::init — check pymodule init order");
-    let method_key: &Arc<str> = if args.len() <= 20 {
-        &INVOKE_KEYS[args.len()]
+    // Target is any other callable — look up IFn/invokeN ProtocolFn, dispatch
+    // through it with target as the receiver.
+    let n = args.len();
+    let pfn = if n <= 20 {
+        IFN_INVOKE_PFNS[n].get_or_init(|| {
+            crate::protocol_fn::get_protocol_fn(py, "IFn", IFN_INVOKE_KEYS[n])
+                .expect("IFn/invokeN ProtocolFn not registered by #[protocol]")
+        })
     } else {
-        &INVOKE_VARIADIC_KEY
+        IFN_INVOKE_VARIADIC_PFN.get_or_init(|| {
+            crate::protocol_fn::get_protocol_fn(py, "IFn", "invoke_variadic")
+                .expect("IFn/invoke_variadic ProtocolFn not registered")
+        })
     };
-    // `PyTuple::new` copies its inputs into the tuple's internal storage
-    // (incrementing refcount per slot), so we don't need to pre-clone:
-    // the Vec's owned refs are released on drop as expected.
-    let args_tup = PyTuple::new(py, &args)?;
-    crate::dispatch::dispatch(py, proto, method_key, target, args_tup)
+    crate::protocol_fn::ProtocolFn::dispatch_owned(pfn.clone_ref(py), py, target, args)
 }
 
 /// True iff `x`'s type (or an MRO ancestor) is extended to `Sequential`.
