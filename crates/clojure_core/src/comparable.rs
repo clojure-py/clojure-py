@@ -49,7 +49,12 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
             let impls = PyDict::new(py);
             impls.set_item("compare_to", &cmp_wrapper)?;
             let ty = target.get_type();
-            proto.get().extend_type(py, ty, impls)?;
+            proto.get().extend_type(py, ty.clone(), impls)?;
+            if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "Comparable", "compare_to") {
+                let mut fns = crate::protocol_fn::InvokeFns::empty();
+                fns.invoke1 = Some(compare_builtin_thunk as crate::protocol_fn::InvokeFn1);
+                pfn.bind(py).get().extend_with_native(ty, fns);
+            }
 
             Ok(py.None())
         },
@@ -57,6 +62,16 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
 
     proto.call_method1("set_fallback", (fallback.unbind().into_any(),))?;
     Ok(())
+}
+
+/// Typed thunk for Comparable/compare_to fallback.
+fn compare_builtin_thunk(
+    py: Python<'_>,
+    target: &Py<PyAny>,
+    other: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let r = compare_builtin(py, target.bind(py), other.bind(py))?;
+    Ok(r.into_pyobject(py)?.unbind().into_any())
 }
 
 /// Built-in fallback: nil sorts before anything; bools/ints/floats compare

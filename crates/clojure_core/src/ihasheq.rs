@@ -11,6 +11,13 @@ pub trait IHashEq: Sized {
 
 use pyo3::types::{PyCFunction, PyDict, PyTuple};
 
+/// Typed thunk for the __hash__ fallback. Reachable as a fn pointer so
+/// ProtocolFn's typed cache can call it directly.
+fn py_hash_thunk(py: Python<'_>, target: &Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let h: isize = target.bind(py).hash()?;
+    Ok((h as i64).into_pyobject(py)?.unbind().into_any())
+}
+
 pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let ihasheq_any = m.getattr("IHashEq")?;
     let ihasheq_proto: &Bound<'_, crate::Protocol> = ihasheq_any.cast()?;
@@ -41,7 +48,14 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
             let impls = PyDict::new(py);
             impls.set_item("hash_eq", &hash_wrapper)?;
             let ty = target.get_type();
-            proto.get().extend_type(py, ty, impls)?;
+            proto.get().extend_type(py, ty.clone(), impls)?;
+            // Also populate the typed ProtocolFn cache so subsequent calls
+            // take the fast path directly.
+            if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "IHashEq", "hash_eq") {
+                let mut fns = crate::protocol_fn::InvokeFns::empty();
+                fns.invoke0 = Some(py_hash_thunk as crate::protocol_fn::InvokeFn0);
+                pfn.bind(py).get().extend_with_native(ty, fns);
+            }
 
             Ok(py.None())
         },
