@@ -175,6 +175,12 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
             };
             let proto_py = ::pyo3::Py::new(py, proto)?;
             m.add(stringify!(#trait_ident), proto_py.clone_ref(py))?;
+            // Also register in the global Protocol registry so ProtocolFn
+            // dispatch can fall through on miss — see protocol_fn.rs.
+            crate::protocol_fn::register_old_protocol(
+                #proto_name_str,
+                proto_py.clone_ref(py),
+            );
 
             // Old path: per-method ProtocolMethod bindings.
             #(#method_bindings)*

@@ -31,6 +31,35 @@ fn registry() -> &'static DashMap<(Arc<str>, Arc<str>), Py<ProtocolFn>> {
     PROTOCOL_FN_REGISTRY.get_or_init(DashMap::new)
 }
 
+/// Global registry: protocol_name -> old-style Protocol instance. Mirrors
+/// PROTOCOL_FN_REGISTRY but keyed by just the protocol name. Populated by
+/// `#[protocol]` at init. Consulted by ProtocolFn's dispatch as a fallback
+/// when the typed table misses — lets fallback-installed impls (e.g. the
+/// `Counted::__len__` path for `str`) keep working after the primary
+/// binding is flipped to ProtocolFn.
+static PROTOCOL_REGISTRY: once_cell::sync::OnceCell<
+    DashMap<Arc<str>, Py<crate::protocol::Protocol>>,
+> = once_cell::sync::OnceCell::new();
+
+fn protocol_registry() -> &'static DashMap<Arc<str>, Py<crate::protocol::Protocol>> {
+    PROTOCOL_REGISTRY.get_or_init(DashMap::new)
+}
+
+/// Register a Protocol under its name so ProtocolFns declared by the same
+/// `#[protocol]` invocation can find it on fallback.
+pub fn register_old_protocol(name: &str, proto: Py<crate::protocol::Protocol>) {
+    protocol_registry().insert(Arc::from(name), proto);
+}
+
+fn get_old_protocol(
+    py: Python<'_>,
+    name: &str,
+) -> Option<Py<crate::protocol::Protocol>> {
+    protocol_registry()
+        .get(&Arc::from(name))
+        .map(|e| e.value().clone_ref(py))
+}
+
 /// Register a ProtocolFn under (protocol_name, method_name). Overwrites any
 /// prior entry — module re-init shouldn't happen in a single process, but
 /// idempotence keeps the API cheap rather than erroring.
@@ -239,6 +268,12 @@ impl ProtocolFn {
 
     /// Rust-side entry point. Called by `rt::invoke_n_owned` when target
     /// is a ProtocolFn. Takes ownership of `args`.
+    ///
+    /// On typed-table miss, falls through to the old-style Protocol (looked
+    /// up by name in the global registry) so fallback-installed impls and
+    /// any protocol not yet migrated to the typed path still dispatch
+    /// correctly. This fallback is what makes Phase 3's binding-flip safe
+    /// even for protocols with dynamic fallbacks like `Counted::__len__`.
     pub fn dispatch_owned(
         slf: Py<Self>,
         py: Python<'_>,
@@ -248,7 +283,31 @@ impl ProtocolFn {
         let this = slf.bind(py).get();
         let fns = match this.resolve(py, &target)? {
             Some(f) => f,
-            None => return Err(this.raise_no_impl(py, &target)),
+            None => {
+                // Fall through to the old Protocol, if one was registered
+                // under the same protocol name. This covers fallback-driven
+                // impls (Counted's __len__, etc.) and anything else still
+                // living on the old path.
+                if let Some(old_proto) = get_old_protocol(py, &this.protocol_name) {
+                    let method_key: Arc<str> = Arc::from(this.name.as_str());
+                    let mut tup_items: Vec<PyObject> =
+                        Vec::with_capacity(args.len() + 1);
+                    tup_items.push(target.clone_ref(py));
+                    tup_items.append(&mut args);
+                    // The old dispatch takes args as a PyTuple (excluding
+                    // target, which is passed separately).
+                    let rest = &tup_items[1..];
+                    let rest_tup = pyo3::types::PyTuple::new(py, rest)?;
+                    return crate::dispatch::dispatch(
+                        py,
+                        &old_proto,
+                        &method_key,
+                        target,
+                        rest_tup,
+                    );
+                }
+                return Err(this.raise_no_impl(py, &target));
+            }
         };
         // Arity-specialized dispatch. Each match arm: if the corresponding
         // typed fn pointer is present, drain the right number of args from
