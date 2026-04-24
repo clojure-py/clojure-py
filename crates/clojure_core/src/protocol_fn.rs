@@ -67,14 +67,56 @@ pub fn get_protocol_fn(
 /// The function pointers take `&PyObject` for the receiver (target) so the
 /// caller doesn't have to pre-clone; impls that need to hold the receiver
 /// beyond the call do the clone_ref internally.
+/// Type aliases for fn pointers of each arity, keeping the struct field
+/// declarations readable. `A` is the target type (`&PyObject`); every
+/// additional arg is `PyObject` (owned).
+pub type InvokeFn0  = fn(Python<'_>, &PyObject) -> PyResult<PyObject>;
+pub type InvokeFn1  = fn(Python<'_>, &PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn2  = fn(Python<'_>, &PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn3  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn4  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn5  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn6  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn7  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn8  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn9  = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn10 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn11 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn12 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn13 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn14 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn15 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn16 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn17 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn18 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn19 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFn20 = fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>;
+pub type InvokeFnVariadic = fn(Python<'_>, &PyObject, Vec<PyObject>) -> PyResult<PyObject>;
+
 #[derive(Clone)]
 pub struct InvokeFns {
-    pub invoke0:  Option<fn(Python<'_>, &PyObject) -> PyResult<PyObject>>,
-    pub invoke1:  Option<fn(Python<'_>, &PyObject, PyObject) -> PyResult<PyObject>>,
-    pub invoke2:  Option<fn(Python<'_>, &PyObject, PyObject, PyObject) -> PyResult<PyObject>>,
-    pub invoke3:  Option<fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>>,
-    pub invoke4:  Option<fn(Python<'_>, &PyObject, PyObject, PyObject, PyObject, PyObject) -> PyResult<PyObject>>,
-    pub invoke_variadic: Option<fn(Python<'_>, &PyObject, Vec<PyObject>) -> PyResult<PyObject>>,
+    pub invoke0:  Option<InvokeFn0>,
+    pub invoke1:  Option<InvokeFn1>,
+    pub invoke2:  Option<InvokeFn2>,
+    pub invoke3:  Option<InvokeFn3>,
+    pub invoke4:  Option<InvokeFn4>,
+    pub invoke5:  Option<InvokeFn5>,
+    pub invoke6:  Option<InvokeFn6>,
+    pub invoke7:  Option<InvokeFn7>,
+    pub invoke8:  Option<InvokeFn8>,
+    pub invoke9:  Option<InvokeFn9>,
+    pub invoke10: Option<InvokeFn10>,
+    pub invoke11: Option<InvokeFn11>,
+    pub invoke12: Option<InvokeFn12>,
+    pub invoke13: Option<InvokeFn13>,
+    pub invoke14: Option<InvokeFn14>,
+    pub invoke15: Option<InvokeFn15>,
+    pub invoke16: Option<InvokeFn16>,
+    pub invoke17: Option<InvokeFn17>,
+    pub invoke18: Option<InvokeFn18>,
+    pub invoke19: Option<InvokeFn19>,
+    pub invoke20: Option<InvokeFn20>,
+    pub invoke_variadic: Option<InvokeFnVariadic>,
     /// Epoch at install time — if this entry was promoted by an MRO walk
     /// and the protocol's epoch has since advanced (re-extension of some
     /// type), the entry is treated as stale.
@@ -87,11 +129,11 @@ pub struct InvokeFns {
 impl InvokeFns {
     pub fn empty() -> Self {
         Self {
-            invoke0: None,
-            invoke1: None,
-            invoke2: None,
-            invoke3: None,
-            invoke4: None,
+            invoke0: None, invoke1: None, invoke2: None, invoke3: None, invoke4: None,
+            invoke5: None, invoke6: None, invoke7: None, invoke8: None, invoke9: None,
+            invoke10: None, invoke11: None, invoke12: None, invoke13: None, invoke14: None,
+            invoke15: None, invoke16: None, invoke17: None, invoke18: None, invoke19: None,
+            invoke20: None,
             invoke_variadic: None,
             epoch: 0,
             promoted: false,
@@ -150,16 +192,10 @@ impl ProtocolFn {
                 let parent_fns = Arc::clone(entry.value());
                 drop(entry);
                 // Promote: install a copy at exact_key stamped with current epoch.
-                let promoted = Arc::new(InvokeFns {
-                    invoke0: parent_fns.invoke0,
-                    invoke1: parent_fns.invoke1,
-                    invoke2: parent_fns.invoke2,
-                    invoke3: parent_fns.invoke3,
-                    invoke4: parent_fns.invoke4,
-                    invoke_variadic: parent_fns.invoke_variadic,
-                    epoch: current_epoch,
-                    promoted: true,
-                });
+                let mut promoted_fns = (*parent_fns).clone();
+                promoted_fns.epoch = current_epoch;
+                promoted_fns.promoted = true;
+                let promoted = Arc::new(promoted_fns);
                 self.cache.insert(exact_key, Arc::clone(&promoted));
                 return Ok(Some(promoted));
             }
@@ -214,46 +250,59 @@ impl ProtocolFn {
             Some(f) => f,
             None => return Err(this.raise_no_impl(py, &target)),
         };
+        // Arity-specialized dispatch. Each match arm: if the corresponding
+        // typed fn pointer is present, drain the right number of args from
+        // the Vec and call directly. Otherwise fall through to the variadic
+        // path, which packs args into a single Vec and calls the variadic
+        // impl if one exists.
+        //
+        // Helper macro: each arm pops N args in reverse (so the reverse
+        // order below produces (a, b, c, …) in call order).
+        macro_rules! dispatch_n {
+            ($fns_field:ident, $($arg:ident),*) => {
+                match fns.$fns_field {
+                    Some(fp) => {
+                        $(let $arg = args.pop().unwrap();)*
+                        dispatch_n!(@reverse_call fp, py, target, [], $($arg),*)
+                    }
+                    None => this.try_variadic(py, fns.as_ref(), target, args),
+                }
+            };
+            // Reverse the popped-args list so the call expression is in
+            // declaration (left-to-right) order. Accumulator pattern.
+            (@reverse_call $fp:ident, $py:ident, $tgt:ident, [$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
+                dispatch_n!(@reverse_call $fp, $py, $tgt, [$head $(, $acc)*], $($rest),*)
+            };
+            (@reverse_call $fp:ident, $py:ident, $tgt:ident, [$($acc:ident),*],) => {
+                $fp($py, &$tgt, $($acc),*)
+            };
+        }
         match args.len() {
-            0 => match fns.invoke0 {
+            0  => match fns.invoke0 {
                 Some(fp) => fp(py, &target),
                 None => this.try_variadic(py, fns.as_ref(), target, args),
             },
-            1 => match fns.invoke1 {
-                Some(fp) => {
-                    let a = args.pop().unwrap();
-                    fp(py, &target, a)
-                }
-                None => this.try_variadic(py, fns.as_ref(), target, args),
-            },
-            2 => match fns.invoke2 {
-                Some(fp) => {
-                    let b = args.pop().unwrap();
-                    let a = args.pop().unwrap();
-                    fp(py, &target, a, b)
-                }
-                None => this.try_variadic(py, fns.as_ref(), target, args),
-            },
-            3 => match fns.invoke3 {
-                Some(fp) => {
-                    let c = args.pop().unwrap();
-                    let b = args.pop().unwrap();
-                    let a = args.pop().unwrap();
-                    fp(py, &target, a, b, c)
-                }
-                None => this.try_variadic(py, fns.as_ref(), target, args),
-            },
-            4 => match fns.invoke4 {
-                Some(fp) => {
-                    let d = args.pop().unwrap();
-                    let c = args.pop().unwrap();
-                    let b = args.pop().unwrap();
-                    let a = args.pop().unwrap();
-                    fp(py, &target, a, b, c, d)
-                }
-                None => this.try_variadic(py, fns.as_ref(), target, args),
-            },
-            _ => this.try_variadic(py, fns.as_ref(), target, args),
+            1  => dispatch_n!(invoke1,  a),
+            2  => dispatch_n!(invoke2,  a, b),
+            3  => dispatch_n!(invoke3,  a, b, c),
+            4  => dispatch_n!(invoke4,  a, b, c, d),
+            5  => dispatch_n!(invoke5,  a, b, c, d, e),
+            6  => dispatch_n!(invoke6,  a, b, c, d, e, f),
+            7  => dispatch_n!(invoke7,  a, b, c, d, e, f, g),
+            8  => dispatch_n!(invoke8,  a, b, c, d, e, f, g, h),
+            9  => dispatch_n!(invoke9,  a, b, c, d, e, f, g, h, i),
+            10 => dispatch_n!(invoke10, a, b, c, d, e, f, g, h, i, j),
+            11 => dispatch_n!(invoke11, a, b, c, d, e, f, g, h, i, j, k),
+            12 => dispatch_n!(invoke12, a, b, c, d, e, f, g, h, i, j, k, l),
+            13 => dispatch_n!(invoke13, a, b, c, d, e, f, g, h, i, j, k, l, mm),
+            14 => dispatch_n!(invoke14, a, b, c, d, e, f, g, h, i, j, k, l, mm, n),
+            15 => dispatch_n!(invoke15, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o),
+            16 => dispatch_n!(invoke16, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p),
+            17 => dispatch_n!(invoke17, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q),
+            18 => dispatch_n!(invoke18, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r),
+            19 => dispatch_n!(invoke19, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r, s),
+            20 => dispatch_n!(invoke20, a, b, c, d, e, f, g, h, i, j, k, l, mm, n, o, p, q, r, s, t),
+            _  => this.try_variadic(py, fns.as_ref(), target, args),
         }
     }
 
@@ -282,7 +331,7 @@ impl ProtocolFn {
     /// both use this; in a fully-migrated world the macro emits these at
     /// protocol-declaration time.
     #[new]
-    fn new_py(name: String, protocol_name: String, via_metadata: bool) -> Self {
+    pub fn new_py(name: String, protocol_name: String, via_metadata: bool) -> Self {
         Self {
             name,
             protocol_name,

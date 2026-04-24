@@ -113,6 +113,36 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
         }
     }).collect();
 
+    // Phase 2: per-method ProtocolFn creation + registry insertion. The
+    // ProtocolFn instances run in parallel to the existing ProtocolMethod
+    // objects during this phase. Primary module-level name bindings still
+    // point at the ProtocolMethod (above); Phase 3 flips them to the
+    // ProtocolFn.
+    //
+    // Transitional: the ProtocolFn is also exposed at module name
+    // "_pfn:<method>" so tests can reach it during Phase 2.
+    let proto_name_str = trait_ident.to_string();
+    let protocol_fn_bindings: Vec<proc_macro2::TokenStream> =
+        method_key_strings.iter().map(|mname| {
+            quote! {
+                {
+                    let pfn = crate::protocol_fn::ProtocolFn::new_py(
+                        ::std::string::String::from(#mname),
+                        ::std::string::String::from(#proto_name_str),
+                        #via_md,
+                    );
+                    let pfn_py = ::pyo3::Py::new(py, pfn)?;
+                    crate::protocol_fn::register_protocol_fn(
+                        #proto_name_str,
+                        #mname,
+                        pfn_py.clone_ref(py),
+                    );
+                    let hidden_name = ::std::format!("_pfn:{}", #mname);
+                    m.add(hidden_name.as_str(), pfn_py)?;
+                }
+            }
+        }).collect();
+
     let method_key_push = method_key_strings.iter().map(|mname| {
         quote! { v.push(::std::sync::Arc::from(#mname)); }
     });
@@ -146,7 +176,13 @@ pub fn expand(args: ProtocolArgs, item: ItemTrait) -> TokenStream {
             let proto_py = ::pyo3::Py::new(py, proto)?;
             m.add(stringify!(#trait_ident), proto_py.clone_ref(py))?;
 
+            // Old path: per-method ProtocolMethod bindings.
             #(#method_bindings)*
+
+            // New path: per-method ProtocolFn creation + registry insertion.
+            // Exposed under "_pfn:<name>" during Phase 2; Phase 3 flips the
+            // primary #(#method_bindings)* names to ProtocolFn.
+            #(#protocol_fn_bindings)*
 
             Ok(())
         }

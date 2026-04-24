@@ -171,9 +171,137 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
         },
     };
 
-    // Store the original impl (unchanged) + the install fn + the inventory submission.
+    // --- New-path (Phase 2): fn-item thunks + typed ProtocolFn registration.
+    //
+    // For each method, emit a free-standing fn item whose signature matches
+    // the matching InvokeFns slot, then register it via `extend_with_native`
+    // on the ProtocolFn looked up from the global registry.
+    //
+    // Thunks are fn items (not closures) so they coerce to fn pointers.
+    let thunk_items: Vec<TokenStream> = methods.iter().map(|f| {
+        let ident = &f.sig.ident;
+        let arity = method_arity(f);
+        let thunk_name = format_ident!(
+            "__pfn_thunk_{}_{}_{}",
+            proto_ident,
+            simple_name_for(self_ty),
+            ident
+        );
+        match arity {
+            None => {
+                // Variadic. Signature: (py, &PyObject, Vec<PyObject>) ->
+                // PyResult<PyObject>. The trait method takes a Bound<PyTuple>,
+                // so we build one from the Vec to match.
+                quote! {
+                    #[allow(non_snake_case)]
+                    fn #thunk_name(
+                        py: ::pyo3::Python<'_>,
+                        target: &::pyo3::Py<::pyo3::types::PyAny>,
+                        rest: ::std::vec::Vec<::pyo3::Py<::pyo3::types::PyAny>>,
+                    ) -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>> {
+                        use ::pyo3::prelude::*;
+                        let bound = target.bind(py);
+                        let self_any = bound.cast::<#self_ty>()?;
+                        let this: ::pyo3::Py<#self_ty> = self_any.clone().unbind();
+                        let tup = ::pyo3::types::PyTuple::new(py, &rest)?;
+                        <#self_ty as #proto_ident>::#ident(this, py, tup)
+                            .and_then(|v| ::pyo3::IntoPyObjectExt::into_py_any(v, py))
+                    }
+                }
+            }
+            Some(n) => {
+                let arg_idents: Vec<syn::Ident> =
+                    (0..n).map(|i| format_ident!("a{}", i)).collect();
+                let params: Vec<TokenStream> = arg_idents.iter().map(|a| {
+                    quote! { #a: ::pyo3::Py<::pyo3::types::PyAny> }
+                }).collect();
+                let pass: Vec<TokenStream> = arg_idents.iter().map(|a| {
+                    quote! { #a }
+                }).collect();
+                quote! {
+                    #[allow(non_snake_case)]
+                    fn #thunk_name(
+                        py: ::pyo3::Python<'_>,
+                        target: &::pyo3::Py<::pyo3::types::PyAny>,
+                        #(#params),*
+                    ) -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>> {
+                        use ::pyo3::prelude::*;
+                        let bound = target.bind(py);
+                        let self_any = bound.cast::<#self_ty>()?;
+                        let this: ::pyo3::Py<#self_ty> = self_any.clone().unbind();
+                        <#self_ty as #proto_ident>::#ident(this, py #(, #pass)*)
+                            .and_then(|v| ::pyo3::IntoPyObjectExt::into_py_any(v, py))
+                    }
+                }
+            }
+        }
+    }).collect();
+
+    // Per-method call to extend_with_native on the matching ProtocolFn.
+    let proto_key = proto_ident.to_string();
+    let native_registrations: Vec<TokenStream> = methods.iter().map(|f| {
+        let ident = &f.sig.ident;
+        let method_key = ident.to_string();
+        let arity = method_arity(f);
+        let thunk_name = format_ident!(
+            "__pfn_thunk_{}_{}_{}",
+            proto_ident,
+            simple_name_for(self_ty),
+            ident
+        );
+        let (fn_field, fn_ptr_type): (syn::Ident, TokenStream) = match arity {
+            None => (
+                format_ident!("invoke_variadic"),
+                quote! {
+                    fn(
+                        ::pyo3::Python<'_>,
+                        &::pyo3::Py<::pyo3::types::PyAny>,
+                        ::std::vec::Vec<::pyo3::Py<::pyo3::types::PyAny>>,
+                    ) -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>>
+                },
+            ),
+            Some(n) => (
+                format_ident!("invoke{}", n),
+                {
+                    let args = (0..n).map(|_| quote! { ::pyo3::Py<::pyo3::types::PyAny> });
+                    quote! {
+                        fn(
+                            ::pyo3::Python<'_>,
+                            &::pyo3::Py<::pyo3::types::PyAny>,
+                            #(#args),*
+                        ) -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyAny>>
+                    }
+                },
+            ),
+        };
+        quote! {
+            {
+                if let ::std::option::Option::Some(pfn) =
+                    crate::protocol_fn::get_protocol_fn(py, #proto_key, #method_key)
+                {
+                    let mut fns = crate::protocol_fn::InvokeFns::empty();
+                    fns.#fn_field = ::std::option::Option::Some(
+                        #thunk_name as #fn_ptr_type
+                    );
+                    // `ty` is moved into the old-path `extend_type` below, so
+                    // we clone the Bound here for the native call.
+                    pfn.bind(py).get().extend_with_native(ty.clone(), fns);
+                }
+                // If the lookup returns None the declaring protocol hasn't
+                // emitted its ProtocolFn (e.g. if the #[protocol] macro
+                // version didn't run for some reason). Silent no-op — the
+                // old-path registration below still runs, so calls still
+                // work via the original ProtocolMethod.
+            }
+        }
+    }).collect();
+
+    // Store the original impl (unchanged) + install fn + inventory submission.
+    // Thunks emitted at module scope so they coerce to fn pointers.
     quote! {
         #item_impl
+
+        #(#thunk_items)*
 
         #[allow(non_snake_case)]
         fn #install_fn_ident(
@@ -181,8 +309,14 @@ pub fn expand(args: ImplementsArgs, item_impl: ItemImpl) -> TokenStream {
             m: &::pyo3::Bound<'_, ::pyo3::types::PyModule>,
         ) -> ::pyo3::PyResult<()> {
             use ::pyo3::prelude::*;
-            let impls = ::pyo3::types::PyDict::new(py);
             #target_ty_expr
+            // New-path: register typed impls into each method's ProtocolFn.
+            // Runs before the old-path block below because the old path
+            // consumes `ty` by value.
+            #(#native_registrations)*
+            // Old-path (still primary during Phase 2): build a PyDict of
+            // PyCFunctions and extend_type on the shared Protocol.
+            let impls = ::pyo3::types::PyDict::new(py);
             #(#method_builders)*
             let proto_any = m.getattr(stringify!(#proto_ident))?;
             let proto: &::pyo3::Bound<'_, crate::Protocol> = proto_any.cast()?;
