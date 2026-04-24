@@ -26,7 +26,10 @@ jobs:
           - { os: ubuntu-latest,    label: linux-x64 }
           - { os: ubuntu-24.04-arm, label: linux-arm64 }
           - { os: windows-latest,   label: windows-x64 }
-          - { os: windows-11-arm,   label: windows-arm64 }
+          # windows-11-arm: actions/setup-python@v5 can't install 3.14t on
+          # ARM64 yet — the extracted Python install is missing its stdlib
+          # (`ModuleNotFoundError: encodings`). Re-add when upstream support
+          # lands. Linux-arm64 still covers the ARM64 code path.
           - { os: macos-13,         label: macos-x64 }     # last x64 macOS runner
           - { os: macos-latest,     label: macos-arm64 }   # Apple Silicon
     steps:

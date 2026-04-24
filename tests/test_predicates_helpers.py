@@ -245,8 +245,11 @@ def test_slurp_spit_roundtrip():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         path = f.name
     try:
-        _ev(f'(spit "{path}" "hello world")')
-        assert _ev(f'(slurp "{path}")') == "hello world"
+        # Forward-slash the path so embedding it as a Clojure string literal
+        # doesn't trip the reader on Windows backslash-escapes like `\U`.
+        clj_path = path.replace("\\", "/")
+        _ev(f'(spit "{clj_path}" "hello world")')
+        assert _ev(f'(slurp "{clj_path}")') == "hello world"
     finally:
         os.unlink(path)
 

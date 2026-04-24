@@ -77,9 +77,11 @@ def test_fixtures_each_and_once(pytester):
     # subprocess exits. Asserts exact ordering: once-before, (each-before,
     # each-after) per test, once-after.
     trace_file = pytester.path / "fixture_trace.log"
+    # `as_posix` so Windows paths don't embed `\U…` / `\A…` escapes that the
+    # Clojure reader would reject when parsing this source.
     _write(pytester, "fixtures_test.clj", f"""
         (ns fixtures-test (:require [clojure.test :refer [deftest is use-fixtures]]))
-        (def path "{trace_file}")
+        (def path "{trace_file.as_posix()}")
         (def trace (atom []))
         (use-fixtures :once
           (fn [f]
