@@ -124,6 +124,29 @@ pub fn invoke_n(py: Python<'_>, target: PyObject, args: &[PyObject]) -> PyResult
     crate::dispatch::dispatch(py, proto, method_key, target, args_tup)
 }
 
+/// Like `invoke_n`, but takes ownership of `args` so no per-arg `clone_ref`
+/// is needed inside the function. Callers that already own a fresh `Vec`
+/// should prefer this (e.g. the bytecode VM when draining the value stack).
+pub fn invoke_n_owned(
+    py: Python<'_>,
+    target: PyObject,
+    args: Vec<PyObject>,
+) -> PyResult<PyObject> {
+    let proto = IFN_PROTO
+        .get()
+        .expect("rt::invoke_n_owned called before rt::init — check pymodule init order");
+    let method_key: &Arc<str> = if args.len() <= 20 {
+        &INVOKE_KEYS[args.len()]
+    } else {
+        &INVOKE_VARIADIC_KEY
+    };
+    // `PyTuple::new` copies its inputs into the tuple's internal storage
+    // (incrementing refcount per slot), so we don't need to pre-clone:
+    // the Vec's owned refs are released on drop as expected.
+    let args_tup = PyTuple::new(py, &args)?;
+    crate::dispatch::dispatch(py, proto, method_key, target, args_tup)
+}
+
 /// True iff `x`'s type (or an MRO ancestor) is extended to `Sequential`.
 /// Used by IEquiv impls of sequential collections to decide whether the
 /// other side of an `=` comparison should be walked pairwise.

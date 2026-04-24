@@ -164,7 +164,7 @@ pub fn run(
                     let args_start = stack.len() - n;
                     let args: Vec<PyObject> = stack.drain(args_start..).collect();
                     let target = stack.pop().unwrap();
-                    let result = crate::rt::invoke_n(py, target, &args)?;
+                    let result = crate::rt::invoke_n_owned(py, target, args)?;
                     stack.push(result);
                     pc += 1;
                 }
