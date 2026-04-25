@@ -118,17 +118,40 @@ fn normalize_meta(
     ))
 }
 
-fn attach_meta(py: Python<'_>, target: PyObject, meta_map: PyObject) -> PyResult<PyObject> {
-    // Route through the IMeta protocol (rt::with_meta) rather than a direct
-    // pymethod lookup — collection/seq types now only expose `with_meta`
-    // through the IMeta protocol impl, not as a standalone pymethod.
-    // Types that don't implement IMeta at all fall back to returning `target`
-    // unchanged so reader metadata is silently ignored on non-meta-bearing
-    // values (e.g. literal ints).
-    match crate::rt::with_meta(py, target.clone_ref(py), meta_map) {
+fn attach_meta(py: Python<'_>, target: PyObject, new_meta: PyObject) -> PyResult<PyObject> {
+    // Match vanilla MetaReader: assoc each new entry into the existing meta
+    // so chained `^` annotations accumulate (outermost wins on conflict).
+    let existing = crate::rt::meta(py, target.clone_ref(py))?;
+    let merged = if existing.bind(py).is_none() {
+        new_meta
+    } else {
+        merge_meta_pairs(py, existing, new_meta)?
+    };
+    match crate::rt::with_meta(py, target.clone_ref(py), merged) {
         Ok(new_target) => Ok(new_target),
         Err(_) => Ok(target),
     }
+}
+
+/// Walk `new_meta`'s seq and assoc each (key, val) into `existing`. New
+/// values override existing on conflict. Equivalent to
+/// `(reduce (fn [m e] (assoc m (key e) (val e))) existing new_meta)`.
+fn merge_meta_pairs(
+    py: Python<'_>,
+    existing: PyObject,
+    new_meta: PyObject,
+) -> PyResult<PyObject> {
+    let mut acc = existing;
+    let mut s = crate::rt::seq(py, new_meta)?;
+    while !s.bind(py).is_none() {
+        let entry = crate::rt::first(py, s.clone_ref(py))?;
+        let entry_b = entry.bind(py);
+        let k = entry_b.get_item(0)?.unbind();
+        let v = entry_b.get_item(1)?.unbind();
+        acc = crate::rt::assoc(py, acc, k, v)?;
+        s = crate::rt::next_(py, s)?;
+    }
+    Ok(acc)
 }
 
 /// Read a list: caller has NOT yet consumed the opening '('.
