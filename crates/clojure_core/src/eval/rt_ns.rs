@@ -4457,7 +4457,13 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         need_args(args, 1, "slurp")?;
         let path: String = args.get_item(0)?.extract()?;
         let builtins = py.import("builtins")?;
-        let f = builtins.getattr("open")?.call1((path, "r"))?;
+        // Always read as UTF-8 — vanilla Clojure JVM defaults to UTF-8 since
+        // JEP 400. Without `encoding="utf-8"` Python falls back to the
+        // locale encoding (cp1252 on Windows), which can't decode many
+        // common multi-byte characters.
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("encoding", "utf-8")?;
+        let f = builtins.getattr("open")?.call((path, "r"), Some(&kwargs))?;
         let content = f.call_method0("read")?;
         f.call_method0("close")?;
         Ok(content.unbind())
@@ -4505,7 +4511,10 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let content_obj = args.get_item(1)?;
         let content: String = content_obj.str()?.to_string_lossy().into_owned();
         let builtins = py.import("builtins")?;
-        let f = builtins.getattr("open")?.call1((path, "w"))?;
+        // Always write UTF-8 — see slurp-impl for the rationale.
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("encoding", "utf-8")?;
+        let f = builtins.getattr("open")?.call((path, "w"), Some(&kwargs))?;
         f.call_method1("write", (content,))?;
         f.call_method0("close")?;
         Ok(py.None())
