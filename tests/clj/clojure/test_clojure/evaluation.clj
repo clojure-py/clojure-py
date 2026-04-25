@@ -92,9 +92,11 @@
     "It is an error if there is no global var named by the symbol"
     (is (thrown? clojure._core/EvalError (eval 'undefined-bar))))
 
-  ;; Vanilla asserts that referring to a private var across namespaces
-  ;; throws "is not public". Our resolver doesn't enforce :private — see
-  ;; project memory; deferred until we add private-var checking.
+  (test-that
+    "It is an error to reference a private var across namespaces"
+    (is (thrown-with-msg? clojure._core/EvalError
+                          #"resolution-test/baz is not public"
+                          (eval 'resolution-test/baz))))
 
   (test-that
     "Special forms with no expression form are not values; using them as a
