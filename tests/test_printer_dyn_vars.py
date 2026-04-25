@@ -85,3 +85,34 @@ def test_print_level_with_print_length():
     """Combined: length + level interact correctly."""
     src = '(binding [*print-level* 1 *print-length* 2] (pr-str [1 [2 3] [4 5]]))'
     assert e(src) == "[1 # ...]"
+
+
+# ---------- *print-meta* ----------
+
+def test_print_meta_on_symbol():
+    """A meta-bearing symbol prints as ^{:k v} sym when *print-meta* is true."""
+    src = '''
+    (binding [*print-meta* true]
+      (pr-str (with-meta (quote sym) {:awesome true})))
+    '''
+    assert e(src) == "^{:awesome true} sym"
+
+
+def test_print_meta_on_list():
+    src = '''
+    (binding [*print-meta* true]
+      (pr-str (with-meta (list 1 2 3) {:a 1})))
+    '''
+    assert e(src) == "^{:a 1} (1 2 3)"
+
+
+def test_print_meta_off_by_default():
+    """Without *print-meta*, meta is invisible in the printed form."""
+    src = '(pr-str (with-meta (quote sym) {:awesome true}))'
+    assert e(src) == "sym"
+
+
+def test_print_meta_no_meta_no_prefix():
+    """Even with *print-meta* true, values without meta print normally."""
+    src = '(binding [*print-meta* true] (pr-str (quote sym)))'
+    assert e(src) == "sym"

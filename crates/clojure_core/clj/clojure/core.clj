@@ -5086,6 +5086,13 @@
 
 ;; --- Collection methods (iterate + recurse through print-method) ---
 
+(defn ^:private print-meta-prefix [x w]
+  "When *print-meta* is true and x has non-nil meta, write the ^M prefix."
+  (when-let [m (and *print-meta* (meta x))]
+    (clojure.lang.RT/writer-write w "^")
+    (print-method m w)
+    (clojure.lang.RT/writer-write w " ")))
+
 (defn ^:private print-sequential [open close sep coll w]
   (cond
     (and *print-level* (zero? *print-level*))
@@ -5100,6 +5107,7 @@
               (if (and limit (>= n limit))
                 (clojure.lang.RT/writer-write w "...")
                 (do
+                  (print-meta-prefix (first items) w)
                   (print-method (first items) w)
                   (when-let [r (next items)]
                     (clojure.lang.RT/writer-write w sep)
@@ -5120,8 +5128,10 @@
               (if (and limit (>= n limit))
                 (clojure.lang.RT/writer-write w "...")
                 (let [e (first entries)]
+                  (print-meta-prefix (key e) w)
                   (print-method (key e) w)
                   (clojure.lang.RT/writer-write w " ")
+                  (print-meta-prefix (val e) w)
                   (print-method (val e) w)
                   (when-let [r (next entries)]
                     (clojure.lang.RT/writer-write w ", ")
@@ -5185,12 +5195,26 @@
 
 ;; --- Public API -----------------------------------------------------------
 
+(defn pr-on
+  "Low-level: dispatch to `print-method` (or `print-dup` if `*print-dup*`)
+  on x, writing to w. When `*print-meta*` is true and x has non-nil meta,
+  prefixes the output with `^M ` where M is the printed meta map."
+  [x w]
+  (when-let [m (and (not *print-dup*) *print-meta* (meta x))]
+    (clojure.lang.RT/writer-write w "^")
+    (print-method m w)
+    (clojure.lang.RT/writer-write w " "))
+  (if *print-dup*
+    (print-dup x w)
+    (print-method x w))
+  nil)
+
 (defn pr-str
   "pr to a string, returning it."
   ([] "")
   ([x]
    (let [buf (clojure.lang.RT/make-string-writer)]
-     (print-method x buf)
+     (pr-on x buf)
      (clojure.lang.RT/string-writer-value buf)))
   ([x & more]
    (apply str (pr-str x)
@@ -5205,15 +5229,6 @@
   ([x & more]
    (apply str (print-str x)
           (mapcat (fn* [m] [" " (print-str m)]) more))))
-
-(defn pr-on
-  "Low-level: dispatch to `print-method` (or `print-dup` if `*print-dup*`)
-  on x, writing to w."
-  [x w]
-  (if *print-dup*
-    (print-dup x w)
-    (print-method x w))
-  nil)
 
 (defn newline
   "Writes a platform-specific newline to *out*."
