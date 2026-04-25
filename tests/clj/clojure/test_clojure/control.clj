@@ -327,10 +327,6 @@
           clojure._core/IllegalArgumentException #"No matching clause: 2"
           (case 2 1 :ok))))
   (testing "sorting doesn't matter"
-    ;; Vanilla's `(sorted-map :a 1 :b 2)` and `(sorted-set 2 1 3)`
-    ;; iterations are dropped: our Keyword / generic values aren't yet
-    ;; `Comparable`, so the default compare explodes. The plain-map and
-    ;; plain-set rows still exercise order-insensitive matching.
     (let [test-fn
           #(case %
                 {:b 2 :a 1} :map
@@ -338,7 +334,9 @@
                 :default)]
       (are [result input] (= result (test-fn input))
            :map {:a 1 :b 2}
-           :set #{3 2 1})))
+           :map (sorted-map :a 1 :b 2)
+           :set #{3 2 1}
+           :set (sorted-set 2 1 3))))
   (testing "test constants are *not* evaluated"
     (let [test-fn
           ;; never write code like this...
