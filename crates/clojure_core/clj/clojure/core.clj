@@ -2223,8 +2223,8 @@
                                ~@(when needrec [recform-chunk]))
                              (when-let [~seq- (seq ~seq-)]
                                (if (chunked-seq? ~seq-)
-                                 (let [c# (chunk-first ~seq-)]
-                                   (recur (chunk-rest ~seq-) c#
+                                 (let [c# (clojure.lang.RT/chunk-first ~seq-)]
+                                   (recur (clojure.lang.RT/chunk-rest ~seq-) c#
                                           (count c#) 0))
                                  (let [~k (first ~seq-)]
                                    ~subform
@@ -2306,25 +2306,25 @@
                                                              (recur (inc ~gi)))
                                               (keyword? k) (err "Invalid 'for' keyword " k)
                                               :else (err "unreachable")))
-                                          `(do (chunk-append ~gb ~body-expr)
+                                          `(do (clojure.lang.RT/chunk-append ~gb ~body-expr)
                                                (recur (inc ~gi)))))]
                           `(fn ~giter [~gxs]
                              (lazy-seq
                                (loop [~gxs ~gxs]
                                  (when-let [~gxs (seq ~gxs)]
                                    (if (chunked-seq? ~gxs)
-                                     (let [c# (chunk-first ~gxs)
+                                     (let [c# (clojure.lang.RT/chunk-first ~gxs)
                                            size# (count c#)
-                                           ~gb (chunk-buffer size#)]
+                                           ~gb (clojure.lang.RT/chunk-buffer size#)]
                                        (if (loop [~gi 0]
                                              (if (< ~gi size#)
                                                (let [~bind (nth c# ~gi)]
                                                  ~(do-cmod mod-pairs))
                                                true))
-                                         (chunk-cons
-                                           (chunk ~gb)
-                                           (~giter (chunk-rest ~gxs)))
-                                         (chunk-cons (chunk ~gb) nil)))
+                                         (clojure.lang.RT/chunk-cons
+                                           (clojure.lang.RT/chunk ~gb)
+                                           (~giter (clojure.lang.RT/chunk-rest ~gxs)))
+                                         (clojure.lang.RT/chunk-cons (clojure.lang.RT/chunk ~gb) nil)))
                                      (let [~bind (first ~gxs)]
                                        ~(do-mod mod-pairs)))))))))))]
     `(let [iter# ~(emit-bind (to-groups seq-exprs))]

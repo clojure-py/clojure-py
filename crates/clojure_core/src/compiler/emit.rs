@@ -328,6 +328,14 @@ impl Compiler {
                 errors::err(format!("Unable to resolve: {}/{}", ns_name, sym.name))
             })?;
             if let Ok(var) = attr.cast::<crate::var::Var>() {
+                // Vanilla: cross-ns access to a `^:private` var is rejected.
+                let same_ns = target_ns.is(self.current_ns.bind(py));
+                if !same_ns && var.get().is_private(py) {
+                    return Err(errors::err(format!(
+                        "Var {}/{} is not public",
+                        ns_name, sym.name
+                    )));
+                }
                 let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
                 return Ok(Resolved::Var(ix));
             }
@@ -355,6 +363,14 @@ impl Compiler {
         if let Ok(core_ns) = modules.get_item("clojure.core") {
             if let Ok(attr) = core_ns.getattr(sym.name.as_ref()) {
                 if let Ok(var) = attr.cast::<crate::var::Var>() {
+                    // Bare-name fallback to clojure.core: same privacy rule.
+                    let same_ns = core_ns.is(self.current_ns.bind(py));
+                    if !same_ns && var.get().is_private(py) {
+                        return Err(errors::err(format!(
+                            "Var clojure.core/{} is not public",
+                            sym.name
+                        )));
+                    }
                     let ix = self.cur_mut().pool.intern_var(py, var.clone().unbind());
                     return Ok(Resolved::Var(ix));
                 }
