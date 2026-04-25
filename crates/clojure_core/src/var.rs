@@ -242,6 +242,28 @@ impl Var {
         true
     }
 
+    /// Read the `:private` bit from metadata. Returns `false` on any error
+    /// (safe default during compile-time dispatch).
+    pub fn is_private(&self, py: Python<'_>) -> bool {
+        let meta = match (*self.meta.load()).as_ref() {
+            Some(m) => m.clone_ref(py),
+            None => return false,
+        };
+        let kw = match crate::keyword::keyword(py, "private", None) {
+            Ok(k) => k.into_any(),
+            Err(_) => return false,
+        };
+        let val = match crate::rt::get(py, meta, kw, py.None()) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if val.is_none(py) { return false; }
+        if let Ok(b) = val.bind(py).cast::<pyo3::types::PyBool>() {
+            return b.is_true();
+        }
+        true
+    }
+
     /// Tag this Var as a macro — `(alter-meta! v assoc :macro true)`. If
     /// meta is currently nil, installs `{:macro true}` as a fresh arraymap.
     /// Uses a CAS loop so concurrent set_macro_flag / set_meta stay safe.
