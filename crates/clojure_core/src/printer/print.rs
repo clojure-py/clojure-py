@@ -120,12 +120,16 @@ fn pr_str_with(py: Python<'_>, x: PyObject, readable: bool) -> PyResult<String> 
 }
 
 fn f_display(f: f64) -> String {
-    // Use Python's repr so 3.14 stays 3.14 (not 3.14000000000001 etc).
-    // Python's str(float) is generally good enough.
-    // From Rust, {:?} produces 3.14 for 3.14; use that.
-    let s = format!("{:?}", f);
-    // Rust's {:?} on f64 writes "3.14" as "3.14" (good). For NaN: "NaN" — Clojure uses "##NaN" via tagged-literal; out of scope.
-    s
+    if f.is_nan() {
+        return "##NaN".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "##Inf".to_string() } else { "##-Inf".to_string() };
+    }
+    // Use Rust's {:?} so 3.14 stays "3.14" (and 1.0 stays "1.0"). Matches
+    // Clojure's printer: integer-valued floats include the decimal so the
+    // form round-trips through the reader as a Double.
+    format!("{:?}", f)
 }
 
 fn escape_string(s: &str) -> String {

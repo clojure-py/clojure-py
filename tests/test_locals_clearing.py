@@ -71,3 +71,115 @@ def test_loop_slot_survives_back_edge():
         "  (if (= i 5) acc "
         "    (recur (+ i 1) (+ acc i))))"
     ) == 0 + 1 + 2 + 3 + 4
+
+
+# ---------------------------------------------------------------------------
+# Closure capture / clearing — adapted from
+# clojure/test/clojure/test_clojure/clearing.clj.
+#
+# Vanilla uses `getDeclaredFields` + `setAccessible` to peek at closed-over
+# fields of a JVM Fn class and assert they are nil after the `:once` fn is
+# invoked. We have no JVM reflection — but the underlying property (a
+# captured value should be GC-able after the closure that holds it is
+# released) is observable via `weakref`. We don't have a `:once` meta-tag
+# specialization, so we test the general case: drop the closure itself and
+# verify the captured value gets GC'd.
+# ---------------------------------------------------------------------------
+
+def _bind(name, value):
+    eval_string(f"(def {name} nil)")
+    from clojure._core import find_ns, symbol
+    ns = find_ns(symbol("clojure.user"))
+    getattr(ns, name).bind_root(value)
+
+
+def _unbind(name):
+    from clojure._core import find_ns, symbol
+    ns = find_ns(symbol("clojure.user"))
+    getattr(ns, name).bind_root(None)
+
+
+def test_dropped_closure_releases_captured_value():
+    """If a closure captures `x` and we then drop the only reference to the
+    closure, the captured value must be GC-able."""
+    t = Tracked("captured")
+    ref = weakref.ref(t)
+    _bind("captured_target", t)
+    del t
+
+    # Build a closure that captures the local then drop our handle.
+    f = eval_string("(let [x captured_target] (fn [] x))")
+    assert f() is not None  # the captured value is reachable through f
+    _unbind("captured_target")
+    del f
+    gc.collect()
+    assert ref() is None
+
+
+def test_nested_closure_releases_captured_value():
+    """Nested closures: outer captures inner captures `x`. Drop both."""
+    t = Tracked("nested")
+    ref = weakref.ref(t)
+    _bind("nested_target", t)
+    del t
+
+    outer = eval_string(
+        "(let [x nested_target] "
+        "  (let [inner (fn [] x)] "
+        "    (fn [] (inner))))"
+    )
+    assert outer() is not None
+    _unbind("nested_target")
+    del outer
+    gc.collect()
+    assert ref() is None
+
+
+def test_conditional_closure_capture():
+    """A conditional inside the closure body that references `x` — we must
+    not over-clear `x` before the closure runs."""
+    t = Tracked("cond")
+    ref = weakref.ref(t)
+    _bind("cond_target", t)
+    del t
+
+    f = eval_string("(let [x cond_target] (fn [] (if true x nil)))")
+    assert f() is not None
+    _unbind("cond_target")
+    del f
+    gc.collect()
+    assert ref() is None
+
+
+def test_loop_inside_closure_does_not_break_capture():
+    """A `(loop [] x)` inside the closure body — capture must still work."""
+    t = Tracked("loop")
+    ref = weakref.ref(t)
+    _bind("loop_target", t)
+    del t
+
+    f = eval_string("(let [x loop_target] (fn [] (loop [] x)))")
+    assert f() is not None
+    _unbind("loop_target")
+    del f
+    gc.collect()
+    assert ref() is None
+
+
+def test_long_seq_capture_clears_eagerly():
+    """CLJ-2145 repro adapted: a closure that consumes a seq once should not
+    pin the seq's head — confirming consumption frees memory.
+    Vanilla used 1e9 elements to exhaust heap; we use a smaller sentinel."""
+    head = Tracked("head")
+    ref = weakref.ref(head)
+    _bind("seq_head", head)
+    del head
+
+    # Build a closure that walks a seq containing the tracked object.
+    eval_string(
+        "(let [x [seq_head]] "
+        "  ((fn [] (doseq [_ x] _))))"
+    )
+    _unbind("seq_head")
+    gc.collect()
+    assert ref() is None
