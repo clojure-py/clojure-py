@@ -28,6 +28,10 @@ impl PrintCtx {
     }
 }
 
+fn should_truncate_level(ctx: PrintCtx) -> bool {
+    matches!(ctx.level, Some(lvl) if ctx.depth >= lvl)
+}
+
 /// Print `x` to a string in reader-compatible form (strings quoted).
 pub fn pr_str(py: Python<'_>, x: PyObject) -> PyResult<String> {
     let ctx = read_print_vars(py, true);
@@ -236,6 +240,7 @@ fn escape_string(s: &str) -> String {
 }
 
 fn pr_list(py: Python<'_>, lst: PyObject, ctx: PrintCtx) -> PyResult<String> {
+    if should_truncate_level(ctx) { return Ok("#".to_string()); }
     let limit = ctx.length.map(|l| l.max(0) as usize);
     let mut parts: Vec<String> = Vec::new();
     let mut cur: PyObject = lst;
@@ -267,6 +272,7 @@ fn pr_vector(
     v: &crate::collections::pvector::PersistentVector,
     ctx: PrintCtx,
 ) -> PyResult<String> {
+    if should_truncate_level(ctx) { return Ok("#".to_string()); }
     let n = v.cnt as usize;
     let limit = ctx.length.map(|l| l.max(0) as usize).unwrap_or(n);
     let to_print = limit.min(n);
@@ -282,6 +288,7 @@ fn pr_vector(
 }
 
 fn pr_map(py: Python<'_>, m: PyObject, ctx: PrintCtx) -> PyResult<String> {
+    if should_truncate_level(ctx) { return Ok("#".to_string()); }
     // Iterate via Python __iter__ (yields keys for hash/array maps, MapEntries
     // for tree maps). Unify by treating the iter item as either a MapEntry or
     // a bare key (fetch value via val_at).
@@ -318,6 +325,7 @@ fn pr_map(py: Python<'_>, m: PyObject, ctx: PrintCtx) -> PyResult<String> {
 }
 
 fn pr_set(py: Python<'_>, s: PyObject, ctx: PrintCtx) -> PyResult<String> {
+    if should_truncate_level(ctx) { return Ok("#".to_string()); }
     let limit = ctx.length.map(|l| l.max(0) as usize);
     let b = s.bind(py);
     let iter = b.try_iter()?;
@@ -337,6 +345,7 @@ fn pr_set(py: Python<'_>, s: PyObject, ctx: PrintCtx) -> PyResult<String> {
 }
 
 fn pr_seq(py: Python<'_>, s: PyObject, ctx: PrintCtx) -> PyResult<String> {
+    if should_truncate_level(ctx) { return Ok("#".to_string()); }
     // Use rt::first/rt::next_ to walk.
     let limit = ctx.length.map(|l| l.max(0) as usize);
     let mut parts: Vec<String> = Vec::new();

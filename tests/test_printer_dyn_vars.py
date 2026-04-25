@@ -52,3 +52,36 @@ def test_print_length_nil_means_no_limit():
     """nil (the default) prints all elements — baseline."""
     src = '(pr-str [1 2 3 4 5])'
     assert e(src) == "[1 2 3 4 5]"
+
+
+# ---------- *print-level* ----------
+
+def test_print_level_zero_replaces_top_level_collection():
+    """*print-level* 0: any collection at top level prints as '#'."""
+    src = '(binding [*print-level* 0] (pr-str [1 2 3]))'
+    assert e(src) == "#"
+
+
+def test_print_level_one_truncates_inner():
+    """*print-level* 1: outer collection prints; inner collections become '#'."""
+    src = '(binding [*print-level* 1] (pr-str [1 [2 3]]))'
+    assert e(src) == "[1 #]"
+
+
+def test_print_level_two_allows_two_layers():
+    src = '(binding [*print-level* 2] (pr-str [1 [2 [3 4]]]))'
+    assert e(src) == "[1 [2 #]]"
+
+
+def test_print_level_primitives_at_any_depth():
+    """Primitives never get truncated by *print-level*."""
+    src = '(binding [*print-level* 0] (pr-str 42))'
+    assert e(src) == "42"
+    src2 = '(binding [*print-level* 0] (pr-str :keyword))'
+    assert e(src2) == ":keyword"
+
+
+def test_print_level_with_print_length():
+    """Combined: length + level interact correctly."""
+    src = '(binding [*print-level* 1 *print-length* 2] (pr-str [1 [2 3] [4 5]]))'
+    assert e(src) == "[1 # ...]"
