@@ -17,6 +17,18 @@ use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
 
+static FRACTION_CLS: once_cell::sync::OnceCell<Py<PyType>> = once_cell::sync::OnceCell::new();
+
+fn fraction_cls<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
+    if let Some(cls) = FRACTION_CLS.get() {
+        return Ok(cls.bind(py).clone());
+    }
+    let fractions = py.import("fractions")?;
+    let cls = fractions.getattr("Fraction")?.downcast_into::<PyType>()?;
+    let _ = FRACTION_CLS.set(cls.clone().unbind());
+    Ok(cls)
+}
+
 fn make_closure(
     py: Python<'_>,
     f: impl Fn(&Bound<'_, PyTuple>, Python<'_>) -> PyResult<PyObject> + Send + Sync + 'static,
@@ -813,8 +825,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let b = args.get_item(1)?;
         ensure_numeric(&a, "+")?;
         ensure_numeric(&b, "+")?;
-        let r = normalize_ratio(a.add(b)?)?;
-        let _ = py;
+        let r = normalize_ratio(py, a.add(b)?)?;
         Ok(r.unbind())
     })?;
     intern_fn(py, &rt_ns, "subtract", |args, py| {
@@ -823,8 +834,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let b = args.get_item(1)?;
         ensure_numeric(&a, "-")?;
         ensure_numeric(&b, "-")?;
-        let r = normalize_ratio(a.sub(b)?)?;
-        let _ = py;
+        let r = normalize_ratio(py, a.sub(b)?)?;
         Ok(r.unbind())
     })?;
     intern_fn(py, &rt_ns, "multiply", |args, py| {
@@ -833,8 +843,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let b = args.get_item(1)?;
         ensure_numeric(&a, "*")?;
         ensure_numeric(&b, "*")?;
-        let r = normalize_ratio(a.mul(b)?)?;
-        let _ = py;
+        let r = normalize_ratio(py, a.mul(b)?)?;
         Ok(r.unbind())
     })?;
     // Division matches vanilla Clojure semantics: int/int yields an exact
@@ -858,12 +867,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             }
             let fractions = py.import("fractions")?;
             let frac = fractions.getattr("Fraction")?.call1((&a, &b))?;
-            let denom = frac.getattr("denominator")?;
-            let one = 1i64.into_pyobject(py)?;
-            if denom.eq(&one)? {
-                return Ok(frac.getattr("numerator")?.unbind());
-            }
-            return Ok(frac.unbind());
+            return normalize_ratio(py, frac).map(|v| v.unbind());
         }
         // IEEE-754: when either operand is a float, division by zero yields
         // ±Inf / NaN (not an exception). Vanilla Clojure follows the JVM here.
@@ -897,12 +901,10 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             if a_neg != b_neg {
                 let one = 1i64.into_pyobject(py)?;
                 let q_adj = q.add(&one)?;
-                // Normalize Fraction result to int when denominator==1.
-                return Ok(normalize_ratio(q_adj)?.unbind());
+                return Ok(normalize_ratio(py, q_adj)?.unbind());
             }
         }
-        // Normalize Fraction result to int when denominator==1.
-        Ok(normalize_ratio(q)?.unbind())
+        Ok(normalize_ratio(py, q)?.unbind())
     })?;
 
     intern_fn(py, &rt_ns, "rem", |args, py| {
@@ -958,19 +960,18 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         need_args(args, 1, "inc")?;
         let one = 1i64.into_pyobject(py)?;
         let r = args.get_item(0)?.add(&one)?;
-        Ok(r.unbind())
+        normalize_ratio(py, r).map(|v| v.unbind())
     })?;
     intern_fn(py, &rt_ns, "dec", |args, py| {
         need_args(args, 1, "dec")?;
         let one = 1i64.into_pyobject(py)?;
         let r = args.get_item(0)?.sub(&one)?;
-        Ok(r.unbind())
+        normalize_ratio(py, r).map(|v| v.unbind())
     })?;
     intern_fn(py, &rt_ns, "negate", |args, py| {
         need_args(args, 1, "negate")?;
         let r = args.get_item(0)?.neg()?;
-        let _ = py;
-        Ok(r.unbind())
+        normalize_ratio(py, r).map(|v| v.unbind())
     })?;
     intern_fn(py, &rt_ns, "abs", |args, py| {
         need_args(args, 1, "abs")?;
@@ -4837,19 +4838,16 @@ fn is_exact_int(x: &Bound<'_, PyAny>) -> bool {
     x.cast::<PyInt>().is_ok() && x.cast::<PyBool>().is_err()
 }
 
-/// If `x` is a `fractions.Fraction` with denominator == 1, return its
-/// numerator as a plain Python `int`.  Otherwise return `x` unchanged.
-///
-/// This keeps arithmetic results canonical: `(* 1/2 2)` → `1` (int), not
-/// `Fraction(1,1)`.  Python's `Fraction` arithmetic always returns a
-/// `Fraction`, even when the result is whole, so we must normalise explicitly.
-fn normalize_ratio<'py>(x: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let py = x.py();
-    let fractions = py.import("fractions")?;
-    let frac_cls = fractions.getattr("Fraction")?;
+/// Reduce `Fraction(n, 1)` to plain int. Pass-through for non-Fraction values.
+fn normalize_ratio<'py>(py: Python<'py>, x: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    use pyo3::types::{PyFloat, PyInt};
+    if x.is_instance_of::<PyInt>() || x.is_instance_of::<PyFloat>() {
+        return Ok(x);
+    }
+    let frac_cls = fraction_cls(py)?;
     if x.is_instance(&frac_cls)? {
-        let denom = x.getattr("denominator")?;
         let one = 1i64.into_pyobject(py)?;
+        let denom = x.getattr("denominator")?;
         if denom.eq(&one)? {
             return Ok(x.getattr("numerator")?);
         }

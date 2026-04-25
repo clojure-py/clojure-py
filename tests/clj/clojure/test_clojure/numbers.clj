@@ -449,6 +449,5 @@
     (is (= 1/2 (rationalize 1/2))))
 
   (testing "hash respects equality"
-    ;; (= a b) ⇒ (= (hash a) (hash b))
     (is (= (hash (/ 4 2)) (hash 2)))
     (is (= (hash 1/2) (hash 1/2)))))
