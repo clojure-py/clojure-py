@@ -105,9 +105,12 @@ pub fn hash_combine(seed: i32, h: i32) -> i32 {
     let s = seed as u32;
     let h = h as u32;
     let golden: u32 = 0x9e3779b9;
+    // Java `int >> 2` is arithmetic (sign-extending). Rust `u32 >> 2` is
+    // logical. Do the right-shift in signed space, then bit-cast.
+    let s_shr2 = (seed >> 2) as u32;
     let combined = h
         .wrapping_add(golden)
         .wrapping_add(s.wrapping_shl(6))
-        .wrapping_add(s.wrapping_shr(2));
+        .wrapping_add(s_shr2);
     (s ^ combined) as i32
 }
