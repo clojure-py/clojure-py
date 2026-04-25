@@ -575,9 +575,7 @@
        (sorted-set)
        (sorted-set 1 2) )
 
-  ; equal and unique (dropped vector entries — PVector isn't Comparable
-  ; in our impl so `(sorted-set [])` would throw; that case is exercised
-  ; in vanilla but not portable until Comparable lands on PVector).
+  ; equal and unique
   (are [x] (and (= (sorted-set x) #{x})
                 (= (sorted-set x x) (sorted-set x)))
       nil
@@ -588,7 +586,9 @@
       \c
       "" "abc"
       'sym
-      :kw)
+      :kw
+      [] [1 2]
+  )
 
   (are [x y] (= x y)
       ; generating
@@ -602,7 +602,8 @@
       ; special cases
       (sorted-set nil) #{nil}
       (sorted-set 1 nil) #{nil 1}
-      (sorted-set nil 2) #{nil 2}))
+      (sorted-set nil 2) #{nil 2}
+      (sorted-set []) #{[]} ))
 
 
 (deftest test-sorted-set-by
