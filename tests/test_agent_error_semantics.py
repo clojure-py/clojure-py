@@ -53,3 +53,43 @@ def test_options_in_either_order_handler_first():
       (error-mode (agent nil :error-handler h :error-mode :fail)))
     """
     assert _ev(src) == _ev(":fail")
+
+
+# ---------- *agent* binding inside error handler ----------
+
+def test_agent_star_bound_inside_error_handler():
+    """Vanilla: *agent* refers to the failing agent inside the handler thread.
+
+    The handler captures *agent* into an atom; we read it on the main thread
+    after `await` ensures the action and handler have run.
+    """
+    src = """
+    (let [captured (atom nil)
+          handler  (fn [_agt _err] (reset! captured *agent*))
+          a        (agent nil :error-handler handler)]
+      (send a (fn [_] (throw (clojure._core/IllegalStateException "boom"))))
+      (await a)
+      [a @captured])
+    """
+    pair = _ev(src)
+    a, captured = pair[0], pair[1]
+    assert captured is a, "*agent* in handler should be the failing agent"
+
+
+def test_send_to_star_agent_from_handler():
+    """Restored vanilla test: handler can `send *agent*` to the failing agent.
+
+    The handler closes over `done`, sends a function to *agent* that delivers
+    `done`. We assert the delivery completes within timeout.
+    """
+    src = """
+    (let [done    (promise)
+          handler (fn [_agt _err]
+                    (send *agent* (fn [_] (deliver done :got-it))))
+          a       (agent nil :error-handler handler)]
+      (send a (fn [_] (throw (clojure._core/IllegalStateException "x"))))
+      (await a)
+      @done)
+    """
+    result = _ev(src)
+    assert result == _ev(":got-it"), f"expected :got-it, got {result!r}"

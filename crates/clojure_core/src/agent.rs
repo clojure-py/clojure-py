@@ -662,19 +662,22 @@ fn execute(py: Python<'_>, agent: &Py<Agent>, action: Action) {
         Ok(new_val)
     })();
 
+    // Run the error handler (if any) WHILE *agent* is still bound to this
+    // agent — vanilla `Agent.executeAction` keeps the binding active across
+    // the handler invocation, so handlers can `send *agent*` etc.
+    if let Err(err) = result {
+        handle_error(py, agent, err);
+    }
+
     // Pop *agent* binding and convey snapshot.
     if agent_star.is_some() {
         BINDING_STACK.with(|s| { s.borrow_mut().pop(); });
     }
     BINDING_STACK.with(|s| { s.borrow_mut().pop(); });
 
-    // Install any error BEFORE decrementing pending so `await` observers see
-    // a consistent state (agent-error populated once the action is "done").
-    if let Err(err) = result {
-        handle_error(py, agent, err);
-    }
-
-    // Decrement pending + notify so `await`/`await-for` can unblock.
+    // Decrement pending + notify so `await`/`await-for` can unblock. Keep this
+    // AFTER pops so any send issued from the handler is observable as a
+    // distinct pending action when the unblocked `await` runs.
     {
         let this = agent.bind(py).get();
         let mut p = this.pending.lock();
