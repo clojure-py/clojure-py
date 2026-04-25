@@ -813,7 +813,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let b = args.get_item(1)?;
         ensure_numeric(&a, "+")?;
         ensure_numeric(&b, "+")?;
-        let r = a.add(b)?;
+        let r = normalize_ratio(a.add(b)?)?;
         let _ = py;
         Ok(r.unbind())
     })?;
@@ -823,7 +823,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let b = args.get_item(1)?;
         ensure_numeric(&a, "-")?;
         ensure_numeric(&b, "-")?;
-        let r = a.sub(b)?;
+        let r = normalize_ratio(a.sub(b)?)?;
         let _ = py;
         Ok(r.unbind())
     })?;
@@ -833,7 +833,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let b = args.get_item(1)?;
         ensure_numeric(&a, "*")?;
         ensure_numeric(&b, "*")?;
-        let r = a.mul(b)?;
+        let r = normalize_ratio(a.mul(b)?)?;
         let _ = py;
         Ok(r.unbind())
     })?;
@@ -897,10 +897,12 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             if a_neg != b_neg {
                 let one = 1i64.into_pyobject(py)?;
                 let q_adj = q.add(&one)?;
-                return Ok(q_adj.unbind());
+                // Normalize Fraction result to int when denominator==1.
+                return Ok(normalize_ratio(q_adj)?.unbind());
             }
         }
-        Ok(q.unbind())
+        // Normalize Fraction result to int when denominator==1.
+        Ok(normalize_ratio(q)?.unbind())
     })?;
 
     intern_fn(py, &rt_ns, "rem", |args, py| {
@@ -4833,6 +4835,26 @@ fn nth_seq_walk(py: Python<'_>, coll: PyObject, i: PyObject, default: Option<PyO
 fn is_exact_int(x: &Bound<'_, PyAny>) -> bool {
     use pyo3::types::PyInt;
     x.cast::<PyInt>().is_ok() && x.cast::<PyBool>().is_err()
+}
+
+/// If `x` is a `fractions.Fraction` with denominator == 1, return its
+/// numerator as a plain Python `int`.  Otherwise return `x` unchanged.
+///
+/// This keeps arithmetic results canonical: `(* 1/2 2)` → `1` (int), not
+/// `Fraction(1,1)`.  Python's `Fraction` arithmetic always returns a
+/// `Fraction`, even when the result is whole, so we must normalise explicitly.
+fn normalize_ratio<'py>(x: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let py = x.py();
+    let fractions = py.import("fractions")?;
+    let frac_cls = fractions.getattr("Fraction")?;
+    if x.is_instance(&frac_cls)? {
+        let denom = x.getattr("denominator")?;
+        let one = 1i64.into_pyobject(py)?;
+        if denom.eq(&one)? {
+            return Ok(x.getattr("numerator")?);
+        }
+    }
+    Ok(x)
 }
 
 /// Reject non-numeric arguments to arithmetic ops. Vanilla raises

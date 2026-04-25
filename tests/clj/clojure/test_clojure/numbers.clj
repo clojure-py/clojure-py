@@ -366,3 +366,89 @@
           (/ 1 nan)
           (/ 0.0 nan)
           (/ nan nan)))))
+
+;; --- Ratios (vanilla JVM Ratio semantics) ---------------------------------
+
+(deftest test-ratios
+  (testing "reader literal"
+    (is (= 1/2 (read-string "1/2")))
+    (is (= 3/4 (read-string "3/4")))
+    (is (= -1/2 (read-string "-1/2")))
+    ;; reduce-to-int when denominator becomes 1
+    (is (= 2 (read-string "4/2")))
+    (is (integer? (read-string "4/2")))
+    ;; reduce to lowest terms
+    (is (= 1/2 (read-string "2/4")))
+    ;; reader errors
+    (is (thrown? clojure._core/ReaderError (read-string "1/0")))
+    (is (thrown? clojure._core/ReaderError (read-string "1/-2"))))
+
+  (testing "printer surface form"
+    (is (= "1/2" (pr-str 1/2)))
+    (is (= "3/4" (pr-str 3/4)))
+    (is (= "-1/2" (pr-str -1/2)))
+    (is (= "2"   (pr-str (/ 4 2))))
+    ;; round-trip
+    (is (= 1/2 (read-string (pr-str 1/2)))))
+
+  (testing "equality (Ratio ≠ Float, Ratio ≠ non-whole Int)"
+    (is (= 1/2 1/2))
+    (is (not= 1/2 0.5))
+    (is (not= 0.5 1/2))
+    (is (not= 1/2 1))
+    (is (not= 1   1/2))
+    ;; reduced ratio compares int-to-int
+    (is (= 2 (/ 4 2))))
+
+  (testing "numeric equality (==) DOES bridge categories"
+    (is (== 1/2 0.5))
+    (is (== (/ 4 2) 2.0))
+    (is (== 1/2 1/2)))
+
+  (testing "arithmetic"
+    (is (= 5/6 (+ 1/2 1/3)))
+    (is (= 1   (* 1/2 2)))
+    (is (= 1/6 (* 1/2 1/3)))
+    (is (= 1/2 (- 1   1/2)))
+    (is (= 0.0 (- 1/2 0.5))))
+
+  (testing "quot / rem / mod with ratios"
+    (is (= 1   (quot 1/2 1/3)))
+    (is (= 1/6 (rem  1/2 1/3)))
+    (is (= 1/6 (mod  1/2 1/3)))
+    (is (thrown? builtins/ZeroDivisionError (quot 1/2 0))))
+
+  (testing "comparators"
+    (is (< 1/2 0.6))
+    (is (< 1/3 1/2))
+    (is (<= 1/2 1/2))
+    (is (> 2/3 1/2))
+    (is (>= 1/2 1/2)))
+
+  (testing "predicates"
+    (is (ratio? 1/2))
+    (is (not (ratio? 2)))
+    (is (not (ratio? 0.5)))
+    (is (rational? 1/2))
+    (is (rational? 2))
+    (is (not (rational? 0.5)))
+    (is (not (integer? 1/2)))
+    (is (integer? (/ 4 2))))
+
+  (testing "coercion"
+    (is (= 0   (int 1/2)))   ; truncates toward zero
+    (is (= 0.5 (float 1/2)))
+    (is (= 0.5 (double 1/2)))
+    (is (= 0   (long 1/2)))
+    (is (= 1   (numerator 1/2)))
+    (is (= 2   (denominator 1/2))))
+
+  (testing "rationalize"
+    (is (= 1/2 (rationalize 0.5)))
+    (is (= 1   (rationalize 1)))
+    (is (= 1/2 (rationalize 1/2))))
+
+  (testing "hash respects equality"
+    ;; (= a b) ⇒ (= (hash a) (hash b))
+    (is (= (hash (/ 4 2)) (hash 2)))
+    (is (= (hash 1/2) (hash 1/2)))))
