@@ -878,7 +878,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             return Ok(r.into_pyobject(py)?.into_any().unbind());
         }
         let r = a.div(b)?;
-        Ok(r.unbind())
+        normalize_ratio(py, r).map(|v| v.unbind())
     })?;
 
     // Clojure's quot/rem truncate toward zero (JVM semantics). Python `//`
@@ -924,11 +924,11 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             if a_neg != b_neg {
                 // r_quot = r - b (Clojure rem's sign follows dividend)
                 let r_adj = r.sub(&b)?;
-                return Ok(r_adj.unbind());
+                return normalize_ratio(py, r_adj).map(|v| v.unbind());
             }
         }
         let _ = q;
-        Ok(r.unbind())
+        normalize_ratio(py, r).map(|v| v.unbind())
     })?;
 
     // --- Ordering 2-arg primitives (return Python bool). ---

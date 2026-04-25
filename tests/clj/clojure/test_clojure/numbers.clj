@@ -9,8 +9,8 @@
 ;; Adapted from clojure/test/clojure/test_clojure/numbers.clj.
 ;;
 ;; Adaptations from vanilla:
-;;   * Dropped all rows containing ratio literals (`1/2`, `2/3`, etc.) and
-;;     BigDecimal/BigInt (`1M`, `1N`) — reader doesn't parse these.
+;;   * Dropped all rows containing BigDecimal/BigInt (`1M`, `1N`) — reader
+;;     doesn't parse these literals.
 ;;   * Dropped JVM-only blocks: BigInteger-conversions, Coerced-BigDecimal,
 ;;     unchecked-cast-num-obj/prim/char, test-prim-with-matching-hint,
 ;;     test-arbitrary-precision-subtract, test-array-types, warn-on-boxed,
@@ -62,7 +62,11 @@
       (+ -1 +2 -3) -2
 
       (+ 1 -1) 0
-      (+ -1 1) 0)
+      (+ -1 1) 0
+
+      (+ 2/3) 2/3
+      (+ 2/3 1) 5/3
+      (+ 2/3 1/3) 1)
 
   (are [x y] (< (abs (- x y)) DELTA)
       (+ 1.2) 1.2
@@ -86,7 +90,11 @@
       (- 1 -2 -3) 6
 
       (- 1 1) 0
-      (- -1 -1) 0)
+      (- -1 -1) 0
+
+      (- 2/3) -2/3
+      (- 2/3 1) -1/3
+      (- 2/3 1/3) 1/3)
 
   (are [x y] (< (abs (- x y)) DELTA)
       (- 1.2) -1.2
@@ -108,20 +116,26 @@
 
       (* 0) 0
       (* 0 0) 0
-      (* 0 1 2 3) 0))
+      (* 0 1 2 3) 0
+
+      (* 1/2) 1/2
+      (* 1/2 1/3) 1/6
+      (* 1/2 1/3 -1/4) -1/24))
 
 
 (deftest test-divide
-  ;; Note: in clojure-py, `/` on two integers returns a float (Python `/`)
-  ;; rather than a Ratio. Ratios are deferred — vanilla returns `1/2` for
-  ;; `(/ 2)` but here we get `0.5`.
   (are [x y] (= x y)
+      (/ 2) 1/2
       (/ 4 2) 2
       (/ 24 3 2) 4
       (/ 24 3 2 -1) -4
 
+      (/ -2) -1/2
       (/ -4 -2) 2
       (/ -4 2) -2)
+
+  (is (integer? (/ 1 -1/2)))
+  (is (integer? (/ 0 -1/2)))
 
   (are [x y] (< (abs (- x y)) DELTA)
       (/ 4.5 3) 1.5
@@ -140,6 +154,10 @@
     (mod 3 2) 1
     (mod 6 4) 2
     (mod 0 5) 0
+
+    (mod 2 1/2) 0
+    (mod 2/3 1/2) 1/6
+    (mod 1 2/3) 1/3
 
     (mod 4.0 2.0) 0.0
     (mod 4.5 2.0) 0.5
@@ -179,6 +197,10 @@
     (rem 6 4) 2
     (rem 0 5) 0
 
+    (rem 2 1/2) 0
+    (rem 2/3 1/2) 1/6
+    (rem 1 2/3) 1/3
+
     (rem 4.0 2.0) 0.0
     (rem 4.5 2.0) 0.5
 
@@ -203,6 +225,10 @@
     (quot 6 4) 1
     (quot 0 5) 0
 
+    (quot 2 1/2) 4
+    (quot 2/3 1/2) 1
+    (quot 1 2/3) 1
+
     (quot 42 5) 8
     (quot 42 -5) -8
     (quot -42 5) -8
@@ -215,7 +241,8 @@
   (let [nums [[(int 4) (int 0) (int -4)]
               [(long 5) (long 0) (long -5)]
               [(float 7.0) (float 0.0) (float -7.0)]
-              [(double 8.0) (double 0.0) (double -8.0)]]
+              [(double 8.0) (double 0.0) (double -8.0)]
+              [2/3 0 -2/3]]
         pred-result [[pos?  [true  false false]]
                      [zero? [false true  false]]
                      [neg?  [false false true]]]]
@@ -233,6 +260,7 @@
   (is (even? 0))
   (is (not (even? 5)))
   (is (even? 8))
+  (is (thrown? clojure._core/IllegalArgumentException (even? 1/2)))
   (is (thrown? clojure._core/IllegalArgumentException (even? (double 10)))))
 
 (deftest test-odd?
@@ -241,6 +269,7 @@
   (is (not (odd? 0)))
   (is (odd? 5))
   (is (not (odd? 8)))
+  (is (thrown? clojure._core/IllegalArgumentException (odd? 1/2)))
   (is (thrown? clojure._core/IllegalArgumentException (odd? (double 10)))))
 
 
