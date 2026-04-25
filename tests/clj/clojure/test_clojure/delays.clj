@@ -7,8 +7,6 @@
 ;;     Dropped.
 ;;   * `(throw (Exception. "broken"))` → inline
 ;;     `(throw (clojure._core/IllegalStateException "broken"))`.
-;;   * `(catch Exception e e)` → `(catch clojure._core/IllegalStateException e e)`
-;;     so the catch actually matches our thrown class.
 
 (ns clojure.test-clojure.delays
   (:use clojure.test))
@@ -27,7 +25,7 @@
         d (delay (f))
         try-call #(try
                     @d
-                    (catch clojure._core/IllegalStateException e e))
+                    (catch Exception e e))
         first-result (try-call)]
     (is (instance? clojure._core/IllegalStateException first-result))
     (is (identical? first-result (try-call)))))

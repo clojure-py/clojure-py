@@ -20,7 +20,7 @@
 (defn- get-exception [expression]
   (try (eval expression)
        nil
-       (catch builtins/Exception t
+       (catch Exception t
          t)))
 
 (deftest catch-receives-exception-from-eval
