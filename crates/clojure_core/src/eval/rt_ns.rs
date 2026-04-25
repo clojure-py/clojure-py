@@ -270,19 +270,18 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         need_args(args, 2, "num-equiv")?;
         let a = args.get_item(0)?;
         let b = args.get_item(1)?;
-        // Fast path: if neither is a float, Python's `==` is correct.
         let a_is_float = a.is_instance_of::<PyFloat>();
         let b_is_float = b.is_instance_of::<PyFloat>();
+        // Vanilla `Numbers.equiv` widens cross-category numeric pairs through
+        // BigDecimal. We approximate by promoting Ratio/Decimal operands to
+        // f64 when the other side is a float, matching JVM `doubleValue`
+        // semantics for in-range values. (== 0.1 (decimal "0.1")) is true.
         let r = if a_is_float || b_is_float {
-            // Promote a Fraction operand to f64 to mirror JVM Numbers.equiv(Ratio, Double).
-            // Python's Fraction.__eq__(0.001) is False (exact-rational comparison) where
-            // the JVM widens both to double and compares.
             let frac_cls = fraction_cls(py)?;
-            if !a_is_float && a.is_instance(&frac_cls)? {
-                let a_f: f64 = a.extract()?;
-                let b_f: f64 = b.extract()?;
-                a_f == b_f
-            } else if !b_is_float && b.is_instance(&frac_cls)? {
+            let dec_cls = decimal_cls(py)?;
+            let a_promotes = !a_is_float && (a.is_instance(&frac_cls)? || a.is_instance(&dec_cls)?);
+            let b_promotes = !b_is_float && (b.is_instance(&frac_cls)? || b.is_instance(&dec_cls)?);
+            if a_promotes || b_promotes {
                 let a_f: f64 = a.extract()?;
                 let b_f: f64 = b.extract()?;
                 a_f == b_f
