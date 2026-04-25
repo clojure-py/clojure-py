@@ -273,10 +273,18 @@
 
 ; Regex Support
 ; re-matcher re-find re-matches re-groups re-seq
-;; Skipped: `test-regex-matcher`. We expose `re-matcher` / `re-groups` and
-;; stateful `re-find` advancement, but the matcher object isn't `Indexed`,
-;; so the `(nth matcher i)` / `(nth matcher i :foo)` assertions in vanilla
-;; can't run. Restorable once the matcher implements Indexed.
+(deftest test-regex-matcher
+  (let [matcher (re-matcher #"(\d{2})/(\d{2})/(\d{4})" "12/02/1975")]
+    (is (= ["12/02/1975" "12" "02" "1975"] (re-find matcher)))
+    (is (= ["12/02/1975" "12" "02" "1975"] (re-groups matcher)))
+    (is (= "12/02/1975" (nth matcher 0) (nth matcher 0 :foo)))
+    (is (= "12" (nth matcher 1) (nth matcher 1 :foo)))
+    (is (= "02" (nth matcher 2) (nth matcher 2 :foo)))
+    (is (= "1975" (nth matcher 3) (nth matcher 3 :foo)))
+    (is (thrown? builtins/IndexError (nth matcher -1)))
+    (is (= :foo (nth matcher -1 :foo)))
+    (is (thrown? builtins/IndexError (nth matcher 4)))
+    (is (= :foo (nth matcher 4 :foo)))))
 
 ; update
 
