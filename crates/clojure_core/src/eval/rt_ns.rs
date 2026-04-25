@@ -254,22 +254,29 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // For Ratio (fractions.Fraction) vs float, we convert the ratio to float
     // first, mirroring JVM Numbers.equiv(Ratio, Double).
     intern_fn(py, &rt_ns, "num-equiv", |args, py| {
+        use pyo3::types::PyFloat;
         need_args(args, 2, "num-equiv")?;
         let a = args.get_item(0)?;
         let b = args.get_item(1)?;
-        // Detect ratio-vs-float and float-vs-ratio: convert ratio to float.
-        let fractions = py.import("fractions")?;
-        let frac_cls = fractions.getattr("Fraction")?;
-        let a_is_ratio = a.is_instance(&frac_cls)?;
-        let b_is_ratio = b.is_instance(&frac_cls)?;
-        let r = if a_is_ratio && b.is_instance_of::<pyo3::types::PyFloat>() {
-            let a_f: f64 = a.call_method0("__float__")?.extract()?;
-            let b_f: f64 = b.extract()?;
-            a_f == b_f
-        } else if b_is_ratio && a.is_instance_of::<pyo3::types::PyFloat>() {
-            let b_f: f64 = b.call_method0("__float__")?.extract()?;
-            let a_f: f64 = a.extract()?;
-            a_f == b_f
+        // Fast path: if neither is a float, Python's `==` is correct.
+        let a_is_float = a.is_instance_of::<PyFloat>();
+        let b_is_float = b.is_instance_of::<PyFloat>();
+        let r = if a_is_float || b_is_float {
+            // Promote a Fraction operand to f64 to mirror JVM Numbers.equiv(Ratio, Double).
+            // Python's Fraction.__eq__(0.001) is False (exact-rational comparison) where
+            // the JVM widens both to double and compares.
+            let frac_cls = fraction_cls(py)?;
+            if !a_is_float && a.is_instance(&frac_cls)? {
+                let a_f: f64 = a.extract()?;
+                let b_f: f64 = b.extract()?;
+                a_f == b_f
+            } else if !b_is_float && b.is_instance(&frac_cls)? {
+                let a_f: f64 = a.extract()?;
+                let b_f: f64 = b.extract()?;
+                a_f == b_f
+            } else {
+                a.eq(&b)?
+            }
         } else {
             a.eq(&b)?
         };
