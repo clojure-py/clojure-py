@@ -57,6 +57,15 @@
 (def fnext  (fn* fnext  [x] (first (next x))))
 (def nnext  (fn* nnext  [x] (next (next x))))
 
+;; Common JVM exception names exposed for `catch` clauses. Vanilla forms like
+;; `(catch Exception e ...)` resolve to these; our project exceptions
+;; (IllegalStateException, IllegalArgumentException, ArityException,
+;; ExceptionInfo) all descend from builtins.Exception. `Throwable` maps to
+;; BaseException so it also catches BaseException-derived signals like
+;; SystemExit (matching vanilla `Throwable` as the root).
+(def Exception builtins/Exception)
+(def Throwable builtins/BaseException)
+
 ;; --- seq (lines 128-139) ---
 (def seq (fn* seq [coll] (clojure.lang.RT/seq coll)))
 
