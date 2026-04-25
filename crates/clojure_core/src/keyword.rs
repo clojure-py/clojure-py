@@ -61,6 +61,39 @@ impl Keyword {
 
     fn __str__(&self) -> String { self.__repr__() }
 
+    fn __lt__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let o = other.cast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("can only compare Keyword to Keyword")
+        })?;
+        let o = o.get();
+        // Sort by (ns, name) lexicographically — vanilla `Keyword.compareTo`
+        // delegates to `Symbol.compareTo`, which orders unqualified before
+        // qualified, then by namespace, then by name.
+        let self_pair = (self.ns.as_deref(), self.name.as_ref());
+        let other_pair = (o.ns.as_deref(), o.name.as_ref());
+        Ok(match (self_pair.0, other_pair.0) {
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (None, None) => self_pair.1 < other_pair.1,
+            (Some(a), Some(b)) => (a, self_pair.1) < (b, other_pair.1),
+        })
+    }
+
+    fn __gt__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let o = other.cast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("can only compare Keyword to Keyword")
+        })?;
+        let o = o.get();
+        let self_pair = (self.ns.as_deref(), self.name.as_ref());
+        let other_pair = (o.ns.as_deref(), o.name.as_ref());
+        Ok(match (self_pair.0, other_pair.0) {
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => self_pair.1 > other_pair.1,
+            (Some(a), Some(b)) => (a, self_pair.1) > (b, other_pair.1),
+        })
+    }
+
     // Callable form: (:k m) or (:k m default)
     #[pyo3(signature = (coll, default=None))]
     fn __call__(&self, py: Python<'_>, coll: &Bound<'_, PyAny>, default: Option<PyObject>) -> PyResult<PyObject> {

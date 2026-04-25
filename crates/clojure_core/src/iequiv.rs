@@ -1,6 +1,6 @@
 use clojure_core_macros::protocol;
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
+use pyo3::types::{PyAny, PyBool, PyCFunction, PyDict, PyFloat, PyInt, PyTuple};
 
 type PyObject = Py<PyAny>;
 
@@ -9,22 +9,114 @@ pub trait IEquiv: Sized {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool>;
 }
 
-use pyo3::types::{PyCFunction, PyDict, PyTuple};
+/// Categorize a value for vanilla-Clojure-equivalent equiv. Mirrors the JVM
+/// `Util.equiv` + `Numbers.equal`/`category` rules: `bool` is its own thing
+/// (Boolean is not a Number on the JVM), Long-like and Double-like are both
+/// Numbers but distinct categories, so they never compare equal under `=`.
+#[derive(Copy, Clone, PartialEq)]
+enum Cat { Bool, Int, Float }
 
-/// Typed thunk for Python == fallback. invoke1 (target + 1 extra = other).
-fn py_eq_thunk(
-    py: Python<'_>,
-    target: &Py<PyAny>,
-    other: Py<PyAny>,
-) -> PyResult<Py<PyAny>> {
+#[inline]
+fn classify(v: &Bound<'_, PyAny>) -> Option<Cat> {
+    // Order matters: bool subclasses int in Python, so check it first.
+    if v.is_instance_of::<PyBool>() { Some(Cat::Bool) }
+    else if v.is_instance_of::<PyInt>() { Some(Cat::Int) }
+    else if v.is_instance_of::<PyFloat>() { Some(Cat::Float) }
+    else { None }
+}
+
+/// Default equiv: Python `==`. Used for opaque user types where Python's
+/// equality is the only thing we know about them.
+fn py_eq_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
     let eq_result = target.bind(py).eq(other.bind(py))?;
-    Ok(pyo3::types::PyBool::new(py, eq_result).to_owned().unbind().into_any())
+    Ok(PyBool::new(py, eq_result).to_owned().unbind().into_any())
+}
+
+/// `bool` equiv: only equal to other booleans. Without this, `(= 1 true)`
+/// returns true because Python's `True == 1`.
+fn py_eq_bool_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let other_b = other.bind(py);
+    let result = if other_b.is_instance_of::<PyBool>() {
+        target.bind(py).eq(other_b)?
+    } else { false };
+    Ok(PyBool::new(py, result).to_owned().unbind().into_any())
+}
+
+/// `int` (non-bool) equiv: matches other ints (Python `==`) but never
+/// matches `bool` or `float` — vanilla treats Long and Double as distinct
+/// numeric categories, so `(= 1 1.0) → false`.
+fn py_eq_int_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let other_b = other.bind(py);
+    let result = match classify(other_b) {
+        Some(Cat::Int) => target.bind(py).eq(other_b)?,
+        Some(Cat::Bool) | Some(Cat::Float) => false,
+        None => target.bind(py).eq(other_b)?,
+    };
+    Ok(PyBool::new(py, result).to_owned().unbind().into_any())
+}
+
+/// `float` equiv: never matches `bool` or `int`; matches other floats.
+fn py_eq_float_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let other_b = other.bind(py);
+    let result = match classify(other_b) {
+        Some(Cat::Float) => target.bind(py).eq(other_b)?,
+        Some(Cat::Bool) | Some(Cat::Int) => false,
+        None => target.bind(py).eq(other_b)?,
+    };
+    Ok(PyBool::new(py, result).to_owned().unbind().into_any())
+}
+
+/// Build a `PyCFunction` closure that calls `thunk` for IEquiv/equiv.
+fn wrapper_for(
+    py: Python<'_>,
+    thunk: fn(Python<'_>, &Py<PyAny>, Py<PyAny>) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let f = PyCFunction::new_closure(
+        py,
+        None,
+        None,
+        move |inner: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
+            let py = inner.py();
+            let this = inner.get_item(0)?.unbind();
+            let other = inner.get_item(1)?.unbind();
+            thunk(py, &this, other)
+        },
+    )?;
+    Ok(f.unbind().into_any())
+}
+
+/// Eagerly install equiv impl for a specific Python type. Required for
+/// `bool`/`int`/`float` because Python's `bool ⊂ int` MRO causes the
+/// legacy-mirror lookup to find int's impl when given a bool — pre-registering
+/// each type with its exact-type key short-circuits that.
+fn install_for_type(
+    py: Python<'_>,
+    proto: &Bound<'_, crate::Protocol>,
+    ty: Bound<'_, pyo3::types::PyType>,
+    thunk: fn(Python<'_>, &Py<PyAny>, Py<PyAny>) -> PyResult<Py<PyAny>>,
+) -> PyResult<()> {
+    let wrapper = wrapper_for(py, thunk)?;
+    let impls = PyDict::new(py);
+    impls.set_item("equiv", &wrapper)?;
+    proto.get().extend_type(py, ty.clone(), impls)?;
+    if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "IEquiv", "equiv") {
+        let mut fns = crate::protocol_fn::InvokeFns::empty();
+        fns.invoke1 = Some(thunk as crate::protocol_fn::InvokeFn1);
+        pfn.bind(py).get().extend_with_native(ty, fns);
+    }
+    Ok(())
 }
 
 pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let iequiv_any = m.getattr("IEquiv")?;
     let iequiv_proto: &Bound<'_, crate::Protocol> = iequiv_any.cast()?;
 
+    // Pre-register Python primitive types with vanilla-Clojure semantics.
+    install_for_type(py, iequiv_proto, py.get_type::<PyBool>(), py_eq_bool_thunk)?;
+    install_for_type(py, iequiv_proto, py.get_type::<PyInt>(), py_eq_int_thunk)?;
+    install_for_type(py, iequiv_proto, py.get_type::<PyFloat>(), py_eq_float_thunk)?;
+
+    // For everything else (user types, etc.), fall back to Python `==`.
     let fallback = PyCFunction::new_closure(
         py,
         None,
@@ -36,21 +128,9 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
             let _method_key: String = args.get_item(1)?.extract()?;
             let target = args.get_item(2)?;
 
-            let eq_wrapper = PyCFunction::new_closure(
-                py,
-                None,
-                None,
-                |inner: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
-                    let py = inner.py();
-                    let this = inner.get_item(0)?;
-                    let other = inner.get_item(1)?;
-                    let eq_result = this.eq(other)?;
-                    Ok(pyo3::types::PyBool::new(py, eq_result).to_owned().unbind().into_any())
-                },
-            )?;
-
+            let wrapper = wrapper_for(py, py_eq_thunk)?;
             let impls = PyDict::new(py);
-            impls.set_item("equiv", &eq_wrapper)?;
+            impls.set_item("equiv", &wrapper)?;
             let ty = target.get_type();
             proto.get().extend_type(py, ty.clone(), impls)?;
             if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "IEquiv", "equiv") {

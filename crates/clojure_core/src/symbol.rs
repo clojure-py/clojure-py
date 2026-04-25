@@ -69,6 +69,37 @@ impl Symbol {
         self.__repr__()
     }
 
+    fn __lt__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let o = other.cast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("can only compare Symbol to Symbol")
+        })?;
+        let o = o.get();
+        // Vanilla `Symbol.compareTo`: unqualified < qualified, then namespace, then name.
+        let self_pair = (self.ns.as_deref(), self.name.as_ref());
+        let other_pair = (o.ns.as_deref(), o.name.as_ref());
+        Ok(match (self_pair.0, other_pair.0) {
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (None, None) => self_pair.1 < other_pair.1,
+            (Some(a), Some(b)) => (a, self_pair.1) < (b, other_pair.1),
+        })
+    }
+
+    fn __gt__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let o = other.cast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("can only compare Symbol to Symbol")
+        })?;
+        let o = o.get();
+        let self_pair = (self.ns.as_deref(), self.name.as_ref());
+        let other_pair = (o.ns.as_deref(), o.name.as_ref());
+        Ok(match (self_pair.0, other_pair.0) {
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => self_pair.1 > other_pair.1,
+            (Some(a), Some(b)) => (a, self_pair.1) > (b, other_pair.1),
+        })
+    }
+
     #[getter]
     fn meta(&self, py: Python<'_>) -> Option<PyObject> {
         self.meta.as_ref().map(|o| o.clone_ref(py))

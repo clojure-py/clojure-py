@@ -42,6 +42,10 @@ impl VectorRSeq {
     fn __hash__(slf: Py<Self>, py: Python<'_>) -> PyResult<i64> {
         crate::rt::hash_eq(py, slf.into_any())
     }
+
+    fn __repr__(slf: Py<Self>, py: Python<'_>) -> PyResult<String> {
+        crate::seqs::cons::format_seq(py, slf.into_any())
+    }
 }
 
 #[implements(ISeq)]
@@ -104,17 +108,7 @@ impl IEquiv for VectorRSeq {
 #[implements(IHashEq)]
 impl IHashEq for VectorRSeq {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let mut h: i64 = 1;
-        let mut cur: PyObject = this.into_any();
-        loop {
-            let s = crate::rt::seq(py, cur)?;
-            if s.is_none(py) { break; }
-            let head = crate::rt::first(py, s.clone_ref(py))?;
-            let eh = crate::rt::hash_eq(py, head)?;
-            h = h.wrapping_mul(31).wrapping_add(eh);
-            cur = crate::rt::next_(py, s)?;
-        }
-        Ok(h)
+        Ok(crate::murmur3::hash_ordered_seq(py, this.into_any())? as i64)
     }
 }
 

@@ -41,6 +41,7 @@ mod itransient_vector;
 mod keyword;
 mod monitor;
 mod multifn;
+mod murmur3;
 mod namespace;
 mod ns_ops;
 mod compiler;

@@ -365,66 +365,18 @@ impl Counted for PersistentHashMap {
 #[implements(IEquiv)]
 impl IEquiv for PersistentHashMap {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        let other_b = other.bind(py);
-
-        // Handle PersistentHashMap-to-PersistentHashMap comparison.
-        if let Ok(other_m) = other_b.cast::<PersistentHashMap>() {
-            let a = this.bind(py).get();
-            let b = other_m.get();
-            if a.count != b.count { return Ok(false); }
-            // For every key in a, look up in b and check equiv.
-            // Since we don't have a key-iterator exposed to Rust yet (it's behind __iter__),
-            // we iterate via the internal node structure. Simpler: use __iter__ via Python.
-            let iter = this.bind(py).try_iter()?;
-            for item in iter {
-                let k = item?.unbind();
-                let av = a.val_at_default_internal(py, k.clone_ref(py), py.None())?;
-                let bv = b.val_at_default_internal(py, k, py.None())?;
-                if !crate::rt::equiv(py, av, bv)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-
-        // Handle cross-type comparison with PersistentArrayMap.
-        if let Ok(other_am) = other_b.cast::<crate::collections::parraymap::PersistentArrayMap>() {
-            let a = this.bind(py).get();
-            let b = other_am.get();
-            if (a.count as usize) != b.entries.len() { return Ok(false); }
-            // For every key in our (hash) map, look up in the array map and check equiv.
-            let iter = this.bind(py).try_iter()?;
-            for item in iter {
-                let k = item?.unbind();
-                let av = a.val_at_default_internal(py, k.clone_ref(py), py.None())?;
-                // Use the ArrayMap's public val_at_default_internal.
-                let bv = b.val_at_default_internal(py, k, py.None())?;
-                if !crate::rt::equiv(py, av, bv)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-
-        Ok(false)
+        crate::ipersistent_map::cross_map_equiv(py, this.into_any(), other)
     }
 }
 
 #[implements(IHashEq)]
 impl IHashEq for PersistentHashMap {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let s = this.bind(py).get();
-        // Commutative fold over (hash_eq(k) XOR hash_eq(v)) so insertion order doesn't matter.
-        let mut h: i64 = 0;
-        let iter = this.bind(py).try_iter()?;
-        for item in iter {
-            let k = item?.unbind();
-            let v = s.val_at_default_internal(py, k.clone_ref(py), py.None())?;
-            let kh = crate::rt::hash_eq(py, k)?;
-            let vh = crate::rt::hash_eq(py, v)?;
-            h = h.wrapping_add(kh ^ vh);
-        }
-        Ok(h)
+        // Vanilla `APersistentMap.hasheq` = `Murmur3.hashUnordered`. Iteration
+        // yields MapEntry instances, whose hash matches a length-2 vector
+        // hash — so two maps with the same {k v} entries produce the same
+        // collection hash regardless of insertion order.
+        Ok(crate::murmur3::hash_unordered_seq(py, this.into_any())? as i64)
     }
 }
 

@@ -156,57 +156,15 @@ impl Counted for PersistentTreeSet {
 #[implements(IEquiv)]
 impl IEquiv for PersistentTreeSet {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        let a = this.bind(py).get();
-        let other_b = other.bind(py);
-        if let Ok(ots) = other_b.cast::<PersistentTreeSet>() {
-            let b = ots.get();
-            if a.count(py) != b.count(py) {
-                return Ok(false);
-            }
-            // Walk our elements; ensure each is in other.
-            let m = a.impl_map.bind(py).get();
-            let mut entries = Vec::new();
-            ptreemap::collect_entries(py, &m.root, true, &mut entries);
-            for (k, _) in entries {
-                if !b.contains_internal(py, k)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-        if let Ok(ohs) = other_b.cast::<crate::collections::phashset::PersistentHashSet>() {
-            let b = ohs.get();
-            if a.count(py) != b.count(py) {
-                return Ok(false);
-            }
-            let m = a.impl_map.bind(py).get();
-            let mut entries = Vec::new();
-            ptreemap::collect_entries(py, &m.root, true, &mut entries);
-            for (k, _) in entries {
-                if !b.contains_internal(py, k)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-        Ok(false)
+        crate::ipersistent_set::cross_set_equiv(py, this.into_any(), other)
     }
 }
 
 #[implements(IHashEq)]
 impl IHashEq for PersistentTreeSet {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        // XOR-fold over member hashes (insertion-order-independent).
-        let s = this.bind(py).get();
-        let m = s.impl_map.bind(py).get();
-        let mut entries = Vec::new();
-        ptreemap::collect_entries(py, &m.root, true, &mut entries);
-        let mut h: i64 = 0;
-        for (k, _) in entries {
-            let eh = crate::rt::hash_eq(py, k)?;
-            h = h.wrapping_add(eh);
-        }
-        Ok(h)
+        // Vanilla `APersistentSet.hasheq` = `Murmur3.hashUnordered`.
+        Ok(crate::murmur3::hash_unordered_seq(py, this.into_any())? as i64)
     }
 }
 

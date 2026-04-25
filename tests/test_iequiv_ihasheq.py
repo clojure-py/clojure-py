@@ -29,7 +29,14 @@ def test_equiv_cross_type_false():
 
 
 def test_hash_eq_on_int():
-    assert hash_eq(42) == hash(42)
+    # hash_eq for ints uses Murmur3.hashLong (vanilla Clojure parity), so
+    # it diverges from Python's `hash(int)` which is the int value itself.
+    h = hash_eq(42)
+    assert isinstance(h, int)
+    assert h != 42  # Murmur3-mixed; not identity
+    assert hash_eq(42) == hash_eq(42)
+    # Distinct ints get distinct hashes (no trivial collisions).
+    assert hash_eq(42) != hash_eq(43)
 
 
 def test_hash_eq_on_string():

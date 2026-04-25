@@ -95,19 +95,24 @@ impl Cons {
     }
 
     fn __repr__(slf: Py<Self>, py: Python<'_>) -> PyResult<String> {
-        // Walk the seq and print as (a b c ...)
-        let mut parts: Vec<String> = Vec::new();
-        let mut cur: PyObject = slf.into_any();
-        loop {
-            let s = crate::rt::seq(py, cur.clone_ref(py))?;
-            if s.is_none(py) { break; }
-            let head = crate::rt::first(py, s.clone_ref(py))?;
-            parts.push(head.bind(py).repr()?.extract::<String>()?);
-            cur = crate::rt::next_(py, s)?;
-            if cur.is_none(py) { break; }
-        }
-        Ok(format!("({})", parts.join(" ")))
+        format_seq(py, slf.into_any())
     }
+}
+
+/// Walk a seq and print as `(a b c …)`. Shared between Cons, VectorSeq,
+/// VectorRSeq, and any other ISeq that wants Clojure-style printing.
+pub fn format_seq(py: Python<'_>, start: PyObject) -> PyResult<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur: PyObject = start;
+    loop {
+        let s = crate::rt::seq(py, cur.clone_ref(py))?;
+        if s.is_none(py) { break; }
+        let head = crate::rt::first(py, s.clone_ref(py))?;
+        parts.push(head.bind(py).repr()?.extract::<String>()?);
+        cur = crate::rt::next_(py, s)?;
+        if cur.is_none(py) { break; }
+    }
+    Ok(format!("({})", parts.join(" ")))
 }
 
 #[pyclass(module = "clojure._core", name = "ConsIter")]
@@ -188,18 +193,8 @@ impl IEquiv for Cons {
 #[implements(IHashEq)]
 impl IHashEq for Cons {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let mut h: i64 = 1;
-        let mut cur: PyObject = this.into_any();
-        loop {
-            let s = crate::rt::seq(py, cur)?;
-            if s.is_none(py) { break; }
-            let head = crate::rt::first(py, s.clone_ref(py))?;
-            let eh = crate::rt::hash_eq(py, head)?;
-            h = h.wrapping_mul(31).wrapping_add(eh);
-            cur = crate::rt::next_(py, s)?;
-            if cur.is_none(py) { break; }
-        }
-        Ok(h)
+        // Vanilla Cons.hasheq = Murmur3.hashOrdered.
+        Ok(crate::murmur3::hash_ordered_seq(py, this.into_any())? as i64)
     }
 }
 

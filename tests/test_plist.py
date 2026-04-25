@@ -65,7 +65,13 @@ def test_dunder_eq_same_type():
 
 def test_dunder_hash_stable():
     assert hash(list_(1, 2)) == hash(list_(1, 2))
-    assert hash(list_()) == 1  # Clojure-JVM empty-list hash
+    # Empty list hashes via `Murmur3.mixCollHash(1, 0)` — matches vanilla
+    # `Util.hasheq` for an empty IPersistentList, NOT the JVM `hashCode()`
+    # which is 1.
+    assert hash(list_()) == hash(list_())
+    # And it agrees with empty vector / empty seq (all use Murmur3.hashOrdered).
+    from clojure._core import vector
+    assert hash(list_()) == hash(vector())
 
 
 def test_repr():

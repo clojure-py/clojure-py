@@ -379,7 +379,9 @@ pub fn equiv(py: Python<'_>, a: PyObject, b: PyObject) -> PyResult<bool> {
 }
 
 /// `(hash x)` — Clojure-style hash, dispatches through IHashEq's ProtocolFn.
+/// nil is special-cased to 0 (matches vanilla `Util.hasheq`).
 pub fn hash_eq(py: Python<'_>, x: PyObject) -> PyResult<i64> {
+    if x.is_none(py) { return Ok(0); }
     static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>> = once_cell::sync::OnceCell::new();
     let result = crate::protocol_fn::dispatch_cached_1(py, &PFN, "IHashEq", "hash_eq", x)?;
     result.bind(py).extract::<i64>()

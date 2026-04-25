@@ -110,7 +110,10 @@ impl IEquiv for EmptyList {
 
 #[implements(IHashEq)]
 impl IHashEq for EmptyList {
-    fn hash_eq(_this: Py<Self>, _py: Python<'_>) -> PyResult<i64> { Ok(1) }
+    fn hash_eq(_this: Py<Self>, _py: Python<'_>) -> PyResult<i64> {
+        // Vanilla: `Murmur3.hashOrdered(emptyList) = mixCollHash(1, 0)`.
+        Ok(crate::murmur3::mix_coll_hash(1, 0) as i64)
+    }
 }
 
 #[implements(IMeta)]
@@ -313,24 +316,8 @@ impl IEquiv for PersistentList {
 #[implements(IHashEq)]
 impl IHashEq for PersistentList {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        // Simple structural hash: fold each element's hash_eq.
-        // Clojure's actual formula is more involved — matching bit-for-bit is deferred
-        // per spec §10 non-goal. What matters here: (equal) => (same hash).
-        let mut h: i64 = 1;
-        let mut cur: PyObject = this.into_any();
-        loop {
-            let b = cur.bind(py);
-            if b.cast::<EmptyList>().is_ok() { break; }
-            if let Ok(pl) = b.cast::<PersistentList>() {
-                let head = pl.get().head.clone_ref(py);
-                let eh = crate::rt::hash_eq(py, head)?;
-                h = h.wrapping_mul(31).wrapping_add(eh);
-                cur = pl.get().tail.clone_ref(py);
-                continue;
-            }
-            break;
-        }
-        Ok(h)
+        // Vanilla `APersistentList.hasheq` = `Murmur3.hashOrdered`.
+        Ok(crate::murmur3::hash_ordered_seq(py, this.into_any())? as i64)
     }
 }
 

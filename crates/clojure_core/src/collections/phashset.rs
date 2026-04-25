@@ -236,38 +236,15 @@ impl Counted for PersistentHashSet {
 #[implements(IEquiv)]
 impl IEquiv for PersistentHashSet {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        let other_b = other.bind(py);
-        let Ok(other_s) = other_b.cast::<PersistentHashSet>() else {
-            return Ok(false);
-        };
-        let a = this.bind(py).get();
-        let b = other_s.get();
-        if a.count(py) != b.count(py) {
-            return Ok(false);
-        }
-        // Every element of a must be contained in b.
-        let iter = this.bind(py).try_iter()?;
-        for item in iter {
-            let x = item?.unbind();
-            if !b.contains_internal(py, x)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        crate::ipersistent_set::cross_set_equiv(py, this.into_any(), other)
     }
 }
 
 #[implements(IHashEq)]
 impl IHashEq for PersistentHashSet {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        // Commutative fold: sum of hash_eq over elements.
-        let mut h: i64 = 0;
-        let iter = this.bind(py).try_iter()?;
-        for item in iter {
-            let x = item?.unbind();
-            h = h.wrapping_add(crate::rt::hash_eq(py, x)?);
-        }
-        Ok(h)
+        // Vanilla `APersistentSet.hasheq` = `Murmur3.hashUnordered`.
+        Ok(crate::murmur3::hash_unordered_seq(py, this.into_any())? as i64)
     }
 }
 

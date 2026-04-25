@@ -800,59 +800,16 @@ impl Counted for PersistentTreeMap {
 #[implements(IEquiv)]
 impl IEquiv for PersistentTreeMap {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        let a = this.bind(py).get();
-        let other_b = other.bind(py);
-        // Any map counts as equal if same count and same entries.
-        // Compare entry-wise via our seq and ILookup on `other`.
-        let a_count = a.count as usize;
-        let b_count = match crate::rt::count(py, other.clone_ref(py)) {
-            Ok(n) => n,
-            Err(_) => return Ok(false),
-        };
-        if a_count != b_count {
-            return Ok(false);
-        }
-        let mut entries = Vec::new();
-        collect_entries(py, &a.root, true, &mut entries);
-        let _ = other_b;
-        // For each of our entries, look up the key in `other`.
-        // Unique sentinel for "key missing from other" — a fresh empty list.
-        let sentinel: PyObject =
-            pyo3::types::PyList::empty(py).unbind().into_any();
-        static PFN: once_cell::sync::OnceCell<Py<crate::protocol_fn::ProtocolFn>>
-            = once_cell::sync::OnceCell::new();
-        for (k, v) in entries {
-            let bv = match crate::protocol_fn::dispatch_cached_3(
-                py, &PFN, "ILookup", "val_at",
-                other.clone_ref(py), k.clone_ref(py), sentinel.clone_ref(py),
-            ) {
-                Ok(v) => v,
-                Err(_) => return Ok(false),
-            };
-            if crate::rt::identical(py, bv.clone_ref(py), sentinel.clone_ref(py)) {
-                return Ok(false);
-            }
-            if !crate::rt::equiv(py, v, bv)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        crate::ipersistent_map::cross_map_equiv(py, this.into_any(), other)
     }
 }
 
 #[implements(IHashEq)]
 impl IHashEq for PersistentTreeMap {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let s = this.bind(py).get();
-        let mut entries = Vec::new();
-        collect_entries(py, &s.root, true, &mut entries);
-        let mut h: i64 = 0;
-        for (k, v) in entries {
-            let kh = crate::rt::hash_eq(py, k)?;
-            let vh = crate::rt::hash_eq(py, v)?;
-            h = h.wrapping_add(kh ^ vh);
-        }
-        Ok(h)
+        // Vanilla `APersistentMap.hasheq` = `Murmur3.hashUnordered`. Iteration
+        // is sorted, but the unordered hash is order-independent anyway.
+        Ok(crate::murmur3::hash_unordered_seq(py, this.into_any())? as i64)
     }
 }
 

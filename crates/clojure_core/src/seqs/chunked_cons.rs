@@ -58,6 +58,10 @@ impl ChunkedCons {
         crate::rt::hash_eq(py, slf.into_any())
     }
 
+    fn __repr__(slf: Py<Self>, py: Python<'_>) -> PyResult<String> {
+        crate::seqs::cons::format_seq(py, slf.into_any())
+    }
+
     #[getter(meta)]
     fn get_meta(&self, py: Python<'_>) -> PyObject {
         self.meta.as_ref().map(|o| o.clone_ref(py)).unwrap_or_else(|| py.None())
@@ -147,17 +151,7 @@ impl IEquiv for ChunkedCons {
 #[implements(IHashEq)]
 impl IHashEq for ChunkedCons {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let mut h: i64 = 1;
-        let mut cur: PyObject = this.into_any();
-        loop {
-            let s = crate::rt::seq(py, cur)?;
-            if s.is_none(py) { break; }
-            let head = crate::rt::first(py, s.clone_ref(py))?;
-            let eh = crate::rt::hash_eq(py, head)?;
-            h = h.wrapping_mul(31).wrapping_add(eh);
-            cur = crate::rt::next_(py, s)?;
-        }
-        Ok(h)
+        Ok(crate::murmur3::hash_ordered_seq(py, this.into_any())? as i64)
     }
 }
 

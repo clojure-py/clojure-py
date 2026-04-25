@@ -703,7 +703,7 @@
 (defn ==
   "Returns non-nil if nums all have the equivalent value (type-independent)."
   ([x] true)
-  ([x y] (clojure.lang.RT/equiv x y))
+  ([x y] (clojure.lang.RT/num-equiv x y))
   ([x y & more]
    (if (== x y)
      (if (next more)
@@ -753,11 +753,11 @@
 (def unchecked-negate -)
 (def unchecked-negate-int -)
 (def unchecked-add +)
-(def unchecked-add-int +)
+(defn unchecked-add-int [x y] (clojure.lang.RT/unchecked-add-int x y))
 (def unchecked-subtract -)
-(def unchecked-subtract-int -)
+(defn unchecked-subtract-int [x y] (clojure.lang.RT/unchecked-subtract-int x y))
 (def unchecked-multiply *)
-(def unchecked-multiply-int *)
+(defn unchecked-multiply-int [x y] (clojure.lang.RT/unchecked-multiply-int x y))
 (defn unchecked-divide-int [x y] (clojure.lang.RT/quot x y))
 (defn unchecked-remainder-int [x y] (clojure.lang.RT/rem x y))
 
@@ -924,12 +924,14 @@
   "disj[oin]. Returns a new set of the same (hashed/sorted) type, that
   does not contain key(s)."
   ([set] set)
-  ([set key] (clojure.lang.RT/disj set key))
+  ([set key]
+   (when set (clojure.lang.RT/disj set key)))
   ([set key & ks]
-   (let [ret (disj set key)]
-     (if ks
-       (recur ret (first ks) (next ks))
-       ret))))
+   (when set
+     (let [ret (disj set key)]
+       (if ks
+         (recur ret (first ks) (next ks))
+         ret)))))
 
 (defn find
   "Returns the map entry for key, or nil if key not present."
@@ -1568,7 +1570,14 @@
      (let [s1 (seq c1) s2 (seq c2) s3 (seq c3)]
        (when (and s1 s2 s3)
          (cons (f (first s1) (first s2) (first s3))
-               (map f (rest s1) (rest s2) (rest s3))))))))
+               (map f (rest s1) (rest s2) (rest s3)))))))
+  ([f c1 c2 c3 & colls]
+   (let [step (fn step [cs]
+                (lazy-seq
+                  (let [ss (map seq cs)]
+                    (when (every? identity ss)
+                      (cons (map first ss) (step (map rest ss)))))))]
+     (map #(apply f %) (step (conj colls c3 c2 c1))))))
 
 (defn filter
   "Returns a lazy sequence of items in coll for which (pred item) is truthy.
@@ -2440,13 +2449,14 @@
                                (= firstb '&)
                                (let [rest-b (second bs)]
                                  ;; `(fn [& {:keys [x]}] …)` — kwargs-style
-                                 ;; destructuring. The rest seq must be
-                                 ;; coerced to a map before `{:keys …}` can
-                                 ;; look up keys on it.
+                                 ;; destructuring. The rest seq is coerced
+                                 ;; via `seq-to-map-for-destructuring` so a
+                                 ;; trailing single-map argument (vanilla
+                                 ;; 1.11+ kwargs-as-map convention) Just
+                                 ;; Works.
                                  (if (map? rest-b)
                                    (recur (pb ret rest-b
-                                             (list 'clojure.core/apply
-                                                   'clojure.core/hash-map
+                                             (list 'clojure.core/seq-to-map-for-destructuring
                                                    gseq))
                                           n (nnext bs) true)
                                    (recur (pb ret rest-b gseq)
@@ -2519,16 +2529,16 @@
                                        (keys b)))
                            gmap (gensym "map__")
                            defaults (:or b)
-                           ;; Coerce a seq value to a map (vanilla behavior):
+                           ;; Coerce a seq value to a map (vanilla 1.11+
+                           ;; behavior, via `seq-to-map-for-destructuring`):
                            ;; `(let [{:as x} '()] x)` → `x = {}`.
                            ;; `(let [{:keys [a]} '(:a 1)] a)` → `a = 1`.
+                           ;; `(let [{:keys [a]} (list {:a 1})] a)` → `a = 1`
+                           ;; (the singleton-map-trailing-arg shortcut).
                            ;; Non-seqs pass through unchanged.
                            ret (conj bvec gmap v
                                      gmap (list 'if (list 'clojure.core/seq? gmap)
-                                                (list 'if (list 'clojure.core/seq gmap)
-                                                      (list 'clojure.core/apply
-                                                            'clojure.core/hash-map gmap)
-                                                      {})
+                                                (list 'clojure.core/seq-to-map-for-destructuring gmap)
                                                 gmap))
                            ret (if (:as b) (conj ret (:as b) gmap) ret)
                            entries (dissoc b :as :or)]
@@ -2618,8 +2628,10 @@
             (let [gparam (gensym "p__")
                   ;; `(fn [& {:keys [x]}] …)` — the rest seq must be
                   ;; coerced to a map before `{:keys …}` can destructure it.
+                  ;; Uses `seq-to-map-for-destructuring` (vanilla 1.11+) so
+                  ;; a trailing single-map argument (kwargs-as-map) works.
                   val (if (and prev-amp? (map? p))
-                        (list 'clojure.core/apply 'clojure.core/hash-map gparam)
+                        (list 'clojure.core/seq-to-map-for-destructuring gparam)
                         gparam)]
               (recur (next params)
                      (conj new-params gparam)
@@ -5902,12 +5914,30 @@
 ;; the seq is treated as alternating k/v pairs.
 
 (defn seq-to-map-for-destructuring
-  "Builds a map from a seq as described in the keyword-arguments spec.
-  Used internally by destructuring."
+  "Builds a map from a seq as described in the keyword-arguments spec
+  (vanilla 1.11+). Empty seq → empty map; singleton-map seq → that map;
+  odd-length seq with a trailing map → the trailing map merged onto the
+  earlier `k v` pairs (kwargs-as-map convention)."
   [s]
-  (if (next s)
-    (apply array-map s)
-    (if (seq s) (first s) {})))
+  (cond
+    (nil? (seq s))         {}
+    (nil? (next s))        (let [x (first s)]
+                             (if (map? x) x (clojure.lang.RT/throw-iae
+                                              "Single-arg arity to seq-to-map-for-destructuring must be a map")))
+    :else
+    (loop [m (transient {}) cur s]
+      (cond
+        (nil? cur) (persistent! m)
+        (nil? (next cur))
+        ;; trailing arg: must be a map; merge its entries
+        (let [tail (first cur)]
+          (if (map? tail)
+            (persistent! (reduce-kv (fn [acc k v] (assoc! acc k v)) m tail))
+            (clojure.lang.RT/throw-iae
+              "Trailing arg in kwargs seq must be a map")))
+        :else
+        (recur (assoc! m (first cur) (second cur))
+               (nnext cur))))))
 
 ;; --- with-loading-context — JVM ClassLoader binding, stub ---------------
 

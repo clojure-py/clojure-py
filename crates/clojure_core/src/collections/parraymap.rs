@@ -359,64 +359,15 @@ impl Counted for PersistentArrayMap {
 #[implements(IEquiv)]
 impl IEquiv for PersistentArrayMap {
     fn equiv(this: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
-        let other_b = other.bind(py);
-        // Array-vs-array fast-ish path.
-        if let Ok(other_m) = other_b.cast::<PersistentArrayMap>() {
-            let a = this.bind(py).get();
-            let b = other_m.get();
-            if a.entries.len() != b.entries.len() {
-                return Ok(false);
-            }
-            for (k, v) in a.entries.iter() {
-                match b.index_of(py, k)? {
-                    None => return Ok(false),
-                    Some(j) => {
-                        if !crate::rt::equiv(
-                            py,
-                            v.clone_ref(py),
-                            b.entries[j].1.clone_ref(py),
-                        )? {
-                            return Ok(false);
-                        }
-                    }
-                }
-            }
-            return Ok(true);
-        }
-        // Compare with a PersistentHashMap.
-        if let Ok(other_m) = other_b.cast::<PersistentHashMap>() {
-            let a = this.bind(py).get();
-            let b = other_m.get();
-            if (a.entries.len() as u32) != b.count {
-                return Ok(false);
-            }
-            for (k, v) in a.entries.iter() {
-                if !b.contains_key_internal(py, k.clone_ref(py))? {
-                    return Ok(false);
-                }
-                let bv = b.val_at_internal(py, k.clone_ref(py))?;
-                if !crate::rt::equiv(py, v.clone_ref(py), bv)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-        Ok(false)
+        crate::ipersistent_map::cross_map_equiv(py, this.into_any(), other)
     }
 }
 
 #[implements(IHashEq)]
 impl IHashEq for PersistentArrayMap {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let s = this.bind(py).get();
-        // Commutative fold: XOR of (hash(k) XOR hash(v)), summed.
-        let mut h: i64 = 0;
-        for (k, v) in s.entries.iter() {
-            let kh = crate::rt::hash_eq(py, k.clone_ref(py))?;
-            let vh = crate::rt::hash_eq(py, v.clone_ref(py))?;
-            h = h.wrapping_add(kh ^ vh);
-        }
-        Ok(h)
+        // Vanilla `APersistentMap.hasheq` = `Murmur3.hashUnordered`.
+        Ok(crate::murmur3::hash_unordered_seq(py, this.into_any())? as i64)
     }
 }
 

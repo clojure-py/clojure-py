@@ -72,10 +72,15 @@ impl MapEntry {
     }
 
     fn __hash__(slf: Py<Self>, py: Python<'_>) -> PyResult<i64> {
+        // Vanilla MapEntry extends APersistentVector, so its hasheq matches
+        // a length-2 vector hash: `mixCollHash(31*(31*1 + hk) + hv, 2)`.
+        // Required for `(hash {k v}) == (hash (hash-map k v))` regardless of
+        // map type — entry hashes must agree with `[k v]`'s vector hash.
         let a = slf.bind(py).get();
-        let hk = crate::rt::hash_eq(py, a.key.clone_ref(py))?;
-        let hv = crate::rt::hash_eq(py, a.val.clone_ref(py))?;
-        Ok(hk.wrapping_mul(31).wrapping_add(hv))
+        let hk = crate::rt::hash_eq(py, a.key.clone_ref(py))? as i32;
+        let hv = crate::rt::hash_eq(py, a.val.clone_ref(py))? as i32;
+        let acc = 1i32.wrapping_mul(31).wrapping_add(hk).wrapping_mul(31).wrapping_add(hv);
+        Ok(crate::murmur3::mix_coll_hash(acc, 2) as i64)
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {

@@ -237,11 +237,53 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         Ok(PyBool::new(py, r).to_owned().unbind().into_any())
     })?;
 
+    // Vanilla `==` (RT.numEquiv → Numbers.equiv): numeric equality that
+    // crosses int/float categories — `(== 1 1.0)` is true, unlike `=`.
+    intern_fn(py, &rt_ns, "num-equiv", |args, py| {
+        need_args(args, 2, "num-equiv")?;
+        let a = args.get_item(0)?;
+        let b = args.get_item(1)?;
+        let r = a.eq(&b)?;
+        Ok(PyBool::new(py, r).to_owned().unbind().into_any())
+    })?;
+
     // Java-style .equals: treat as equiv for our purposes.
     intern_fn(py, &rt_ns, "equals", |args, py| {
         need_args(args, 2, "equals")?;
         let r = crate::rt::equiv(py, args.get_item(0)?.unbind(), args.get_item(1)?.unbind())?;
         Ok(PyBool::new(py, r).to_owned().unbind().into_any())
+    })?;
+
+    // 32-bit two's-complement wrapping arithmetic, mirroring vanilla
+    // `unchecked-*-int`. Required for hash-mixing code that builds an
+    // accumulator over many elements; otherwise Python's arbitrary-precision
+    // ints overflow C-long bounds inside protocol thunks.
+    fn extract_i32(b: Bound<'_, PyAny>) -> PyResult<i32> {
+        if let Ok(v) = b.extract::<i32>() { return Ok(v); }
+        if let Ok(v) = b.extract::<i64>() { return Ok(v as i32); }
+        let v: u32 = b.extract()?;
+        Ok(v as i32)
+    }
+    intern_fn(py, &rt_ns, "unchecked-add-int", |args, py| {
+        need_args(args, 2, "unchecked-add-int")?;
+        let a = extract_i32(args.get_item(0)?)?;
+        let b = extract_i32(args.get_item(1)?)?;
+        let r = a.wrapping_add(b) as i64;
+        Ok(r.into_pyobject(py)?.unbind().into_any())
+    })?;
+    intern_fn(py, &rt_ns, "unchecked-multiply-int", |args, py| {
+        need_args(args, 2, "unchecked-multiply-int")?;
+        let a = extract_i32(args.get_item(0)?)?;
+        let b = extract_i32(args.get_item(1)?)?;
+        let r = a.wrapping_mul(b) as i64;
+        Ok(r.into_pyobject(py)?.unbind().into_any())
+    })?;
+    intern_fn(py, &rt_ns, "unchecked-subtract-int", |args, py| {
+        need_args(args, 2, "unchecked-subtract-int")?;
+        let a = extract_i32(args.get_item(0)?)?;
+        let b = extract_i32(args.get_item(1)?)?;
+        let r = a.wrapping_sub(b) as i64;
+        Ok(r.into_pyobject(py)?.unbind().into_any())
     })?;
 
     intern_fn(py, &rt_ns, "identical?", |args, py| {
@@ -4102,9 +4144,10 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         if x.is_none() {
             return Ok(0i64.into_pyobject(py)?.unbind().into_any());
         }
-        // Try Clojure IHashEq via Python __hash__ (our pyclasses route hash
-        // through hasheq). Falls back to Python's hash for built-ins.
-        let h: i64 = x.hash()? as i64;
+        // Dispatch through IHashEq so primitives (bool/int/float) get their
+        // vanilla-Clojure hash instead of Python's `__hash__` (which
+        // collapses 1/True/1.0).
+        let h = crate::rt::hash_eq(py, x.unbind())?;
         Ok(h.into_pyobject(py)?.unbind().into_any())
     })?;
 
@@ -4112,48 +4155,31 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         need_args(args, 2, "mix-collection-hash")?;
         let h: i64 = args.get_item(0)?.extract()?;
         let n: i64 = args.get_item(1)?.extract()?;
-        // Vanilla's Murmur3 mix; we use a cheap pair-hash that matches the
-        // shape (two args → one int) without claiming bit-for-bit JVM parity.
-        let m = (h as i64).wrapping_mul(31).wrapping_add(n);
+        // Mirrors Murmur3.mixCollHash on the JVM.
+        let m = crate::murmur3::mix_coll_hash(h as i32, n as i32) as i64;
         Ok(m.into_pyobject(py)?.unbind().into_any())
     })?;
 
     intern_fn(py, &rt_ns, "hash-ordered-coll-impl", |args, py| {
         need_args(args, 1, "hash-ordered-coll")?;
         let coll = args.get_item(0)?;
-        let mut h: i64 = 1;
-        if !coll.is_none() {
-            let s = crate::rt::seq(py, coll.clone().unbind())?;
-            if !s.is_none(py) {
-                let mut cur = s;
-                while !cur.is_none(py) {
-                    let f = crate::rt::first(py, cur.clone_ref(py))?;
-                    let fh: i64 = f.bind(py).hash().unwrap_or(0) as i64;
-                    h = h.wrapping_mul(31).wrapping_add(fh);
-                    cur = crate::rt::next_(py, cur)?;
-                }
-            }
-        }
-        Ok(h.into_pyobject(py)?.unbind().into_any())
+        let mixed = if coll.is_none() {
+            crate::murmur3::mix_coll_hash(1, 0) as i64
+        } else {
+            crate::murmur3::hash_ordered_seq(py, coll.unbind())? as i64
+        };
+        Ok(mixed.into_pyobject(py)?.unbind().into_any())
     })?;
 
     intern_fn(py, &rt_ns, "hash-unordered-coll-impl", |args, py| {
         need_args(args, 1, "hash-unordered-coll")?;
         let coll = args.get_item(0)?;
-        let mut h: i64 = 0;
-        if !coll.is_none() {
-            let s = crate::rt::seq(py, coll.clone().unbind())?;
-            if !s.is_none(py) {
-                let mut cur = s;
-                while !cur.is_none(py) {
-                    let f = crate::rt::first(py, cur.clone_ref(py))?;
-                    let fh: i64 = f.bind(py).hash().unwrap_or(0) as i64;
-                    h = h.wrapping_add(fh);
-                    cur = crate::rt::next_(py, cur)?;
-                }
-            }
-        }
-        Ok(h.into_pyobject(py)?.unbind().into_any())
+        let mixed = if coll.is_none() {
+            crate::murmur3::mix_coll_hash(0, 0) as i64
+        } else {
+            crate::murmur3::hash_unordered_seq(py, coll.unbind())? as i64
+        };
+        Ok(mixed.into_pyobject(py)?.unbind().into_any())
     })?;
 
     // --- Class introspection ---

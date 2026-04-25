@@ -24,6 +24,15 @@ simple_values = st.one_of(
     st.none(),
 )
 
+# Values for tests that compare against a Python `set` / `dict` reference
+# oracle. Excludes booleans because our `=` distinguishes `True`/`1` and
+# `False`/`0` (per vanilla Clojure), while Python's set/dict collapses them.
+simple_values_equiv_safe = st.one_of(
+    st.integers(min_value=-1000, max_value=1000),
+    st.text(max_size=10),
+    st.none(),
+)
+
 # Keys also simple hashable.
 simple_keys = st.one_of(
     st.integers(min_value=-1000, max_value=1000),
@@ -226,9 +235,9 @@ def set_op_sequence(draw):
     ops = []
     for _ in range(n):
         if draw(st.booleans()):
-            ops.append(('conj', draw(simple_values)))
+            ops.append(('conj', draw(simple_values_equiv_safe)))
         else:
-            ops.append(('disj', draw(simple_values)))
+            ops.append(('disj', draw(simple_values_equiv_safe)))
     return ops
 
 
@@ -251,7 +260,7 @@ def test_hash_set_ops_match_python_set(ops):
     assert set(iter(s)) == ref
 
 
-@given(st.sets(simple_values, max_size=100))
+@given(st.sets(simple_values_equiv_safe, max_size=100))
 @settings(deadline=None)
 def test_transient_hash_set_round_trip(ref_set):
     t = transient(hash_set())

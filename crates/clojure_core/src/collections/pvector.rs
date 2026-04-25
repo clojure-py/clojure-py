@@ -13,6 +13,7 @@ use crate::iequiv::IEquiv;
 use crate::ieditable_collection::IEditableCollection;
 use crate::ifn::IFn;
 use crate::ihasheq::IHashEq;
+use crate::ikvreduce::IKVReduce;
 use crate::imeta::IMeta;
 use crate::indexed::Indexed;
 use crate::ipersistent_collection::IPersistentCollection;
@@ -592,14 +593,8 @@ impl IEquiv for PersistentVector {
 #[implements(IHashEq)]
 impl IHashEq for PersistentVector {
     fn hash_eq(this: Py<Self>, py: Python<'_>) -> PyResult<i64> {
-        let s = this.bind(py).get();
-        let mut h: i64 = 1;
-        for i in 0..(s.cnt as usize) {
-            let v = s.nth_internal(py, i)?;
-            let eh = crate::rt::hash_eq(py, v)?;
-            h = h.wrapping_mul(31).wrapping_add(eh);
-        }
-        Ok(h)
+        // Vanilla `APersistentVector.hasheq` = `Murmur3.hashOrdered`.
+        Ok(crate::murmur3::hash_ordered_seq(py, this.into_any())? as i64)
     }
 }
 
@@ -704,9 +699,9 @@ impl Associative for PersistentVector {
         let s = this.bind(py).get();
         let Ok(i) = k.bind(py).extract::<i64>() else { return Ok(py.None()); };
         if i < 0 || (i as u64) >= (s.cnt as u64) { return Ok(py.None()); }
-        // Return a (key, value) tuple as MapEntry stand-in until Phase 7.
         let v = s.nth_internal(py, i as usize)?;
-        Ok(pyo3::types::PyTuple::new(py, &[k, v])?.unbind().into_any())
+        let me = crate::collections::map_entry::MapEntry::new(k, v);
+        Ok(Py::new(py, me)?.into_any())
     }
     fn assoc(this: Py<Self>, py: Python<'_>, k: PyObject, v: PyObject) -> PyResult<PyObject> {
         let i = k.bind(py).extract::<i64>().map_err(|_| {
@@ -762,6 +757,30 @@ impl CollReduce for PersistentVector {
             let arr = v.array_for(py, i)?;
             for x in arr.iter() {
                 acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, x.clone_ref(py)])?;
+                if crate::reduced::is_reduced(py, &acc) {
+                    return Ok(crate::reduced::unreduced(py, acc));
+                }
+            }
+            i += arr.len();
+        }
+        Ok(acc)
+    }
+}
+
+#[implements(IKVReduce)]
+impl IKVReduce for PersistentVector {
+    fn kv_reduce(this: Py<Self>, py: Python<'_>, f: PyObject, init: PyObject) -> PyResult<PyObject> {
+        // Vanilla `reduce-kv` on a vector calls (f acc index value) for each
+        // element, in order — matching `APersistentVector.kvreduce` on the JVM.
+        let v: &PersistentVector = this.bind(py).get();
+        let mut acc = init;
+        let mut i: usize = 0;
+        let total = v.cnt as usize;
+        while i < total {
+            let arr = v.array_for(py, i)?;
+            for (offset, x) in arr.iter().enumerate() {
+                let idx_obj = (i + offset).into_pyobject(py)?.unbind().into_any();
+                acc = crate::rt::invoke_n(py, f.clone_ref(py), &[acc, idx_obj, x.clone_ref(py)])?;
                 if crate::reduced::is_reduced(py, &acc) {
                     return Ok(crate::reduced::unreduced(py, acc));
                 }
