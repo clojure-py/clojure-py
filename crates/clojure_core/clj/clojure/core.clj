@@ -5088,25 +5088,32 @@
 
 (defn ^:private print-sequential [open close sep coll w]
   (clojure.lang.RT/writer-write w open)
-  (loop [items (seq coll)]
-    (when items
-      (print-method (first items) w)
-      (when-let [r (next items)]
-        (clojure.lang.RT/writer-write w sep)
-        (recur r))))
+  (let [limit *print-length*]
+    (loop [items (seq coll) n 0]
+      (when items
+        (if (and limit (>= n limit))
+          (clojure.lang.RT/writer-write w "...")
+          (do
+            (print-method (first items) w)
+            (when-let [r (next items)]
+              (clojure.lang.RT/writer-write w sep)
+              (recur r (inc n))))))))
   (clojure.lang.RT/writer-write w close))
 
 (defn ^:private print-map [m w]
   (clojure.lang.RT/writer-write w "{")
-  (loop [entries (seq m)]
-    (when entries
-      (let [e (first entries)]
-        (print-method (key e) w)
-        (clojure.lang.RT/writer-write w " ")
-        (print-method (val e) w))
-      (when-let [r (next entries)]
-        (clojure.lang.RT/writer-write w ", ")
-        (recur r))))
+  (let [limit *print-length*]
+    (loop [entries (seq m) n 0]
+      (when entries
+        (if (and limit (>= n limit))
+          (clojure.lang.RT/writer-write w "...")
+          (let [e (first entries)]
+            (print-method (key e) w)
+            (clojure.lang.RT/writer-write w " ")
+            (print-method (val e) w)
+            (when-let [r (next entries)]
+              (clojure.lang.RT/writer-write w ", ")
+              (recur r (inc n))))))))
   (clojure.lang.RT/writer-write w "}"))
 
 (defmethod print-method clojure._core/PersistentVector [v w]

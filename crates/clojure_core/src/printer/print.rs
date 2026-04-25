@@ -236,21 +236,29 @@ fn escape_string(s: &str) -> String {
 }
 
 fn pr_list(py: Python<'_>, lst: PyObject, ctx: PrintCtx) -> PyResult<String> {
+    let limit = ctx.length.map(|l| l.max(0) as usize);
     let mut parts: Vec<String> = Vec::new();
     let mut cur: PyObject = lst;
+    let mut count: usize = 0;
+    let mut more = false;
     loop {
         let b = cur.bind(py);
         if b.cast::<crate::collections::plist::EmptyList>().is_ok() {
             break;
         }
+        if let Some(lim) = limit {
+            if count >= lim { more = true; break; }
+        }
         if let Ok(pl) = b.cast::<crate::collections::plist::PersistentList>() {
             let head = pl.get().head.clone_ref(py);
             parts.push(pr_str_ctx(py, head, ctx.deeper())?);
             cur = pl.get().tail.clone_ref(py);
+            count += 1;
             continue;
         }
         break;
     }
+    if more { parts.push("...".to_string()); }
     Ok(format!("({})", parts.join(" ")))
 }
 
@@ -259,10 +267,16 @@ fn pr_vector(
     v: &crate::collections::pvector::PersistentVector,
     ctx: PrintCtx,
 ) -> PyResult<String> {
-    let mut parts: Vec<String> = Vec::with_capacity(v.cnt as usize);
-    for i in 0..(v.cnt as usize) {
+    let n = v.cnt as usize;
+    let limit = ctx.length.map(|l| l.max(0) as usize).unwrap_or(n);
+    let to_print = limit.min(n);
+    let mut parts: Vec<String> = Vec::with_capacity(to_print + 1);
+    for i in 0..to_print {
         let item = v.nth_internal_pub(py, i)?;
         parts.push(pr_str_ctx(py, item, ctx.deeper())?);
+    }
+    if n > to_print {
+        parts.push("...".to_string());
     }
     Ok(format!("[{}]", parts.join(" ")))
 }
@@ -271,10 +285,16 @@ fn pr_map(py: Python<'_>, m: PyObject, ctx: PrintCtx) -> PyResult<String> {
     // Iterate via Python __iter__ (yields keys for hash/array maps, MapEntries
     // for tree maps). Unify by treating the iter item as either a MapEntry or
     // a bare key (fetch value via val_at).
+    let limit = ctx.length.map(|l| l.max(0) as usize);
     let b = m.bind(py);
     let iter = b.try_iter()?;
     let mut parts: Vec<String> = Vec::new();
+    let mut count: usize = 0;
+    let mut more = false;
     for item in iter {
+        if let Some(lim) = limit {
+            if count >= lim { more = true; break; }
+        }
         let it = item?;
         // If it's a MapEntry (tree-map case), extract its key/val directly.
         if let Ok(me) = it.cast::<crate::collections::map_entry::MapEntry>() {
@@ -283,6 +303,7 @@ fn pr_map(py: Python<'_>, m: PyObject, ctx: PrintCtx) -> PyResult<String> {
             let ks = pr_str_ctx(py, ke, ctx.deeper())?;
             let vs = pr_str_ctx(py, ve, ctx.deeper())?;
             parts.push(format!("{} {}", ks, vs));
+            count += 1;
             continue;
         }
         let k = it.unbind();
@@ -290,30 +311,48 @@ fn pr_map(py: Python<'_>, m: PyObject, ctx: PrintCtx) -> PyResult<String> {
         let ks = pr_str_ctx(py, k, ctx.deeper())?;
         let vs = pr_str_ctx(py, v, ctx.deeper())?;
         parts.push(format!("{} {}", ks, vs));
+        count += 1;
     }
+    if more { parts.push("...".to_string()); }
     Ok(format!("{{{}}}", parts.join(", ")))
 }
 
 fn pr_set(py: Python<'_>, s: PyObject, ctx: PrintCtx) -> PyResult<String> {
+    let limit = ctx.length.map(|l| l.max(0) as usize);
     let b = s.bind(py);
     let iter = b.try_iter()?;
     let mut parts: Vec<String> = Vec::new();
+    let mut count: usize = 0;
+    let mut more = false;
     for item in iter {
+        if let Some(lim) = limit {
+            if count >= lim { more = true; break; }
+        }
         let v = item?.unbind();
         parts.push(pr_str_ctx(py, v, ctx.deeper())?);
+        count += 1;
     }
+    if more { parts.push("...".to_string()); }
     Ok(format!("#{{{}}}", parts.join(" ")))
 }
 
 fn pr_seq(py: Python<'_>, s: PyObject, ctx: PrintCtx) -> PyResult<String> {
     // Use rt::first/rt::next_ to walk.
+    let limit = ctx.length.map(|l| l.max(0) as usize);
     let mut parts: Vec<String> = Vec::new();
     let mut cur: PyObject = crate::rt::seq(py, s)?;
+    let mut count: usize = 0;
+    let mut more = false;
     loop {
         if cur.is_none(py) { break; }
+        if let Some(lim) = limit {
+            if count >= lim { more = true; break; }
+        }
         let head = crate::rt::first(py, cur.clone_ref(py))?;
         parts.push(pr_str_ctx(py, head, ctx.deeper())?);
         cur = crate::rt::next_(py, cur)?;
+        count += 1;
     }
+    if more { parts.push("...".to_string()); }
     Ok(format!("({})", parts.join(" ")))
 }
