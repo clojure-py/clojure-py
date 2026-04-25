@@ -113,6 +113,18 @@ fn pr_str_with(py: Python<'_>, x: PyObject, readable: bool) -> PyResult<String> 
         return Ok(if readable { escape_string(&raw) } else { raw });
     }
 
+    // fractions.Fraction → "numerator/denominator". Vanilla Ratio.toString.
+    let py = b.py();
+    let fractions = py.import("fractions")?;
+    let frac_cls = fractions.getattr("Fraction")?;
+    if b.is_instance(&frac_cls)? {
+        let n = b.getattr("numerator")?;
+        let d = b.getattr("denominator")?;
+        let n_s: String = n.str()?.extract()?;
+        let d_s: String = d.str()?.extract()?;
+        return Ok(format!("{}/{}", n_s, d_s));
+    }
+
     // Fallback: call Python repr.
     let r = b.repr()?;
     let s = r.extract::<String>()?;

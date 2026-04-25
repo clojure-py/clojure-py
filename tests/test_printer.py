@@ -106,3 +106,29 @@ def test_roundtrip_nested():
     reparsed = read_string(printed)
     # Same structure.
     assert pr_str(reparsed) == printed
+
+
+# --- Fractions / Ratios ---
+
+from fractions import Fraction
+from clojure._core import eval as _eval
+
+
+def test_pr_str_fraction_uses_slash_form():
+    assert pr_str(Fraction(1, 2)) == "1/2"
+    assert pr_str(Fraction(3, 4)) == "3/4"
+    assert pr_str(Fraction(-1, 2)) == "-1/2"
+
+
+def test_pr_str_fraction_round_trip():
+    src = "1/2"
+    val = _eval(read_string(src))  # Fraction(1, 2)
+    assert pr_str(val) == src
+    assert _eval(read_string(pr_str(val))) == val
+
+
+def test_pr_str_division_result():
+    half = _eval(read_string("(/ 1 2)"))
+    assert pr_str(half) == "1/2"
+    two = _eval(read_string("(/ 4 2)"))
+    assert pr_str(two) == "2"
