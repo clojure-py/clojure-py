@@ -25,8 +25,10 @@
 ;;   * `IllegalStateException` for `pop` on empty stays as
 ;;     `clojure._core/IllegalStateException`.
 ;;   * Dropped BigDecimal cases (`0M`, `1M`) — we don't have BigDecimal.
-;;   * Records: `record-hashing` skipped — `defrecord` doesn't yet
-;;     implement vanilla-equivalent structural hashing (see project memory).
+;;   * Records: extmap-dependent rows of vanilla `record-hashing` skipped —
+;;     `defrecord` lacks `__extmap`, so `(dissoc (assoc r :extra v) :extra)`
+;;     doesn't round-trip back to a record. The portable rows live in
+;;     `record-hashing-basic` / `record-hashing-cross-type` below.
 ;;   * `seq-iter-match` rewritten to walk Python `__iter__` directly.
 
 (ns clojure.test-clojure.data-structures
@@ -902,6 +904,23 @@
     (is (= m1 sample-map))
     (is (= a 1))))
 
+
+(defrecord HashRec [a b])
+(defrecord HashRec2 [a b])
+
+(deftest record-hashing-basic
+  (let [r (->HashRec 1 1)]
+    ;; A — same type + same fields → same hash.
+    (is (= (hash (->HashRec 1 1)) (hash r)))
+    ;; C/E — different field values → different hash.
+    (is (not= (hash (->HashRec 1 1)) (hash (assoc (->HashRec 1 1) :a 2))))
+    ;; F — no-op assoc on a field-key preserves hash.
+    (is (= (hash (->HashRec 1 1)) (hash (assoc r :a 1))))))
+
+(deftest record-hashing-cross-type
+  ;; Records of different types with the same fields hash differently.
+  ;; Mirrors vanilla `IRecord.hasheq` combining class-name with mapHasheq.
+  (is (not= (hash (->HashRec 1 2)) (hash (->HashRec2 1 2)))))
 
 (deftest trailing-map-destructuring
   (let [sample-map {:a 1 :b 2}
