@@ -566,7 +566,7 @@
 ;;;;;;;;;;;;;;;;;;; sequence fns  ;;;;;;;;;;;;;;;;;;;;;;;
 ;; Vanilla lines 868-1100. Ports focus on variadic Clojure shapes backed by
 ;; 2-arg RT primitives. `cast` is deferred, so the 1-arity cases of + and *
-;; return their arg unchanged. `rationalize` is deferred (no Ratio type).
+;; return their arg unchanged.
 
 ;; --- zero? (869), count (876), int (884), nth (891) ---
 (defn zero?
@@ -769,8 +769,6 @@
 (defn rem
   "remainder of dividing numerator by denominator."
   [num div] (clojure.lang.RT/rem num div))
-
-;; `rationalize` (1292) is deferred — requires a Ratio type we don't have yet.
 
 ;; --- bit ops (1302-1394) ---
 (defn bit-not
