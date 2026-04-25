@@ -202,6 +202,11 @@
   ;; `^:foo sym` reads as `(with-meta sym {:foo true})`.
   (is (= (meta '^:awesome sym) {:awesome true}))
   (is (= (meta '^{:bar :baz} sym) {:bar :baz}))
-  ;; Note: vanilla merges multiple `^` annotations; ours retains only the
-  ;; outermost. Documented divergence — single-tag use is what's tested.
+  ;; chained ^ annotations merge (vanilla MetaReader.invoke)
+  (is (= {:awesome true :bar :baz}
+         (meta (read-string "^:awesome ^{:bar :baz} sym"))))
+  (is (= {:a true :b true :c true}
+         (meta (read-string "^:a ^:b ^:c sym"))))
+  ;; outer wins on conflict
+  (is (= 1 (:a (meta (read-string "^{:a 1} ^{:a 2} sym")))))
   )

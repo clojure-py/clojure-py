@@ -25,15 +25,17 @@
 ;;   * `IllegalStateException` for `pop` on empty stays as
 ;;     `clojure._core/IllegalStateException`.
 ;;   * Dropped BigDecimal cases (`0M`, `1M`) — we don't have BigDecimal.
-;;   * `(read-string "{:a 1, :b 2, :a -1, :c 3}")` — vanilla rejects
-;;     duplicate keys at read time; our reader silently keeps the last
-;;     value. Skipped that assertion.
 ;;   * Records: `record-hashing` skipped — `defrecord` doesn't yet
 ;;     implement vanilla-equivalent structural hashing (see project memory).
 ;;   * `seq-iter-match` rewritten to walk Python `__iter__` directly.
 
 (ns clojure.test-clojure.data-structures
   (:use clojure.test))
+
+(deftest test-duplicates
+  ;; Maps — vanilla raises IllegalArgumentException for duplicate literal keys
+  (is (thrown? clojure._core/ReaderError
+               (read-string "{:a 1, :b 2, :a -1, :c 3}"))))
 
 ;; *** Helper functions ***
 
