@@ -11,8 +11,7 @@
 ;; Adaptations from vanilla:
 ;;   * Dropped all `into-array` / `to-array` / typed-array / `vector-of`
 ;;     rows — primitive arrays don't apply here.
-;;   * Dropped all ratio (`1/2`, `1/4`, `2/3`) and BigDec/BigInt (`1M`, `1N`)
-;;     literal cases.
+;;   * Dropped BigDec/BigInt (`1M`, `1N`) literal cases.
 ;;   * Dropped `IReduce`/`IReduceInit` reify cases.
 ;;   * Dropped `defspec`-based property tests (covered by hypothesis fuzz).
 ;;   * Dropped `clojure.lang.PersistentQueue/EMPTY` rows (queues not yet
@@ -332,6 +331,7 @@
       false true
       0 42
       0.0 3.14
+      2/3
       \c
       "" "abc"
       'sym
@@ -469,7 +469,9 @@
 
     (take 0 [1 2 3 4 5]) ()
     (take -1 [1 2 3 4 5]) ()
-    (take -2 [1 2 3 4 5]) ()))
+    (take -2 [1 2 3 4 5]) ()
+
+    (take 1/4 [1 2 3 4 5]) '(1) ))
 
 
 (deftest test-drop
@@ -481,7 +483,39 @@
 
     (drop 0 [1 2 3 4 5]) '(1 2 3 4 5)
     (drop -1 [1 2 3 4 5]) '(1 2 3 4 5)
-    (drop -2 [1 2 3 4 5]) '(1 2 3 4 5)))
+    (drop -2 [1 2 3 4 5]) '(1 2 3 4 5)
+
+    (drop 1/4 [1 2 3 4 5]) '(2 3 4 5) ))
+
+
+(deftest test-nthrest
+  (are [x y] (= x y)
+    (nthrest [1 2 3 4 5] 1) '(2 3 4 5)
+    (nthrest [1 2 3 4 5] 3) '(4 5)
+    (nthrest [1 2 3 4 5] 5) ()
+    (nthrest [1 2 3 4 5] 9) ()
+
+    (nthrest [1 2 3 4 5] 0) '(1 2 3 4 5)
+    (nthrest [1 2 3 4 5] -1) '(1 2 3 4 5)
+    (nthrest [1 2 3 4 5] -2) '(1 2 3 4 5)
+
+    (nthrest [1 2 3 4 5] 1/4) '(2 3 4 5)
+    (nthrest [1 2 3 4 5] 1.2) '(3 4 5) ))
+
+
+(deftest test-nthnext
+  (are [x y] (= x y)
+    (nthnext [1 2 3 4 5] 1) '(2 3 4 5)
+    (nthnext [1 2 3 4 5] 3) '(4 5)
+    (nthnext [1 2 3 4 5] 5) nil
+    (nthnext [1 2 3 4 5] 9) nil
+
+    (nthnext [1 2 3 4 5] 0) '(1 2 3 4 5)
+    (nthnext [1 2 3 4 5] -1) '(1 2 3 4 5)
+    (nthnext [1 2 3 4 5] -2) '(1 2 3 4 5)
+
+    (nthnext [1 2 3 4 5] 1/4) '(2 3 4 5)
+    (nthnext [1 2 3 4 5] 1.2) '(3 4 5) ))
 
 
 (deftest test-take-nth
@@ -603,6 +637,8 @@
       (range -1) ()
       (range -3) ()
 
+      (range 7/3) '(0 1 2)
+
       (range 0 3) '(0 1 2)
       (range 0 1) '(0)
       (range 0 0) ()
@@ -635,6 +671,8 @@
       (range 10 0 -2) '(10 8 6 4 2)
 
       (take 100 (range)) (take 100 (iterate inc 0))
+
+      (range 1/2 5 1/3) '(1/2 5/6 7/6 3/2 11/6 13/6 5/2 17/6 19/6 7/2 23/6 25/6 9/2 29/6)
 
       (reduce + (take 100 (range))) 4950
       (reduce + 0 (take 100 (range))) 4950
@@ -761,6 +799,7 @@
        [] 1
        [] 'test
        [] :keyword
+       [] 1/2
        [] true
        [] false
        ;; vectors

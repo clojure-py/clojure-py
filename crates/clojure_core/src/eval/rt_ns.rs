@@ -251,11 +251,28 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Vanilla `==` (RT.numEquiv → Numbers.equiv): numeric equality that
     // crosses int/float categories — `(== 1 1.0)` is true, unlike `=`.
+    // For Ratio (fractions.Fraction) vs float, we convert the ratio to float
+    // first, mirroring JVM Numbers.equiv(Ratio, Double).
     intern_fn(py, &rt_ns, "num-equiv", |args, py| {
         need_args(args, 2, "num-equiv")?;
         let a = args.get_item(0)?;
         let b = args.get_item(1)?;
-        let r = a.eq(&b)?;
+        // Detect ratio-vs-float and float-vs-ratio: convert ratio to float.
+        let fractions = py.import("fractions")?;
+        let frac_cls = fractions.getattr("Fraction")?;
+        let a_is_ratio = a.is_instance(&frac_cls)?;
+        let b_is_ratio = b.is_instance(&frac_cls)?;
+        let r = if a_is_ratio && b.is_instance_of::<pyo3::types::PyFloat>() {
+            let a_f: f64 = a.call_method0("__float__")?.extract()?;
+            let b_f: f64 = b.extract()?;
+            a_f == b_f
+        } else if b_is_ratio && a.is_instance_of::<pyo3::types::PyFloat>() {
+            let b_f: f64 = b.call_method0("__float__")?.extract()?;
+            let a_f: f64 = a.extract()?;
+            a_f == b_f
+        } else {
+            a.eq(&b)?
+        };
         Ok(PyBool::new(py, r).to_owned().unbind().into_any())
     })?;
 

@@ -17,8 +17,7 @@
 ;;     isn't reachable.
 ;;   * `Compiler$CompilerException` → `clojure._core/EvalError`
 ;;     for our compile-error path.
-;;   * Dropped ratio (`1/2`), BigDecimal (`1M`) literal cases (reader doesn't
-;;     parse them yet).
+;;   * Dropped BigDecimal (`1M`) literal cases (reader doesn't parse them yet).
 ;;   * Dropped `(eval 'java.lang.Math)` — we don't resolve dotted symbols
 ;;     to JVM classes.
 ;;   * Dropped `Boolean/TRUE` identity check — Python's `True`/`False` are
@@ -62,6 +61,7 @@
   (evaluates-to-itself? 1)
   (evaluates-to-itself? 1.0)
   (evaluates-to-itself? 1.123456789)
+  (evaluates-to-itself? 1/2)
   (evaluates-to-itself? 999999999999999999)
   (evaluates-to-itself? \a)
   (evaluates-to-itself? \newline)

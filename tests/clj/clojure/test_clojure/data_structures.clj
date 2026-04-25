@@ -17,15 +17,14 @@
 ;;     `(java.util.HashSet. ...)`, `(into-array …)`, `(Integer. …)`,
 ;;     `(Long. …)`, `clojure.lang.PersistentQueue/EMPTY` (queues are not
 ;;     yet present), `(.size …)`, `.equals`, `.hashCode`, `.iterator`,
-;;     `clojure.lang.IReduce` reify, `defstruct`, ratio literals.
+;;     `clojure.lang.IReduce` reify, `defstruct`.
 ;;   * `ClassCastException` for "wrong collection type" (e.g. `(peek #{1})`,
 ;;     `(disj [1 2] 1)`) → our runtime raises
 ;;     `clojure._core/IllegalArgumentException` from the
 ;;     missing-protocol-impl path. Same idea, different name.
 ;;   * `IllegalStateException` for `pop` on empty stays as
 ;;     `clojure._core/IllegalStateException`.
-;;   * Dropped ratio cases (`1/2`, `2/3`, `0M`, `1M`) — the reader doesn't
-;;     parse `n/d` literals and we don't have BigDecimal.
+;;   * Dropped BigDecimal cases (`0M`, `1M`) — we don't have BigDecimal.
 ;;   * `(read-string "{:a 1, :b 2, :a -1, :c 3}")` — vanilla rejects
 ;;     duplicate keys at read time; our reader silently keeps the last
 ;;     value. Skipped that assertion.
@@ -58,6 +57,11 @@
       (lazy-seq {})
       (lazy-seq #{})
       (lazy-seq ""))
+
+  ; ratios
+  (is (== 1/2 0.5))
+  (is (== 1/1000 0.001))
+  (is (not= 2/3 0.6666666666666666))
 
   ; vectors equal other seqs by items equality
   (are [x y] (= x y)
@@ -291,8 +295,8 @@
       ; different data structures
       (list true false nil)
         '(true false nil)
-      (list 1 2.5 "ab" \x 'cd :kw)
-        '(1 2.5 "ab" \x cd :kw)
+      (list 1 2.5 2/3 "ab" \x 'cd :kw)
+        '(1 2.5 2/3 "ab" \x cd :kw)
       (list (list 1 2) [3 4] {:a 1 :b 2} #{:c :d})
         '((1 2) [3 4] {:a 1 :b 2} #{:c :d})
 
@@ -432,6 +436,7 @@
       false true
       0 42
       0.0 3.14
+      2/3
       \c
       "" "abc"
       'sym
@@ -448,6 +453,7 @@
       false true
       0 42
       0.0 3.14
+      2/3
       \c
       "" "abc"
       'sym
@@ -541,8 +547,8 @@
       ; different data structures
       (hash-set true false nil)
         #{true false nil}
-      (hash-set 1 2.5 "ab" \x 'cd :kw)
-        #{1 2.5 "ab" \x 'cd :kw}
+      (hash-set 1 2.5 2/3 "ab" \x 'cd :kw)
+        #{1 2.5 2/3 "ab" \x 'cd :kw}
       (hash-set (list 1 2) [3 4] {:a 1 :b 2} #{:c :d})
         #{'(1 2) [3 4] {:a 1 :b 2} #{:c :d}}
 
@@ -578,6 +584,7 @@
       false true
       0 42
       0.0 3.14
+      2/3
       \c
       "" "abc"
       'sym
@@ -618,6 +625,7 @@
       false true
       0 42
       0.0 3.14
+      2/3
       \c
       "" "abc"
       'sym
@@ -649,6 +657,7 @@
       false true
       0 42
       0.0 3.14
+      2/3
       \c
       "" "abc"
       'sym
@@ -687,11 +696,12 @@
       nil
       #{}
       #{1 2 3}
-      ; different data types (without ratios / BigDecimal)
+      ; different data types
       #{nil
         false true
         0 42
         0.0 3.14
+        2/3
         \c
         "" "abc"
         'sym

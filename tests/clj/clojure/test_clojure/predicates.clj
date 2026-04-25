@@ -11,14 +11,14 @@
 ;;
 ;; Adaptations from vanilla:
 ;;   * Dropped sample-data entries that reference unsupported literals/types:
-;;     :bigint, :bigdec, :ratio (no ratio literal `2/3`),
+;;     :bigint, :bigdec,
 ;;     :empty-array / :array (`into-array`), :class (`java.util.Date`),
 ;;     :object (`(new java.util.Date)`).
 ;;   * Dropped `test-string?-more` (uses `java.lang.StringBuilder` /
 ;;     `java.lang.StringBuffer`).
 ;;   * `test-preds`: dropped rows that need `0.0M` / `0N` / UUID / URI /
 ;;     java.util.Date / byte-array; dropped columns `uuid?`, `decimal?`,
-;;     `inst?`, `uri?`, `bytes?` since no row needs them after dropping.
+;;     `inst?`, `uri?`, `bytes?` since no row uses them after dropping.
 
 (ns clojure.test-clojure.predicates
   (:use clojure.test))
@@ -40,6 +40,8 @@
   :long   (long 7)
   :float  (float 7)
   :double (double 7)
+
+  :ratio 2/3
 
   :character \a
   :symbol 'abc
@@ -77,9 +79,11 @@
 
   integer?  [:byte :short :int :long]
   float?    [:float :double]
-  number?   [:byte :short :int :long :float :double]
+  ratio?    [:ratio]
+  rational? [:byte :short :int :long :ratio]
+  number?   [:byte :short :int :long :ratio :float :double]
 
-  char?    [:character]
+  ; character?
   symbol?  [:symbol]
   keyword? [:keyword]
 
