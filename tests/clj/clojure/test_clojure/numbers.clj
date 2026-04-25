@@ -470,7 +470,11 @@
     (is (= 0.5 (double 1/2)))
     (is (= 0   (long 1/2)))
     (is (= 1   (numerator 1/2)))
-    (is (= 2   (denominator 1/2))))
+    (is (= 2   (denominator 1/2)))
+    ;; bigdec across categories
+    (is (= (bigdec "0.5") (bigdec 1/2)))
+    (is (= (bigdec "1")   (bigdec 1)))
+    (is (= (bigdec "0.5") (bigdec 0.5))))
 
   (testing "rationalize"
     (is (= 1/2 (rationalize 0.5)))

@@ -29,6 +29,18 @@ fn fraction_cls<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
     Ok(cls)
 }
 
+static DECIMAL_CLS: once_cell::sync::OnceCell<Py<PyType>> = once_cell::sync::OnceCell::new();
+
+fn decimal_cls<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
+    if let Some(cls) = DECIMAL_CLS.get() {
+        return Ok(cls.bind(py).clone());
+    }
+    let decimal = py.import("decimal")?;
+    let cls = decimal.getattr("Decimal")?.downcast_into::<PyType>()?;
+    let _ = DECIMAL_CLS.set(cls.clone().unbind());
+    Ok(cls)
+}
+
 fn make_closure(
     py: Python<'_>,
     f: impl Fn(&Bound<'_, PyTuple>, Python<'_>) -> PyResult<PyObject> + Send + Sync + 'static,
@@ -1054,12 +1066,10 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             return Ok(PyBool::new(py, true).to_owned().unbind().into_any());
         }
         // Fraction or Decimal also count as numbers for the numeric tower.
-        let fractions = py.import("fractions")?;
-        if x.is_instance(&fractions.getattr("Fraction")?)? {
+        if x.is_instance(fraction_cls(py)?.as_any())? {
             return Ok(PyBool::new(py, true).to_owned().unbind().into_any());
         }
-        let decimal = py.import("decimal")?;
-        if x.is_instance(&decimal.getattr("Decimal")?)? {
+        if x.is_instance(decimal_cls(py)?.as_any())? {
             return Ok(PyBool::new(py, true).to_owned().unbind().into_any());
         }
         Ok(PyBool::new(py, false).to_owned().unbind().into_any())
@@ -3922,9 +3932,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     intern_fn(py, &rt_ns, "instance-ratio?", |args, py| {
         need_args(args, 1, "ratio?")?;
         let x = args.get_item(0)?;
-        let fractions = py.import("fractions")?;
-        let frac_cls = fractions.getattr("Fraction")?;
-        let ok = x.is_instance(&frac_cls)?;
+        let ok = x.is_instance(fraction_cls(py)?.as_any())?;
         Ok(PyBool::new(py, ok).to_owned().unbind().into_any())
     })?;
 
@@ -3932,9 +3940,7 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     intern_fn(py, &rt_ns, "instance-decimal?", |args, py| {
         need_args(args, 1, "decimal?")?;
         let x = args.get_item(0)?;
-        let decimal = py.import("decimal")?;
-        let dec_cls = decimal.getattr("Decimal")?;
-        let ok = x.is_instance(&dec_cls)?;
+        let ok = x.is_instance(decimal_cls(py)?.as_any())?;
         Ok(PyBool::new(py, ok).to_owned().unbind().into_any())
     })?;
 
@@ -3954,12 +3960,10 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         if is_exact_int(&x) {
             return Ok(PyBool::new(py, true).to_owned().unbind().into_any());
         }
-        let fractions = py.import("fractions")?;
-        if x.is_instance(&fractions.getattr("Fraction")?)? {
+        if x.is_instance(fraction_cls(py)?.as_any())? {
             return Ok(PyBool::new(py, true).to_owned().unbind().into_any());
         }
-        let decimal = py.import("decimal")?;
-        if x.is_instance(&decimal.getattr("Decimal")?)? {
+        if x.is_instance(decimal_cls(py)?.as_any())? {
             return Ok(PyBool::new(py, true).to_owned().unbind().into_any());
         }
         Ok(PyBool::new(py, false).to_owned().unbind().into_any())
@@ -4004,12 +4008,19 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     intern_fn(py, &rt_ns, "bigdec", |args, py| {
         need_args(args, 1, "bigdec")?;
         let x = args.get_item(0)?;
-        // Decimal(float) is lossy; Decimal(str) / Decimal(int) are exact.
-        // To match vanilla, route floats through str first for the common
-        // case of literal decimals (e.g. (bigdec 3.14)).
+        let d_cls = decimal_cls(py)?;
+        // Fraction → Decimal: Decimal(numerator) / Decimal(denominator).
+        // CPython's Decimal(Fraction(...)) raises TypeError directly.
+        if x.is_instance(fraction_cls(py)?.as_any())? {
+            let num = x.getattr("numerator")?;
+            let denom = x.getattr("denominator")?;
+            let n = d_cls.call1((num,))?;
+            let dd = d_cls.call1((denom,))?;
+            return Ok(n.div(dd)?.unbind());
+        }
+        // Decimal(float) is lossy; route floats through str first for the
+        // common case of literal decimals (e.g. (bigdec 3.14)).
         use pyo3::types::PyFloat;
-        let decimal = py.import("decimal")?;
-        let d_cls = decimal.getattr("Decimal")?;
         if x.cast::<PyFloat>().is_ok() {
             let s = x.str()?;
             return Ok(d_cls.call1((s,))?.unbind());
