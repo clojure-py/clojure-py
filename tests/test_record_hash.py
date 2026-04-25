@@ -50,3 +50,48 @@ def test_hash_combine_matches_jvm_anchor():
         actual = e(f"(clojure.lang.RT/hash-combine {seed} {h})")
         expected = jvm(seed, h)
         assert actual == expected, f"hash-combine({seed}, {h}): got {actual}, expected {expected}"
+
+
+# ---------- Record structural hashing ----------
+
+# Define test records once at module-import time.
+e("(defrecord HashRec [a b])")
+e("(defrecord HashRec2 [a b])")
+
+
+def test_record_same_fields_same_hash():
+    """Two records of the same type with identical fields hash equal."""
+    src = "(let [r1 (->HashRec 1 2) r2 (->HashRec 1 2)] (= (hash r1) (hash r2)))"
+    assert e(src) is True
+
+
+def test_record_different_fields_different_hash():
+    """Same record type, different field values → different hash (almost always)."""
+    src = "(let [r1 (->HashRec 1 2) r2 (->HashRec 1 3)] (not= (hash r1) (hash r2)))"
+    assert e(src) is True
+
+
+def test_record_cross_type_different_hash():
+    """Different record types with the same fields → different hash."""
+    src = "(let [a (->HashRec 1 2) b (->HashRec2 1 2)] (not= (hash a) (hash b)))"
+    assert e(src) is True
+
+
+def test_record_hash_contract_holds():
+    """`(= r1 r2) ⇒ (hash r1) == (hash r2)` — the universal hash contract."""
+    src = "(let [r1 (->HashRec 1 2) r2 (->HashRec 1 2)] [(= r1 r2) (= (hash r1) (hash r2))])"
+    pair = e(src)
+    eq, hash_eq = pair[0], pair[1]
+    assert eq and hash_eq
+
+
+def test_record_no_op_assoc_preserves_hash():
+    """`(assoc r :a same-value)` rebuilds the record but with same fields → same hash."""
+    src = "(let [r (->HashRec 1 1)] (= (hash (->HashRec 1 1)) (hash (assoc r :a 1))))"
+    assert e(src) is True
+
+
+def test_record_hash_stable_across_calls():
+    """Hashing the same record twice produces the same result."""
+    src = "(let [r (->HashRec 5 6) h1 (hash r) h2 (hash r)] (= h1 h2))"
+    assert e(src) is True

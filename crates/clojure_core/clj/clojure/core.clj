@@ -4629,6 +4629,17 @@
                    (fn [~inst-sym ~other-sym]
                      (and (clojure.lang.RT/instance? ~rname ~other-sym)
                           ~@equal-fields))))
+       ;; IHashEq: same type + same field values → same hash.
+       ;; Combines the record name's hash (type tag) with an unordered hash of
+       ;; the record's MapEntry seq (field → value pairs). Mirrors vanilla
+       ;; `IRecord.hasheq` = `Util.hashCombine(class-name-hash, mapHasheq)`.
+       (clojure.lang.RT/protocol-extend-type
+         clojure._core/IHashEq ~rname
+         (hash-map "hash_eq"
+                   (fn [~inst-sym]
+                     (clojure.lang.RT/hash-combine
+                       ~(hash (str rname))
+                       (clojure.core/hash-unordered-coll ~inst-sym)))))
        ;; Counted: number of fields.
        (clojure.lang.RT/protocol-extend-type
          clojure._core/Counted ~rname
