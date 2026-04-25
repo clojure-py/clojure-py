@@ -518,6 +518,29 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         Ok(pyo3::types::PyString::new(py, &out).unbind().into_any())
     })?;
 
+    // Vanilla `str` variadic uses StringBuilder over the argument seq —
+    // O(N) total char copies and one bulk Python string allocation. We
+    // mirror that here: walk the input seq once, accumulate into a Rust
+    // `String` (which doubles geometrically), and emit one PyString. This
+    // replaces an O(N²) loop/recur of `str-concat` calls in core.clj's
+    // `(defn str ...)` variadic branch — the loop pressure is what
+    // overflows Windows's smaller stack on `(apply str (repeat 10000 ...))`.
+    intern_fn(py, &rt_ns, "strs-concat-impl", |args, py| {
+        need_args(args, 1, "strs-concat")?;
+        let coll = args.get_item(0)?.unbind();
+        let mut out = String::new();
+        let mut cur = crate::rt::seq(py, coll)?;
+        while !cur.is_none(py) {
+            let head = crate::rt::first(py, cur.clone_ref(py))?;
+            if !head.is_none(py) {
+                let s = head.bind(py).str()?;
+                out.push_str(s.to_str()?);
+            }
+            cur = crate::rt::next_(py, cur)?;
+        }
+        Ok(pyo3::types::PyString::new(py, &out).unbind().into_any())
+    })?;
+
     intern_fn(py, &rt_ns, "to-string", |args, py| {
         need_args(args, 1, "to-string")?;
         let a = args.get_item(0)?;

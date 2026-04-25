@@ -323,7 +323,10 @@
   "Returns true given any argument."
   [x] true)
 
-;; --- str (lines 546-561) — rewrites StringBuilder to RT/str-concat ---
+;; --- str (vanilla 546-561) — variadic delegates to a Rust bulk-concat
+;; (vanilla uses StringBuilder; both are O(N) char copies). The previous
+;; loop/recur with `str-concat` was O(N²) and pushed Windows past its
+;; smaller stack on long seqs.
 (defn str
   "With no args, returns the empty string. With one arg x, returns
   x.toString(). (str nil) returns the empty string. With more than
@@ -332,10 +335,7 @@
   ([x]
    (if (nil? x) "" (clojure.lang.RT/to-string x)))
   ([x & ys]
-   (loop [acc (str x) s (seq ys)]
-     (if (nil? s)
-       acc
-       (recur (clojure.lang.RT/str-concat acc (str (first s))) (next s))))))
+   (clojure.lang.RT/strs-concat-impl (cons x ys))))
 
 ;; --- symbol?, keyword? (lines 564-574) ---
 (defn symbol?
