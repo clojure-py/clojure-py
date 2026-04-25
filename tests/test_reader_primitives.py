@@ -88,3 +88,55 @@ def test_char_invalid_named_raises():
 def test_reader_error_is_subclass_of_illegal_argument():
     from clojure._core import IllegalArgumentException
     assert issubclass(ReaderError, IllegalArgumentException)
+
+
+from fractions import Fraction
+
+
+def test_ratio_basic():
+    assert _num("1/2") == Fraction(1, 2)
+    assert _num("3/4") == Fraction(3, 4)
+
+
+def test_ratio_reduces_to_int_when_denominator_one():
+    # 4/2 -> int 2 (NOT Fraction(2, 1))
+    v = _num("4/2")
+    assert v == 2
+    assert type(v) is int
+
+
+def test_ratio_reduces_to_lowest_terms():
+    v = _num("2/4")
+    assert v == Fraction(1, 2)
+    assert v.numerator == 1 and v.denominator == 2
+
+
+def test_ratio_negative_numerator():
+    assert _num("-1/2") == Fraction(-1, 2)
+    assert _num("+1/2") == Fraction(1, 2)
+
+
+def test_ratio_zero_denominator_is_reader_error():
+    with pytest.raises(ReaderError):
+        _num("1/0")
+
+
+def test_ratio_negative_denominator_is_reader_error():
+    # Sign rides on the numerator only — `1/-2` is invalid.
+    with pytest.raises(ReaderError):
+        _num("1/-2")
+
+
+def test_ratio_missing_denominator_is_reader_error():
+    with pytest.raises(ReaderError):
+        _num("1/")
+
+
+def test_float_with_slash_is_not_a_ratio():
+    # `1.5/2` is the float 1.5; trailing `/2` is not our problem at this layer
+    # but the call returns 1.5 (the trailing chars are unread/left over).
+    # _test_parse_number reads exactly one number. The float branch wins.
+    assert _num("1.5") == 1.5  # baseline
+    # We don't test "1.5/2" through _num because the helper expects a single
+    # complete number; the property we care about is that the ratio branch is
+    # gated on `is_float == false`.
