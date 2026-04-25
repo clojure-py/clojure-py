@@ -8,8 +8,6 @@
 ;; Omissions from vanilla:
 ;;   * All `thrown-with-cause-msg?` / spec-backed `did not conform to spec`
 ;;     tests — we haven't ported clojure.spec yet.
-;;   * `resolve-keyword-ns-alias-in-destructuring` — requires
-;;     `(require '[clojure.string :as s])`; clojure.string isn't ported.
 ;;   * `quote-with-multiple-args` — relies on `clojure.lang.Compiler$CompilerException`.
 ;;   * `typehints-retained-destructuring` — reflection warning check + Java
 ;;     `.indexOf` method call on a `^String`-hinted local.
@@ -66,3 +64,8 @@
 (deftest namespaced-syms-syntax
   (let [{:a/syms [b c d] :or {d 3}} {'a/b 1 'a/c 2}]
     (is (= [1 2 3] [b c d]))))
+
+(require '[clojure.string :as s])
+(deftest resolve-keyword-ns-alias-in-destructuring
+  (let [{:keys [::s/x ::s/y ::s/z] :or {z 3}} {:clojure.string/x 1 :clojure.string/y 2}]
+    (is (= [1 2 3] [x y z]))))

@@ -17,16 +17,11 @@
 ;;     `clojure.test-helper` and `:const`. Dropped.
 ;;   * `defn-primitive-args` — JVM-only (`^long` / `^String` primitive
 ;;     hints, AbstractMethodError). Dropped.
-;;   * `fns-preserve-metadata-on-sets` inner `(set/project …)` /
-;;     `(set/rename …)` block — requires `clojure.set/project` and
-;;     `clojure.set/rename`, not yet ported. Dropped the inner `let`
-;;     that exercises those; kept the outer `meta`-preservation asserts.
-;;   * `(set/rename-keys …)` usage dropped in `fns-preserve-metadata-on-maps`.
-;;   * `(set/select …)` usage dropped in `fns-preserve-metadata-on-sets`.
 ;;   * `replace` meta-check on vectors kept as-is (works via `map` over seq).
 
 (ns clojure.test-clojure.metadata
-  (:use clojure.test))
+  (:use clojure.test)
+  (:require [clojure.set :as set]))
 
 (deftest fns-preserve-metadata-on-maps
   (let [xm {:a 1 :b -7}
@@ -53,9 +48,7 @@
     (is (= ym (meta (merge-with + y x))))
 
     (is (= xm (meta (select-keys x [:bar]))))
-    ;; Vanilla also exercises `(set/rename-keys x {:foo :new-foo})` —
-    ;; clojure.set not yet ported.
-    ))
+    (is (= xm (meta (set/rename-keys x {:foo :new-foo}))))))
 
 (deftest fns-preserve-metadata-on-vectors
   (let [xm {:a 1 :b -7}
@@ -95,6 +88,19 @@
     (is (= xm (meta (-> x (disj 1) (disj 2) (disj 3)))))
     (is (= xm (meta (into x y))))
     (is (= ym (meta (into y x))))
-    ;; Vanilla additionally exercises `clojure.set/select`,
-    ;; `clojure.set/project`, `clojure.set/rename` — not yet ported.
-    ))
+
+    (is (= xm (meta (set/select even? x))))
+    (let [cow1m {:what "betsy cow"}
+          cow1 (with-meta {:name "betsy" :id 33} cow1m)
+          cow2m {:what "panda cow"}
+          cow2 (with-meta {:name "panda" :id 34} cow2m)
+          cowsm {:what "all the cows"}
+          cows (with-meta #{cow1 cow2} cowsm)
+          cow-names (set/project cows [:name])
+          renamed (set/rename cows {:id :number})]
+      (is (= cowsm (meta cow-names)))
+      (is (= cow1m (meta (first (filter #(= "betsy" (:name %)) cow-names)))))
+      (is (= cow2m (meta (first (filter #(= "panda" (:name %)) cow-names)))))
+      (is (= cowsm (meta renamed)))
+      (is (= cow1m (meta (first (filter #(= "betsy" (:name %)) renamed)))))
+      (is (= cow2m (meta (first (filter #(= "panda" (:name %)) renamed))))))))

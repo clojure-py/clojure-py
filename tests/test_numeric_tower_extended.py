@@ -183,9 +183,16 @@ def test_decimal_arithmetic():
 
 # --- Width casts ---
 
-def test_long_short_byte_char_alias():
-    for form in ("(long 3.7)", "(short 3.7)", "(byte 3.7)", "(char 3.7)"):
+def test_long_short_byte_alias():
+    for form in ("(long 3.7)", "(short 3.7)", "(byte 3.7)"):
         assert _ev(form) == 3
+
+
+def test_char_alias_returns_char():
+    # `(char 3.7)` truncates the float and returns a Char at that codepoint.
+    from clojure._core import Char
+    assert _ev("(char 3.7)") == Char(3)
+    assert _ev("(char 65)") == Char("A")
 
 
 def test_double_and_float_are_float_coerce():

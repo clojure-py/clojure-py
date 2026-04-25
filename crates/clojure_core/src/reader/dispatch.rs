@@ -102,6 +102,10 @@ fn dispatch_hash_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObje
             src.advance(); // consume '^'
             forms::meta_reader(src, py)
         }
+        Some('#') => {
+            src.advance(); // consume the second '#'
+            forms::symbolic_value_reader(src, py, line, col)
+        }
         Some(c) => Err(errors::make(
             format!("Unsupported dispatch macro: #{}", c),
             line,

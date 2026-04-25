@@ -4130,7 +4130,8 @@
 ;; `int` already defined at line 580; don't redefine.
 (defn short  "Coerce to short (Python int)."  [x] (clojure.lang.RT/bigint x))
 (defn byte   "Coerce to byte (Python int)."   [x] (clojure.lang.RT/bigint x))
-(defn char   "Coerce to char (Python int)."   [x] (clojure.lang.RT/bigint x))
+(defn char   "Coerce to a Char (Unicode codepoint)."
+  [x] (clojure.lang.RT/to-char x))
 (defn double "Coerce to double (Python float)."
   [x] (clojure.lang.RT/float-coerce x))
 (defn float  "Coerce to float (Python float)."

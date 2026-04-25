@@ -14,7 +14,7 @@ type PyObject = Py<PyAny>;
 /// Read a token starting at the current source position. Assumes the first char
 /// is a valid token start (non-digit, non-delimiter). Consumes all chars up to
 /// (but not including) the next terminator.
-fn read_token_chars(src: &mut Source<'_>) -> String {
+pub fn read_token_chars(src: &mut Source<'_>) -> String {
     let mut tok = String::new();
     while let Some(c) = src.peek() {
         if lexer::is_token_terminating(c) {

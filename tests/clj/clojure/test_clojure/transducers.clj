@@ -18,7 +18,7 @@
 ;;     :float/:char/:double/:byte` (JVM-primitive-backed vectors). Kept the
 ;;     plain range / vec / list rows.
 ;;   * `test-dedupe`: dropped `[1 1.0 1.0M 1N]` row (BigDecimal / BigInt
-;;     literals not supported) and the char-literal rows (`"a" [\a]` etc.).
+;;     literals not supported).
 ;;   * `test-re-reduced`: dropped `(seq (long-array [1 2 3 4]))` row.
 ;;   * `test-distinct`: dropped `[1] [1 1N]` row (BigInt literal).
 
@@ -53,7 +53,13 @@
              [1 1 1 1] [1]
 
              [nil nil nil] [nil]
-             [0.5 0.5] [0.5]))
+             [0.5 0.5] [0.5]
+
+             "" []
+             "a" [\a]
+             "aaaa" [\a]
+             "aabaa" [\a \b \a]
+             "abba" [\a \b \a]))
 
 (deftest test-cat
   (are [x y] (= (transduce cat conj x) y)

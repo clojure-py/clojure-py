@@ -27,8 +27,9 @@ def test_read_string_literal():
 
 
 def test_read_char_literal():
-    assert read_string(r"\A") == "A"
-    assert read_string(r"\space") == " "
+    from clojure._core import Char
+    assert read_string(r"\A") == Char("A")
+    assert read_string(r"\space") == Char(" ")
 
 
 def test_read_symbol_simple():

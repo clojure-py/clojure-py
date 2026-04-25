@@ -273,9 +273,10 @@
 
 ; Regex Support
 ; re-matcher re-find re-matches re-groups re-seq
-;; Skipped: `test-regex-matcher` uses `re-matcher`/`re-groups` + stateful
-;; match iteration — our `re-find` returns the tuple directly on a
-;; compiled Pattern; we don't expose the Matcher abstraction.
+;; Skipped: `test-regex-matcher`. We expose `re-matcher` / `re-groups` and
+;; stateful `re-find` advancement, but the matcher object isn't `Indexed`,
+;; so the `(nth matcher i)` / `(nth matcher i :foo)` assertions in vanilla
+;; can't run. Restorable once the matcher implements Indexed.
 
 ; update
 

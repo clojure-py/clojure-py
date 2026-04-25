@@ -6,6 +6,7 @@ mod atom;
 mod bean;
 mod binding;
 mod bound_fn;
+mod char;
 pub mod collections;
 mod coll_reduce;
 mod comparable;
@@ -66,6 +67,7 @@ mod vm;
 mod volatile;
 
 pub use clojure_core_macros::{implements, protocol};
+pub use char::Char;
 pub use exceptions::{ArityException, AssertionError, IllegalArgumentException, IllegalStateException};
 pub use ifn::IFn;
 pub use keyword::Keyword;
@@ -78,6 +80,7 @@ pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     exceptions::register(py, m)?;
     symbol::register(py, m)?;
     keyword::register(py, m)?;
+    char::register(py, m)?;
     protocol::register(py, m)?;
     var::register(py, m)?;
     namespace::register(py, m)?;

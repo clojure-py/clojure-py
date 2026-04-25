@@ -1,6 +1,6 @@
 use clojure_core_macros::protocol;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyCFunction, PyDict, PyModule, PyTuple};
+use pyo3::types::{PyAny, PyCFunction, PyDict, PyModule, PyString, PyTuple};
 
 type PyObject = Py<PyAny>;
 
@@ -9,9 +9,23 @@ pub trait ISeqable: Sized {
     fn seq(this: Py<Self>, py: Python<'_>) -> PyResult<PyObject>;
 }
 
+/// Pre-registered seq impl for `str`: yields a seq of `Char` values, matching
+/// vanilla's `(seq "abc")` → `(\a \b \c)`.
+fn py_seq_string_thunk(py: Python<'_>, target: &Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let s = target.bind(py).cast::<PyString>()?.to_str()?;
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() {
+        return Ok(py.None());
+    }
+    let mut acc: Py<PyAny> = crate::collections::plist::empty_list(py).into_any();
+    for c in chars.into_iter().rev() {
+        let item: Py<PyAny> = Py::new(py, crate::char::Char::new(c))?.into_any();
+        acc = crate::rt::conj(py, acc, item)?;
+    }
+    Ok(acc)
+}
+
 /// Fallback for builtin Python iterables that aren't otherwise ISeqable.
-/// Covers `str` — `(seq "abc")` yields a seq of single-char strings, matching
-/// vanilla's `(seq "abc")` → `(\a \b \c)` (modulo our lack of char literals).
 /// The fallback installs an extend_type entry on first dispatch, so repeat
 /// calls hit the cache.
 pub(crate) fn install_builtin_fallback(
@@ -20,6 +34,27 @@ pub(crate) fn install_builtin_fallback(
 ) -> PyResult<()> {
     let proto_any = m.getattr("ISeqable")?;
     let proto: &Bound<'_, crate::Protocol> = proto_any.cast()?;
+
+    // Pre-register `str` so seq-on-string yields Chars (matches vanilla
+    // `(seq "abc")` → `(\a \b \c)`).
+    let str_wrapper = PyCFunction::new_closure(
+        py,
+        None,
+        None,
+        |inner: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
+            let py = inner.py();
+            let this = inner.get_item(0)?.unbind();
+            py_seq_string_thunk(py, &this)
+        },
+    )?;
+    let str_impls = PyDict::new(py);
+    str_impls.set_item("seq", &str_wrapper)?;
+    proto.get().extend_type(py, py.get_type::<PyString>(), str_impls)?;
+    if let Some(pfn) = crate::protocol_fn::get_protocol_fn(py, "ISeqable", "seq") {
+        let mut fns = crate::protocol_fn::InvokeFns::empty();
+        fns.invoke0 = Some(py_seq_string_thunk as crate::protocol_fn::InvokeFn0);
+        pfn.bind(py).get().extend_with_native(py.get_type::<PyString>(), fns);
+    }
 
     let fallback = PyCFunction::new_closure(
         py,

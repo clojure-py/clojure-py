@@ -51,6 +51,15 @@ fn py_hash_float_thunk(py: Python<'_>, target: &Py<PyAny>) -> PyResult<Py<PyAny>
     make_i64(py, h as i64)
 }
 
+/// `Char` hash: matches JVM `Character.hashCode()` — returns the codepoint
+/// directly, not Murmur3'd. This intentionally diverges from int hash so
+/// `(hash \a)` ≠ `(hash 97)` to match vanilla.
+fn py_hash_char_thunk(py: Python<'_>, target: &Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let bound = target.bind(py);
+    let c = bound.cast::<crate::char::Char>()?;
+    make_i64(py, c.get().value as i64)
+}
+
 fn wrapper_for(
     py: Python<'_>,
     thunk: fn(Python<'_>, &Py<PyAny>) -> PyResult<Py<PyAny>>,
@@ -96,6 +105,7 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
     install_for_type(py, ihasheq_proto, py.get_type::<PyBool>(), py_hash_bool_thunk)?;
     install_for_type(py, ihasheq_proto, py.get_type::<PyInt>(), py_hash_int_thunk)?;
     install_for_type(py, ihasheq_proto, py.get_type::<PyFloat>(), py_hash_float_thunk)?;
+    install_for_type(py, ihasheq_proto, py.get_type::<crate::char::Char>(), py_hash_char_thunk)?;
 
     let fallback = PyCFunction::new_closure(
         py,

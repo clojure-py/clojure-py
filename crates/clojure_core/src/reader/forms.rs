@@ -509,6 +509,31 @@ pub fn regex_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> 
     Ok(pat.unbind())
 }
 
+/// `##NaN`, `##Inf`, `##-Inf` — symbolic floating-point values. Caller has
+/// already consumed both `#` characters; `(line, col)` point at the first `#`.
+pub fn symbolic_value_reader(
+    src: &mut Source<'_>,
+    py: Python<'_>,
+    line: u32,
+    col: u32,
+) -> PyResult<PyObject> {
+    let tok = crate::reader::token::read_token_chars(src);
+    let val: f64 = match tok.as_str() {
+        "NaN" => f64::NAN,
+        "Inf" => f64::INFINITY,
+        "-Inf" => f64::NEG_INFINITY,
+        "" => return Err(errors::make("EOF after '##'", line, col)),
+        _ => {
+            return Err(errors::make(
+                format!("Unknown symbolic value: ##{}", tok),
+                line,
+                col,
+            ));
+        }
+    };
+    Ok(val.into_pyobject(py)?.into_any().unbind())
+}
+
 /// Read a set: caller has already consumed '#' and the next char is '{'.
 pub fn set_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
     let start_line = src.line();

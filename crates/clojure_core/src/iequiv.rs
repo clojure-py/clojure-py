@@ -66,6 +66,19 @@ fn py_eq_float_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> Py
     Ok(PyBool::new(py, result).to_owned().unbind().into_any())
 }
 
+/// `Char` equiv: matches only other `Char` instances by value. Vanilla
+/// Character.equals compares Character to Character only; here we ensure
+/// `(= \a "a")` and `(= \a 97)` both return false.
+fn py_eq_char_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let result = match other.bind(py).cast::<crate::char::Char>() {
+        Ok(o) => target.bind(py).cast::<crate::char::Char>()
+            .map(|t| t.get().value == o.get().value)
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    Ok(PyBool::new(py, result).to_owned().unbind().into_any())
+}
+
 /// Build a `PyCFunction` closure that calls `thunk` for IEquiv/equiv.
 fn wrapper_for(
     py: Python<'_>,
@@ -115,6 +128,7 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
     install_for_type(py, iequiv_proto, py.get_type::<PyBool>(), py_eq_bool_thunk)?;
     install_for_type(py, iequiv_proto, py.get_type::<PyInt>(), py_eq_int_thunk)?;
     install_for_type(py, iequiv_proto, py.get_type::<PyFloat>(), py_eq_float_thunk)?;
+    install_for_type(py, iequiv_proto, py.get_type::<crate::char::Char>(), py_eq_char_thunk)?;
 
     // For everything else (user types, etc.), fall back to Python `==`.
     let fallback = PyCFunction::new_closure(

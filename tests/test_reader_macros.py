@@ -109,6 +109,40 @@ def test_meta_string_shorthand():
     assert m.val_at(keyword("tag")) == "MyType"
 
 
+# --- Symbolic values (## reader) ---
+
+import math
+
+
+def test_symbolic_nan():
+    v = read_string("##NaN")
+    assert isinstance(v, float)
+    assert math.isnan(v)
+
+
+def test_symbolic_inf():
+    v = read_string("##Inf")
+    assert v == math.inf
+
+
+def test_symbolic_neg_inf():
+    v = read_string("##-Inf")
+    assert v == -math.inf
+
+
+def test_symbolic_in_collection():
+    v = read_string("[##NaN ##Inf ##-Inf]")
+    items = list(v)
+    assert math.isnan(items[0])
+    assert items[1] == math.inf
+    assert items[2] == -math.inf
+
+
+def test_symbolic_unknown_errors():
+    with pytest.raises(ReaderError):
+        read_string("##Bogus")
+
+
 # --- Comments ---
 
 def test_line_comment_before_form():

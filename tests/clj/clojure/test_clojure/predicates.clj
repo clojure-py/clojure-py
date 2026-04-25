@@ -11,7 +11,7 @@
 ;;
 ;; Adaptations from vanilla:
 ;;   * Dropped sample-data entries that reference unsupported literals/types:
-;;     :bigint, :bigdec, :ratio (no ratio literal `2/3`), :character (`\a`),
+;;     :bigint, :bigdec, :ratio (no ratio literal `2/3`),
 ;;     :empty-array / :array (`into-array`), :class (`java.util.Date`),
 ;;     :object (`(new java.util.Date)`).
 ;;   * Dropped `test-string?-more` (uses `java.lang.StringBuilder` /
@@ -19,10 +19,6 @@
 ;;   * `test-preds`: dropped rows that need `0.0M` / `0N` / UUID / URI /
 ;;     java.util.Date / byte-array; dropped columns `uuid?`, `decimal?`,
 ;;     `inst?`, `uri?`, `bytes?` since no row needs them after dropping.
-;;   * `test-double-preds`: reader does not yet support `##NaN` / `##Inf` /
-;;     `##-Inf` symbolic values. Dropped entirely. NaN?/infinite? basic
-;;     behavior is exercised via `test-preds` indirectly (neither column
-;;     is included) — when the symbolic-value reader lands we can restore.
 
 (ns clojure.test-clojure.predicates
   (:use clojure.test))
@@ -45,6 +41,7 @@
   :float  (float 7)
   :double (double 7)
 
+  :character \a
   :symbol 'abc
   :keyword :kw
 
@@ -82,6 +79,7 @@
   float?    [:float :double]
   number?   [:byte :short :int :long :float :double]
 
+  char?    [:character]
   symbol?  [:symbol]
   keyword? [:keyword]
 
@@ -157,7 +155,13 @@
           (is (= ((resolve (nth preds i)) v) (nth row i))
               (pr-str (list (nth preds i) v))))))))
 
-;; Special double predicates — vanilla exercises `##NaN`, `##Inf`, `##-Inf`
-;; plus `Double/parseDouble`, `Float/parseFloat`, `Double/POSITIVE_INFINITY`
-;; etc. Our reader does not yet support the `##` symbolic-value syntax
-;; and we have no Java interop. Dropped.
+;; Vanilla also exercises `(Double/parseDouble "NaN")`, `Float/NaN`,
+;; `Double/POSITIVE_INFINITY`, etc. — Java interop, dropped.
+;; `(thrown? Throwable (NaN? nil))` / `(NaN? :xyz)` dropped: our
+;; implementations return `false` on non-numeric input rather than throw.
+(deftest test-double-preds
+  (is (NaN? ##NaN))
+  (is (not (NaN? 5)))
+
+  (is (infinite? ##Inf))
+  (is (infinite? ##-Inf)))

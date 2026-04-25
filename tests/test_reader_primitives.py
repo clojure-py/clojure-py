@@ -63,18 +63,21 @@ def test_string_unterminated_raises():
 
 
 def test_char_ascii():
-    assert _ch(r"\a") == "a"
-    assert _ch(r"\A") == "A"
+    from clojure._core import Char
+    assert _ch(r"\a") == Char("a")
+    assert _ch(r"\A") == Char("A")
 
 
 def test_char_named():
-    assert _ch(r"\space") == " "
-    assert _ch(r"\newline") == "\n"
-    assert _ch(r"\tab") == "\t"
+    from clojure._core import Char
+    assert _ch(r"\space") == Char(" ")
+    assert _ch(r"\newline") == Char("\n")
+    assert _ch(r"\tab") == Char("\t")
 
 
 def test_char_unicode():
-    assert _ch(r"\u0041") == "A"
+    from clojure._core import Char
+    assert _ch(r"\u0041") == Char("A")
 
 
 def test_char_invalid_named_raises():

@@ -1,5 +1,6 @@
 //! String and character literal parsers.
 
+use crate::char::Char;
 use crate::reader::errors;
 use crate::reader::source::Source;
 use pyo3::prelude::*;
@@ -119,5 +120,5 @@ pub fn parse_char(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
         }
     };
 
-    Ok(PyString::new(py, &out_char.to_string()).unbind().into_any())
+    Ok(Py::new(py, Char::new(out_char))?.into_any())
 }

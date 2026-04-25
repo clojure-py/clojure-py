@@ -12,8 +12,8 @@
 ;;
 ;; Adaptations from vanilla:
 ;;   * `(throw (Exception. "msg"))` → `(throw (clojure._core/IllegalStateException "msg"))`.
-;;   * Dropped data rows containing `2/3` (ratio), `0M 1M` (BigDecimal),
-;;     `\c` (character literals — not supported).
+;;   * Dropped data rows containing `2/3` (ratio) and `0M 1M` (BigDecimal) —
+;;     reader doesn't parse those literals.
 ;;   * `(exception)` helper from `clojure.test-helper` replaced with an
 ;;     inline throw.
 ;;
@@ -33,7 +33,7 @@
   (throw (clojure._core/IllegalStateException "should not evaluate")))
 
 (defn maintains-identity [f]
-  ;; Vanilla's row includes `2/3 0M 1M \c` — not supported here.
+  ;; Vanilla's row includes `2/3 0M 1M` (ratio/BigDecimal) — not supported here.
   (are [x] (= (f x) x)
       nil
       false true
@@ -42,6 +42,7 @@
       "" "abc"
       'sym
       :kw
+      \c
       () '(1 2)
       [] [1 2]
       {} {:a 1 :b 2}
@@ -194,7 +195,8 @@
   (are [x]  (= (cond x :a true :b) :b)
       nil false )
 
-  ; true row — vanilla's includes `2/3 0M 1M \c` which we don't support.
+  ; true row — vanilla's includes `2/3 0M 1M` (ratio/BigDecimal) which we
+  ; don't support.
   (are [x]  (= (cond x :a true :b) :a)
       true
       0 42
@@ -202,6 +204,7 @@
       "" "abc"
       'sym
       :kw
+      \c
       () '(1 2)
       [] [1 2]
       {} {:a 1 :b 2}

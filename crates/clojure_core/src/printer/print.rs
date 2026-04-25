@@ -46,6 +46,15 @@ fn pr_str_with(py: Python<'_>, x: PyObject, readable: bool) -> PyResult<String> 
         };
     }
 
+    if let Ok(ch) = b.cast::<crate::char::Char>() {
+        let c = ch.get().value;
+        return Ok(if readable {
+            crate::char::named_or_escaped(c)
+        } else {
+            c.to_string()
+        });
+    }
+
     // PersistentList
     if let Ok(pl) = b.cast::<crate::collections::plist::PersistentList>() {
         return pr_list(py, pl.clone().unbind().into_any(), readable);

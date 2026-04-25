@@ -381,13 +381,49 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     intern_fn(py, &rt_ns, "instance-char?", |args, py| {
         need_args(args, 1, "instance-char?")?;
         let x = args.get_item(0)?;
-        // No Character type in Python; a single-char str counts.
-        let ok = if let Ok(s) = x.cast::<pyo3::types::PyString>() {
-            s.to_str()?.chars().count() == 1
-        } else {
-            false
-        };
+        let ok = x.cast::<crate::char::Char>().is_ok();
         Ok(PyBool::new(py, ok).to_owned().unbind().into_any())
+    })?;
+
+    // (char x) coerces x to a Char. Accepts Char, int (codepoint), 1-char str,
+    // or float (truncated to int, matching JVM `(char 3.7) → \space-equivalent
+    // codepoint 3` behavior).
+    intern_fn(py, &rt_ns, "to-char", |args, py| {
+        need_args(args, 1, "char")?;
+        let x = args.get_item(0)?;
+        if let Ok(c) = x.cast::<crate::char::Char>() {
+            return Ok(Py::new(py, crate::char::Char::new(c.get().value))?.into_any());
+        }
+        if let Ok(s) = x.cast::<pyo3::types::PyString>() {
+            let st = s.to_str()?;
+            let mut iter = st.chars();
+            return match (iter.next(), iter.next()) {
+                (Some(c), None) => Ok(Py::new(py, crate::char::Char::new(c))?.into_any()),
+                _ => Err(crate::exceptions::IllegalArgumentException::new_err(
+                    "char: requires a Char, int codepoint, or 1-char str",
+                )),
+            };
+        }
+        // Numeric coercion: int directly, float truncated. Validate codepoint range.
+        let n: i64 = if let Ok(v) = x.extract::<i64>() {
+            v
+        } else if let Ok(f) = x.extract::<f64>() {
+            f as i64
+        } else {
+            return Err(crate::exceptions::IllegalArgumentException::new_err(
+                "char: requires a Char, number, or 1-char str",
+            ));
+        };
+        if !(0..=0x10FFFF).contains(&n) {
+            return Err(crate::exceptions::IllegalArgumentException::new_err(
+                format!("char: invalid Unicode codepoint: {}", n),
+            ));
+        }
+        char::from_u32(n as u32)
+            .ok_or_else(|| crate::exceptions::IllegalArgumentException::new_err(
+                format!("char: invalid Unicode codepoint: {}", n),
+            ))
+            .and_then(|c| Ok(Py::new(py, crate::char::Char::new(c))?.into_any()))
     })?;
 
     // --- Exception raisers (core.clj uses these where JVM would `(Foo. "msg")`) ---
