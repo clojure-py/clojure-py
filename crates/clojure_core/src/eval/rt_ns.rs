@@ -4287,6 +4287,14 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         Ok(mixed.into_pyobject(py)?.unbind().into_any())
     })?;
 
+    intern_fn(py, &rt_ns, "hash-combine", |args, py| {
+        need_args(args, 2, "hash-combine")?;
+        let a: i64 = args.get_item(0)?.extract()?;
+        let b: i64 = args.get_item(1)?.extract()?;
+        let r = crate::murmur3::hash_combine(a as i32, b as i32);
+        Ok((r as i64).into_pyobject(py)?.unbind().into_any())
+    })?;
+
     // --- Class introspection ---
 
     intern_fn(py, &rt_ns, "bases-impl", |args, py| {

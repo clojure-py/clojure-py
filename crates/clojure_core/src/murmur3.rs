@@ -97,3 +97,17 @@ pub fn hash_unordered_seq(py: pyo3::Python<'_>, coll: pyo3::Py<pyo3::types::PyAn
     }
     Ok(mix_coll_hash(h, n))
 }
+
+/// Boost-style hash combine — `clojure.lang.Util.hashCombine`. Used for
+/// composing a "seed" hash (e.g. type-name hash) with a content hash
+/// (e.g. field-map hash) so distinct (seed, content) pairs separate.
+pub fn hash_combine(seed: i32, h: i32) -> i32 {
+    let s = seed as u32;
+    let h = h as u32;
+    let golden: u32 = 0x9e3779b9;
+    let combined = h
+        .wrapping_add(golden)
+        .wrapping_add(s.wrapping_shl(6))
+        .wrapping_add(s.wrapping_shr(2));
+    (s ^ combined) as i32
+}
