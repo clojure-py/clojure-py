@@ -380,6 +380,33 @@ fn pop_tail(cnt: usize, level: u32, node: &Arc<VNode>) -> Option<Arc<VNode>> {
 
 // --- Python-facing methods. ---
 
+/// JVM `APersistentVector.compareTo`: length-first, then element-wise via
+/// the Comparable protocol. Returns -1 / 0 / 1.
+fn compare_pvectors(
+    py: Python<'_>,
+    a: &PersistentVector,
+    b: &PersistentVector,
+) -> PyResult<i64> {
+    let ac = a.cnt as usize;
+    let bc = b.cnt as usize;
+    if ac < bc { return Ok(-1); }
+    if ac > bc { return Ok(1); }
+    // Same length — recurse via Comparable.
+    let pfn = crate::protocol_fn::get_protocol_fn(py, "Comparable", "compare_to")
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "Comparable protocol not initialized"
+        ))?;
+    let pfn_b = pfn.bind(py);
+    for i in 0..ac {
+        let av = a.nth_internal(py, i)?;
+        let bv = b.nth_internal(py, i)?;
+        let result = pfn_b.call1((av, bv))?;
+        let c: i64 = result.extract()?;
+        if c != 0 { return Ok(c); }
+    }
+    Ok(0)
+}
+
 #[pymethods]
 impl PersistentVector {
     fn __len__(&self) -> usize {
@@ -395,6 +422,54 @@ impl PersistentVector {
 
     fn __eq__(slf: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
         crate::rt::equiv(py, slf.into_any(), other)
+    }
+
+    fn __lt__(slf: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let other_b = other.bind(py);
+        let other_v = other_b.downcast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "can only compare PersistentVector to PersistentVector"
+            )
+        })?;
+        let s_inner = slf.bind(py).borrow();
+        let o_inner = other_v.borrow();
+        Ok(compare_pvectors(py, &*s_inner, &*o_inner)? < 0)
+    }
+
+    fn __gt__(slf: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let other_b = other.bind(py);
+        let other_v = other_b.downcast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "can only compare PersistentVector to PersistentVector"
+            )
+        })?;
+        let s_inner = slf.bind(py).borrow();
+        let o_inner = other_v.borrow();
+        Ok(compare_pvectors(py, &*s_inner, &*o_inner)? > 0)
+    }
+
+    fn __le__(slf: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let other_b = other.bind(py);
+        let other_v = other_b.downcast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "can only compare PersistentVector to PersistentVector"
+            )
+        })?;
+        let s_inner = slf.bind(py).borrow();
+        let o_inner = other_v.borrow();
+        Ok(compare_pvectors(py, &*s_inner, &*o_inner)? <= 0)
+    }
+
+    fn __ge__(slf: Py<Self>, py: Python<'_>, other: PyObject) -> PyResult<bool> {
+        let other_b = other.bind(py);
+        let other_v = other_b.downcast::<Self>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "can only compare PersistentVector to PersistentVector"
+            )
+        })?;
+        let s_inner = slf.bind(py).borrow();
+        let o_inner = other_v.borrow();
+        Ok(compare_pvectors(py, &*s_inner, &*o_inner)? >= 0)
     }
 
     fn __hash__(slf: Py<Self>, py: Python<'_>) -> PyResult<i64> {
