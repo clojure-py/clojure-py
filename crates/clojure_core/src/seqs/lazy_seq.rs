@@ -66,20 +66,21 @@ impl LazySeq {
             // nested LazySeq without deadlocking.
         };
         let raw_result = crate::rt::invoke_n(py, thunk, &[])?;
-        // Unwrap nested LazySeqs iteratively to prevent deep recursion.
+        // Iteratively unwrap nested LazySeqs by force-once on each (no
+        // recursion into `realize`). Mirrors vanilla `LazySeq.unwrap`'s
+        // `while (ls instanceof LazySeq) ls = ls.sval()` loop.
         let mut cur = raw_result;
         loop {
             let cur_b = cur.bind(py);
             if let Ok(nested) = cur_b.cast::<LazySeq>() {
-                cur = match nested.get().realize(py)? {
-                    Some(s) => s,
+                match nested.get().force_once(py)? {
+                    Some(v) => { cur = v; continue; }
                     None => {
                         let mut g2 = self.state.write();
                         *g2 = LazySeqState::Realized(None);
                         return Ok(None);
                     }
-                };
-                continue;
+                }
             }
             break;
         }
@@ -89,6 +90,36 @@ impl LazySeq {
         let mut g2 = self.state.write();
         *g2 = LazySeqState::Realized(result.as_ref().map(|o| o.clone_ref(py)));
         Ok(result)
+    }
+
+    /// Force this LazySeq's thunk once if not yet realized, cache the
+    /// immediate result, and return it. Used by `realize`'s unwrap loop —
+    /// crucially this does NOT recurse into nested LazySeqs (the caller's
+    /// loop handles that), so a 10000-deep chain forces in 10000 iterations
+    /// of one stack frame, not 10000 recursive frames.
+    fn force_once(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        {
+            let g = self.state.read();
+            if let LazySeqState::Realized(v) = &*g {
+                return Ok(v.as_ref().map(|o| o.clone_ref(py)));
+            }
+        }
+        let thunk = {
+            let g = self.state.write();
+            match &*g {
+                LazySeqState::Realized(v) => {
+                    return Ok(v.as_ref().map(|o| o.clone_ref(py)));
+                }
+                LazySeqState::Unrealized(t) => t.clone_ref(py),
+            }
+        };
+        let raw = crate::rt::invoke_n(py, thunk, &[])?;
+        let cached = if raw.is_none(py) { None } else { Some(raw) };
+        {
+            let mut g = self.state.write();
+            *g = LazySeqState::Realized(cached.as_ref().map(|o| o.clone_ref(py)));
+        }
+        Ok(cached)
     }
 }
 
