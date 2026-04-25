@@ -614,6 +614,12 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // (apply f args) / (apply f x1 x2 ... args) — invoke f with x1..xn and the
     // seq-expanded tail as positional args. Mirrors clojure.core/apply.
+    //
+    // When `f` is a compiled Fn, we route through `Fn::apply_with_self_seq`
+    // which peels only enough elements off the tail to satisfy the matching
+    // arity and hands the *unrealized remainder* to the variadic rest slot —
+    // matching vanilla's `applyTo(ISeq)`. Skipping full realization on a
+    // 10000-element lazy seq matters on smaller-stack platforms (Windows).
     intern_fn(py, &rt_ns, "apply", |args, py| {
         if args.len() < 2 {
             return Err(IllegalArgumentException::new_err(
@@ -622,11 +628,31 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         }
         let f = args.get_item(0)?.unbind();
         let last_ix = args.len() - 1;
+
+        // Fast path: target is a compiled Fn. Build a (list* leading tail)
+        // seq and hand the whole thing to apply_with_self_seq. Leading args
+        // are typically 0-3 elements; this is O(leading.len()) cons cells.
+        if let Ok(fn_target) = f.bind(py).cast::<crate::eval::fn_value::Fn>() {
+            let tail = args.get_item(last_ix)?.unbind();
+            let mut combined: PyObject = tail;
+            for i in (1..last_ix).rev() {
+                let head = args.get_item(i)?.unbind();
+                let cons = crate::seqs::cons::Cons::new(head, combined);
+                combined = Py::new(py, cons)?.into_any();
+            }
+            return crate::eval::fn_value::Fn::apply_with_self_seq(
+                fn_target.clone().unbind(),
+                py,
+                combined,
+            );
+        }
+
+        // Generic path: realize the tail seq and call via invoke_n. Used for
+        // Python callables, multimethods, vars wrapping non-Fn targets, etc.
         let mut call_args: Vec<PyObject> = Vec::with_capacity(last_ix);
         for i in 1..last_ix {
             call_args.push(args.get_item(i)?.unbind());
         }
-        // Expand the tail seq.
         let tail = args.get_item(last_ix)?.unbind();
         let mut cur = crate::rt::seq(py, tail)?;
         while !cur.is_none(py) {

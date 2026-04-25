@@ -77,6 +77,75 @@ impl Fn {
             crate::vm::run(py, method, &this.pool, &this.captures, args, Some(&self_any))
         }
     }
+
+    /// Apply with the args supplied as a seq instead of a slice — mirrors
+    /// vanilla `applyTo(ISeq)`. Peels at most `max_fixed_arity + 1` elements
+    /// from the seq to determine arity. If overflow detected and a variadic
+    /// arity matches, hands the remaining seq to the variadic's rest slot
+    /// **without realizing it** — vanilla parity.
+    ///
+    /// Used by `RT/apply` to avoid materializing 10000-element lazy seqs
+    /// into a Vec before calling the function. The caller's seq walk in
+    /// `strs-concat-impl` (or whatever the variadic body does) becomes the
+    /// only walk.
+    pub fn apply_with_self_seq(
+        slf: Py<Self>,
+        py: Python<'_>,
+        seq_args: PyObject,
+    ) -> PyResult<PyObject> {
+        let this = slf.bind(py).get();
+        let self_any: PyObject = slf.clone_ref(py).into_any();
+
+        // peel_target = (max fixed arity) ⊔ (variadic arity). Peel that
+        // many + 1 elements to detect overflow; if we hit it, dispatch is
+        // variadic and the remaining seq becomes the rest arg directly.
+        let max_fixed: usize = this.methods.iter().map(|m| m.arity as usize).max().unwrap_or(0);
+        let var_arity: Option<usize> = this.variadic.as_ref().map(|v| v.arity as usize);
+        let peel_target: usize = max_fixed.max(var_arity.unwrap_or(0));
+
+        let mut peeled: Vec<PyObject> = Vec::with_capacity(peel_target + 1);
+        let mut cur = crate::rt::seq(py, seq_args)?;
+        while peeled.len() <= peel_target && !cur.is_none(py) {
+            peeled.push(crate::rt::first(py, cur.clone_ref(py))?);
+            cur = crate::rt::next_(py, cur)?;
+        }
+
+        if cur.is_none(py) {
+            // Seq fully realized within the peel budget → standard dispatch.
+            return Self::apply_with_self(slf, py, &peeled);
+        }
+
+        // Overflow: more than peel_target elements remain. Must be variadic.
+        let variadic = this.variadic.as_ref().ok_or_else(|| {
+            crate::exceptions::ArityException::new_err(format!(
+                "Wrong number of args (>{}) passed to {}",
+                peel_target,
+                this.name.as_deref().unwrap_or("<anonymous>")
+            ))
+        })?;
+        let v_arity = variadic.arity as usize;
+        if peeled.len() < v_arity {
+            return Err(crate::exceptions::ArityException::new_err(format!(
+                "Wrong number of args ({}) passed to {}",
+                peeled.len(),
+                this.name.as_deref().unwrap_or("<anonymous>")
+            )));
+        }
+
+        // First v_arity peeled elements are the fixed args. Any peeled-beyond
+        // get cons'd back onto the remaining seq to form the rest arg.
+        let mut frame_args: Vec<PyObject> = Vec::with_capacity(v_arity + 1);
+        for i in 0..v_arity {
+            frame_args.push(peeled[i].clone_ref(py));
+        }
+        let mut rest_seq: PyObject = cur;
+        for i in (v_arity..peeled.len()).rev() {
+            let cons = crate::seqs::cons::Cons::new(peeled[i].clone_ref(py), rest_seq);
+            rest_seq = Py::new(py, cons)?.into_any();
+        }
+        frame_args.push(rest_seq);
+        crate::vm::run(py, variadic, &this.pool, &this.captures, &frame_args, Some(&self_any))
+    }
 }
 
 /// Package variadic overflow args as a seq — uses PersistentList since
