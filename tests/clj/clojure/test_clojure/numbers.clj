@@ -67,11 +67,11 @@
   (are [x y] (< (abs (- x y)) DELTA)
       (+ 1.2) 1.2
       (+ 1.1 2.4) 3.5
-      (+ 1.1 2.2 3.3) 6.6))
+      (+ 1.1 2.2 3.3) 6.6)
 
-  ;; Vanilla also asserts `(thrown? ClassCastException (+ "ab" "cd"))`.
-  ;; Our `+` falls through to Python `+`, which concatenates strings — a
-  ;; known divergence; the assertion is dropped.
+  ;; Adding strings is not concatenation in Clojure (vanilla raises
+  ;; ClassCastException; we raise IllegalArgumentException).
+  (is (thrown? clojure._core/IllegalArgumentException (+ "ab" "cd"))))
 
 
 (deftest test-subtract
@@ -212,11 +212,10 @@
 ;; --- pos? / zero? / neg? ---------------------------------------------------
 
 (deftest test-pos?-zero?-neg?
-  ;; Vanilla also tests `float`/`double`/`bigdec`/ratio rows; our `zero?`/
-  ;; `pos?`/`neg?` route through `=` which distinguishes Long ≠ Double, so
-  ;; `(zero? 0.0)` is false here. We just exercise the int rows.
   (let [nums [[(int 4) (int 0) (int -4)]
-              [(long 5) (long 0) (long -5)]]
+              [(long 5) (long 0) (long -5)]
+              [(float 7.0) (float 0.0) (float -7.0)]
+              [(double 8.0) (double 0.0) (double -8.0)]]
         pred-result [[pos?  [true  false false]]
                      [zero? [false true  false]]
                      [neg?  [false false true]]]]
@@ -356,14 +355,14 @@
           (- 0.0 nan)
           (- nan nan)
           (* nan 1)
+          (* nan 0)
           (* nan 0.0)
           (* 1 nan)
+          (* 0 nan)
           (* 0.0 nan)
           (* nan nan)
           (/ nan 1)
+          (/ nan 0.0)
           (/ 1 nan)
+          (/ 0.0 nan)
           (/ nan nan)))))
-;; Note: vanilla also tests `(/ nan 0.0)` and `(/ 0 nan)` etc. Our `/`
-;; routes integer 0 division through Python which raises ZeroDivisionError
-;; even when the dividend is NaN (Java's IEEE-754 division would produce NaN).
-;; Those rows are dropped.

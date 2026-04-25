@@ -809,19 +809,31 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     intern_fn(py, &rt_ns, "add", |args, py| {
         need_args(args, 2, "add")?;
-        let r = args.get_item(0)?.add(args.get_item(1)?)?;
+        let a = args.get_item(0)?;
+        let b = args.get_item(1)?;
+        ensure_numeric(&a, "+")?;
+        ensure_numeric(&b, "+")?;
+        let r = a.add(b)?;
         let _ = py;
         Ok(r.unbind())
     })?;
     intern_fn(py, &rt_ns, "subtract", |args, py| {
         need_args(args, 2, "subtract")?;
-        let r = args.get_item(0)?.sub(args.get_item(1)?)?;
+        let a = args.get_item(0)?;
+        let b = args.get_item(1)?;
+        ensure_numeric(&a, "-")?;
+        ensure_numeric(&b, "-")?;
+        let r = a.sub(b)?;
         let _ = py;
         Ok(r.unbind())
     })?;
     intern_fn(py, &rt_ns, "multiply", |args, py| {
         need_args(args, 2, "multiply")?;
-        let r = args.get_item(0)?.mul(args.get_item(1)?)?;
+        let a = args.get_item(0)?;
+        let b = args.get_item(1)?;
+        ensure_numeric(&a, "*")?;
+        ensure_numeric(&b, "*")?;
+        let r = a.mul(b)?;
         let _ = py;
         Ok(r.unbind())
     })?;
@@ -831,9 +843,12 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Python's normal `/` (float for int/float, Fraction for Fraction ops,
     // Decimal for Decimal ops).
     intern_fn(py, &rt_ns, "divide", |args, py| {
+        use pyo3::types::PyFloat;
         need_args(args, 2, "divide")?;
         let a = args.get_item(0)?;
         let b = args.get_item(1)?;
+        ensure_numeric(&a, "/")?;
+        ensure_numeric(&b, "/")?;
         if is_exact_int(&a) && is_exact_int(&b) {
             let zero = 0i64.into_pyobject(py)?;
             if b.eq(&zero)? {
@@ -850,8 +865,15 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             }
             return Ok(frac.unbind());
         }
+        // IEEE-754: when either operand is a float, division by zero yields
+        // ±Inf / NaN (not an exception). Vanilla Clojure follows the JVM here.
+        if a.cast::<PyFloat>().is_ok() || b.cast::<PyFloat>().is_ok() {
+            let af: f64 = a.extract().unwrap_or(f64::NAN);
+            let bf: f64 = b.extract().unwrap_or(f64::NAN);
+            let r = af / bf;
+            return Ok(r.into_pyobject(py)?.into_any().unbind());
+        }
         let r = a.div(b)?;
-        let _ = py;
         Ok(r.unbind())
     })?;
 
@@ -4811,6 +4833,34 @@ fn nth_seq_walk(py: Python<'_>, coll: PyObject, i: PyObject, default: Option<PyO
 fn is_exact_int(x: &Bound<'_, PyAny>) -> bool {
     use pyo3::types::PyInt;
     x.cast::<PyInt>().is_ok() && x.cast::<PyBool>().is_err()
+}
+
+/// Reject non-numeric arguments to arithmetic ops. Vanilla raises
+/// `ClassCastException` from `Numbers.ops`; we surface it as
+/// `IllegalArgumentException`. Numeric types we accept: int, float,
+/// `fractions.Fraction`, `decimal.Decimal`.
+fn ensure_numeric(x: &Bound<'_, PyAny>, op: &str) -> PyResult<()> {
+    use pyo3::types::{PyFloat, PyInt};
+    if x.cast::<PyInt>().is_ok() || x.cast::<PyFloat>().is_ok() {
+        return Ok(());
+    }
+    // Fraction / Decimal — Python types we treat as numeric.
+    let py = x.py();
+    if let Ok(numbers_mod) = py.import("numbers") {
+        if let Ok(num_cls) = numbers_mod.getattr("Number") {
+            if x.is_instance(&num_cls)? {
+                return Ok(());
+            }
+        }
+    }
+    let cls = x.get_type();
+    let cls_name: String = cls
+        .getattr("__name__")
+        .and_then(|n| n.extract())
+        .unwrap_or_else(|_| String::from("<unknown>"));
+    Err(crate::exceptions::IllegalArgumentException::new_err(
+        format!("{}: cannot operate on non-numeric type {}", op, cls_name),
+    ))
 }
 
 fn m_ref<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {

@@ -62,7 +62,7 @@ def test_eval_error_keeps_session_alive():
     )
     assert rc == 0
     assert "5" in out  # session continued after the error
-    assert "TypeError" in err
+    assert "IllegalArgumentException" in err
 
 
 def test_rich_unavailable_gives_clean_error(monkeypatch=None):

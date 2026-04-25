@@ -87,7 +87,7 @@ def test_eval_and_print_catches_exception_and_sets_star_e():
         form, print_fn=out.append, err_fn=err.append
     )
     assert out == []  # nothing printed on error
-    assert any("TypeError" in line for line in err)
+    assert any("IllegalArgumentException" in line for line in err)
     # *e should be bound to the exception.
     e_var = sys.modules["clojure.user"].__dict__["*e"]
     assert isinstance(e_var.deref(), BaseException)

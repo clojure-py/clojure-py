@@ -571,7 +571,7 @@
 ;; --- zero? (869), count (876), int (884), nth (891) ---
 (defn zero?
   "Returns true if num is zero, else false."
-  [num] (clojure.lang.RT/equiv num 0))
+  [num] (clojure.lang.RT/num-equiv num 0))
 
 (defn count
   "Returns the number of items in the collection. (count nil) returns 0.
@@ -1935,10 +1935,12 @@
        (reductions f (first s) (rest s))
        (list (f)))))
   ([f init coll]
-   (cons init
-         (lazy-seq
-           (when-let [s (seq coll)]
-             (reductions f (f init (first s)) (rest s)))))))
+   (if (reduced? init)
+     (list @init)
+     (cons init
+           (lazy-seq
+             (when-let [s (seq coll)]
+               (reductions f (f init (first s)) (rest s))))))))
 
 ;; --- Predicate combinators (vanilla ~7430) ---
 
