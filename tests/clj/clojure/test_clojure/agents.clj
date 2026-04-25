@@ -64,6 +64,8 @@
   ;; Vanilla: when an :error-handler is given without an explicit
   ;; :error-mode, the mode defaults to :continue.
   (is (= :continue (error-mode (agent nil :error-handler println))))
+  ;; Explicit :error-mode :fail wins even when handler is present.
+  (is (= :fail (error-mode (agent nil :error-mode :fail :error-handler println))))
   ;; Explicit :error-mode :continue still works.
   (is (= :continue (error-mode (agent nil :error-mode :continue
                                           :error-handler println)))))
@@ -90,13 +92,15 @@
     (is (= :got-it (wait-promise done 10000)))))
 
 
-;; Vanilla `can-send-to-self-from-error-handler-before-popping-action-that-
-;; caused-error` is dropped: it relies on `*agent*` being bound to the
-;; failing agent inside the error handler, but our runtime doesn't bind
-;; `*agent*` in the error-handler thread. The earlier
-;; `can-send-from-error-handler-...` test still exercises send-from-handler
-;; using a captured (closed-over) agent reference, which is the more useful
-;; property for our runtime.
+(deftest can-send-to-self-from-error-handler-before-popping-action-that-caused-error
+  (let [done (promise)
+        ;; Use *agent* inside the error handler — should be bound to the
+        ;; failing agent so we can `send` to it.
+        handler (fn [_agt _err]
+                  (send *agent* (fn [_] (deliver done :got-it))))
+        failing-agent (agent nil :error-handler handler)]
+    (send failing-agent (fn [_] (throw (clojure._core/IllegalStateException "x"))))
+    (is (= :got-it (wait-promise done 10000)))))
 
 
 (deftest earmuff-agent-bound
