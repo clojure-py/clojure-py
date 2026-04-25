@@ -1,6 +1,7 @@
 use clojure_core_macros::protocol;
+use once_cell::sync::OnceCell;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyCFunction, PyDict, PyFloat, PyInt, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyCFunction, PyDict, PyFloat, PyInt, PyTuple, PyType};
 
 type PyObject = Py<PyAny>;
 
@@ -11,18 +12,33 @@ pub trait IEquiv: Sized {
 
 /// Categorize a value for vanilla-Clojure-equivalent equiv. Mirrors the JVM
 /// `Util.equiv` + `Numbers.equal`/`category` rules: `bool` is its own thing
-/// (Boolean is not a Number on the JVM), Long-like and Double-like are both
-/// Numbers but distinct categories, so they never compare equal under `=`.
+/// (Boolean is not a Number on the JVM); Long, Double, Ratio, BigDecimal are
+/// distinct numeric categories that never compare equal under `=`.
 #[derive(Copy, Clone, PartialEq)]
-enum Cat { Bool, Int, Float }
+enum Cat { Bool, Int, Float, Ratio, Decimal }
+
+/// `fractions.Fraction` and `decimal.Decimal` class refs. Populated once at
+/// `install_builtin_fallback` time so `classify` doesn't re-import per call.
+static FRACTION_CLS: OnceCell<Py<PyType>> = OnceCell::new();
+static DECIMAL_CLS:  OnceCell<Py<PyType>> = OnceCell::new();
 
 #[inline]
 fn classify(v: &Bound<'_, PyAny>) -> Option<Cat> {
     // Order matters: bool subclasses int in Python, so check it first.
-    if v.is_instance_of::<PyBool>() { Some(Cat::Bool) }
-    else if v.is_instance_of::<PyInt>() { Some(Cat::Int) }
-    else if v.is_instance_of::<PyFloat>() { Some(Cat::Float) }
-    else { None }
+    if v.is_instance_of::<PyBool>()  { return Some(Cat::Bool); }
+    if v.is_instance_of::<PyInt>()   { return Some(Cat::Int); }
+    if v.is_instance_of::<PyFloat>() { return Some(Cat::Float); }
+    if let Some(fr) = FRACTION_CLS.get() {
+        if v.is_instance(fr.bind(v.py())).unwrap_or(false) {
+            return Some(Cat::Ratio);
+        }
+    }
+    if let Some(dc) = DECIMAL_CLS.get() {
+        if v.is_instance(dc.bind(v.py())).unwrap_or(false) {
+            return Some(Cat::Decimal);
+        }
+    }
+    None
 }
 
 /// Default equiv: Python `==`. Used for opaque user types where Python's
@@ -49,7 +65,7 @@ fn py_eq_int_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyRe
     let other_b = other.bind(py);
     let result = match classify(other_b) {
         Some(Cat::Int) => target.bind(py).eq(other_b)?,
-        Some(Cat::Bool) | Some(Cat::Float) => false,
+        Some(Cat::Bool) | Some(Cat::Float) | Some(Cat::Ratio) | Some(Cat::Decimal) => false,
         None => target.bind(py).eq(other_b)?,
     };
     Ok(PyBool::new(py, result).to_owned().unbind().into_any())
@@ -60,7 +76,7 @@ fn py_eq_float_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> Py
     let other_b = other.bind(py);
     let result = match classify(other_b) {
         Some(Cat::Float) => target.bind(py).eq(other_b)?,
-        Some(Cat::Bool) | Some(Cat::Int) => false,
+        Some(Cat::Bool) | Some(Cat::Int) | Some(Cat::Ratio) | Some(Cat::Decimal) => false,
         None => target.bind(py).eq(other_b)?,
     };
     Ok(PyBool::new(py, result).to_owned().unbind().into_any())
@@ -75,6 +91,30 @@ fn py_eq_char_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyR
             .map(|t| t.get().value == o.get().value)
             .unwrap_or(false),
         Err(_) => false,
+    };
+    Ok(PyBool::new(py, result).to_owned().unbind().into_any())
+}
+
+/// `Ratio` (fractions.Fraction) equiv: matches other Ratios via Python `==`;
+/// false against Bool/Int/Float/Decimal.
+fn py_eq_ratio_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let other_b = other.bind(py);
+    let result = match classify(other_b) {
+        Some(Cat::Ratio) => target.bind(py).eq(other_b)?,
+        Some(_)          => false,
+        None             => target.bind(py).eq(other_b)?,
+    };
+    Ok(PyBool::new(py, result).to_owned().unbind().into_any())
+}
+
+/// `Decimal` equiv: matches other Decimals via Python `==`; false against
+/// Bool/Int/Float/Ratio.
+fn py_eq_decimal_thunk(py: Python<'_>, target: &Py<PyAny>, other: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let other_b = other.bind(py);
+    let result = match classify(other_b) {
+        Some(Cat::Decimal) => target.bind(py).eq(other_b)?,
+        Some(_)            => false,
+        None               => target.bind(py).eq(other_b)?,
     };
     Ok(PyBool::new(py, result).to_owned().unbind().into_any())
 }
@@ -129,6 +169,18 @@ pub(crate) fn install_builtin_fallback(py: Python<'_>, m: &Bound<'_, PyModule>) 
     install_for_type(py, iequiv_proto, py.get_type::<PyInt>(), py_eq_int_thunk)?;
     install_for_type(py, iequiv_proto, py.get_type::<PyFloat>(), py_eq_float_thunk)?;
     install_for_type(py, iequiv_proto, py.get_type::<crate::char::Char>(), py_eq_char_thunk)?;
+
+    // Cache class refs and register Ratio + Decimal as their own equiv categories.
+    let fractions = py.import("fractions")?;
+    let frac_cls: Bound<'_, PyType> = fractions.getattr("Fraction")?.downcast_into::<PyType>()?;
+    let _ = FRACTION_CLS.set(frac_cls.clone().unbind());
+
+    let decimal = py.import("decimal")?;
+    let dec_cls: Bound<'_, PyType> = decimal.getattr("Decimal")?.downcast_into::<PyType>()?;
+    let _ = DECIMAL_CLS.set(dec_cls.clone().unbind());
+
+    install_for_type(py, iequiv_proto, frac_cls, py_eq_ratio_thunk)?;
+    install_for_type(py, iequiv_proto, dec_cls,  py_eq_decimal_thunk)?;
 
     // For everything else (user types, etc.), fall back to Python `==`.
     let fallback = PyCFunction::new_closure(
