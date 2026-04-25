@@ -4479,6 +4479,34 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         Ok(Py::new(py, m)?.into_any())
     })?;
 
+    intern_fn(py, &rt_ns, "re-find-matcher-impl", |args, py| {
+        need_args(args, 1, "re-find")?;
+        let m_obj = args.get_item(0)?;
+        let m = m_obj.downcast::<crate::regex::Matcher>().map_err(|_| {
+            IllegalArgumentException::new_err(
+                "re-find: expected a Matcher (from re-matcher) or pattern + string",
+            )
+        })?;
+        let next = m.get().advance(py)?;
+        if next.is_none(py) {
+            return Ok(py.None());
+        }
+        let next_b = next.bind(py);
+        let groups_tuple = next_b.call_method0("groups")?;
+        let groups: Bound<'_, PyTuple> = groups_tuple.cast_into()?;
+        let whole = next_b.call_method1("group", (0i64,))?;
+        if groups.len() == 0 {
+            return Ok(whole.unbind());
+        }
+        let mut items: Vec<PyObject> = Vec::with_capacity(groups.len() + 1);
+        items.push(whole.unbind());
+        for g in groups.iter() {
+            items.push(g.unbind());
+        }
+        let tup = PyTuple::new(py, &items)?;
+        crate::collections::pvector::vector(py, tup).map(|v| v.into_any())
+    })?;
+
     intern_fn(py, &rt_ns, "re-groups-impl", |args, py| {
         need_args(args, 1, "re-groups")?;
         let m_obj = args.get_item(0)?;

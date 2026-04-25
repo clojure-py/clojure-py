@@ -2813,9 +2813,11 @@
   [s] (clojure.lang.RT/re-pattern s))
 
 (defn re-find
-  "Returns the next regex match, if any, of string to pattern, using
-  re.search(). Uses re.Match's .group(0) and .groups()."
-  [re s] (clojure.lang.RT/re-find-impl re s))
+  "Returns the next regex match. With (re-find pattern s), uses re.search.
+  With (re-find matcher), advances the matcher's iterator and returns the
+  next match (or nil if exhausted)."
+  ([m] (clojure.lang.RT/re-find-matcher-impl m))
+  ([re s] (clojure.lang.RT/re-find-impl re s)))
 
 (defn re-matches
   "Returns the match, if any, of string to pattern, using re.fullmatch()."

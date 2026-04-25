@@ -34,7 +34,7 @@ impl Matcher {
 
     /// Pull the next match from the iterator and store it as `last`. Returns
     /// the Python re.Match (or None if the iterator is exhausted).
-    fn advance(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub(crate) fn advance(&self, py: Python<'_>) -> PyResult<PyObject> {
         let next_fn = py.import("builtins")?.getattr("next")?;
         let none_sentinel = py.None();
         let v = next_fn.call1((self.iter.bind(py), &none_sentinel))?;
