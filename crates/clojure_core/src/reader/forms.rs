@@ -256,6 +256,21 @@ pub fn map_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
                         start_col,
                     ));
                 }
+                // Reject duplicate keys at read time, matching vanilla MapReader.
+                // Equality is `IEquiv.equiv` so 1 ≠ 1.0 (different categories) but
+                // 4/2 == 2 (ratio collapses to int).
+                for i in (0..pairs.len()).step_by(2) {
+                    for j in ((i + 2)..pairs.len()).step_by(2) {
+                        if crate::rt::equiv(py, pairs[i].clone_ref(py), pairs[j].clone_ref(py))? {
+                            let key_str = crate::printer::print::pr_str(py, pairs[i].clone_ref(py))?;
+                            return Err(errors::make(
+                                format!("Duplicate key: {}", key_str),
+                                start_line,
+                                start_col,
+                            ));
+                        }
+                    }
+                }
                 let tup = PyTuple::new(py, &pairs)?;
                 return crate::collections::parraymap::array_map(py, tup);
             }

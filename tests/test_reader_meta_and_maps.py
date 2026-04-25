@@ -50,3 +50,48 @@ def test_meta_baseline_no_chain():
     src = '"^{:foo :bar} sym"'
     expected = _eval(read_string(":bar"))
     assert _eval(read_string(f"(:foo (meta (read-string {src})))")) == expected
+
+
+# ---------- Map duplicate keys ----------
+
+def test_dup_key_simple():
+    with pytest.raises(ReaderError) as ei:
+        read_string('{:a 1 :a 2}')
+    msg = str(ei.value)
+    assert "Duplicate key" in msg
+    assert ":a" in msg
+
+
+def test_dup_key_int():
+    with pytest.raises(ReaderError) as ei:
+        read_string('{1 :x 1 :y}')
+    msg = str(ei.value)
+    assert "Duplicate key" in msg
+    assert "1" in msg
+
+
+def test_dup_key_int_float_distinct():
+    # 1 ≠ 1.0 under `=`. Must NOT raise.
+    assert _eval(read_string('(count {1 :x 1.0 :y})')) == 2
+
+
+def test_dup_key_ratio_literal_reduces_to_int():
+    # 4/2 in the reader literal reduces to int 2 (per ratio reader).
+    # `{4/2 :x 2 :y}` — both keys reduce to int 2 → duplicate.
+    with pytest.raises(ReaderError) as ei:
+        read_string('{4/2 :x 2 :y}')
+    msg = str(ei.value)
+    assert "Duplicate key" in msg
+
+
+def test_dup_key_baseline_no_dup():
+    assert _eval(read_string('(:a {:a 1 :b 2})')) == 1
+    assert _eval(read_string('(:b {:a 1 :b 2})')) == 2
+
+
+def test_dup_key_message_includes_first_dup():
+    with pytest.raises(ReaderError) as ei:
+        read_string('{:a 1 :b 2 :a 3 :b 4}')
+    msg = str(ei.value)
+    assert "Duplicate key" in msg
+    assert (":a" in msg) or (":b" in msg)
