@@ -4,6 +4,17 @@ import pytest
 from clojure._core import eval_string as e, EvalError
 
 
+@pytest.fixture(autouse=True)
+def _restore_ns():
+    """Each test in this file installs throwaway namespaces via `(in-ns ...)`.
+    Restore the previous current-ns on teardown so later tests see a clean
+    starting state.
+    """
+    saved = e("(ns-name *ns*)")
+    yield
+    e(f"(in-ns '{saved})")
+
+
 def test_cross_ns_private_var_rejected():
     """Vanilla: cross-ns access to a ^:private var raises EvalError."""
     e("(in-ns 'priv-test)")

@@ -12,9 +12,15 @@ name_chars = st.text(
 )
 
 
-# Initialize stable namespaces once.
-e("(in-ns 'fuzz-src)")
-e("(clojure.core/refer 'clojure.core)")
+@pytest.fixture(autouse=True)
+def _restore_ns():
+    """Each test in this file installs throwaway namespaces via `(in-ns ...)`.
+    Restore the previous current-ns on teardown so later tests see a clean
+    starting state.
+    """
+    saved = e("(ns-name *ns*)")
+    yield
+    e(f"(in-ns '{saved})")
 
 
 @given(varname=name_chars, private=st.booleans())
