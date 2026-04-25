@@ -24,7 +24,7 @@ pub struct Matcher {
 #[pymethods]
 impl Matcher {
     #[new]
-    fn new(pattern: PyObject, s: PyObject, py: Python<'_>) -> PyResult<Self> {
+    pub fn new(pattern: PyObject, s: PyObject, py: Python<'_>) -> PyResult<Self> {
         let it = pattern.bind(py).call_method1("finditer", (s,))?.unbind();
         Ok(Matcher {
             iter: it,
@@ -50,7 +50,7 @@ impl Matcher {
 
     /// The most recent match, or None if no match has been pulled.
     #[getter]
-    fn last(&self, py: Python<'_>) -> PyObject {
+    pub fn last(&self, py: Python<'_>) -> PyObject {
         let g = self.last.load();
         match (*g).as_ref() {
             Some(m) => m.clone_ref(py),

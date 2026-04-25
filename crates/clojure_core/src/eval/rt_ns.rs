@@ -4475,30 +4475,24 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         need_args(args, 2, "re-matcher")?;
         let pat = args.get_item(0)?;
         let s = args.get_item(1)?;
-        // Use re.Pattern.finditer to get an iterator; wrap in a small
-        // Python object holding pattern + iter + last-match.
-        let it = pat.call_method1("finditer", (s,))?;
-        // Pack into a SimpleNamespace-like object that we can carry through.
-        let types_mod = py.import("types")?;
-        let ns_obj = types_mod.getattr("SimpleNamespace")?.call0()?;
-        ns_obj.setattr("__clj_re_iter__", it)?;
-        ns_obj.setattr("__clj_re_last__", py.None())?;
-        Ok(ns_obj.unbind())
+        let m = crate::regex::Matcher::new(pat.unbind(), s.unbind(), py)?;
+        Ok(Py::new(py, m)?.into_any())
     })?;
 
     intern_fn(py, &rt_ns, "re-groups-impl", |args, py| {
         need_args(args, 1, "re-groups")?;
         let m_obj = args.get_item(0)?;
-        // m_obj may be either a Matcher (our SimpleNamespace) or a Match.
-        let m = if m_obj.hasattr("__clj_re_last__")? {
-            let last = m_obj.getattr("__clj_re_last__")?;
-            if last.is_none() {
+        // m_obj may be either a Matcher (our pyclass) or a re.Match.
+        let last_match: PyObject = if let Ok(matcher) = m_obj.downcast::<crate::regex::Matcher>() {
+            let last = matcher.get().last(py);
+            if last.is_none(py) {
                 return Err(IllegalStateException::new_err("No match found"));
             }
             last
         } else {
-            m_obj
+            m_obj.unbind()
         };
+        let m = last_match.bind(py);
         let groups_tuple = m.call_method0("groups")?;
         let groups: Bound<'_, PyTuple> = groups_tuple.cast_into()?;
         let whole = m.call_method1("group", (0i64,))?;
