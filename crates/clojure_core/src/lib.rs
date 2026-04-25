@@ -49,6 +49,7 @@ mod compiler;
 mod printer;
 mod protocol;
 mod protocol_fn;
+mod regex;
 mod reader;
 mod reduced;
 mod reversible;
@@ -97,6 +98,7 @@ pub fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     volatile::register(py, m)?;
     multifn::register(py, m)?;
     protocol_fn::register(py, m)?;
+    regex::register(py, m)?;
     registry::register_all(py, m)?;
     registry::install_all_extends(py, m)?;
     ilookup::install_builtin_fallback(py, m)?;
