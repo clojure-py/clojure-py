@@ -585,19 +585,22 @@ pub fn set_reader(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> {
         match src.peek() {
             Some('}') => {
                 src.advance();
-                let items_len = items.len();
+                // Scan for the first duplicate so the error names it. O(n^2) is fine
+                // for set literal sizes encountered in practice. Mirrors map_reader.
+                for i in 0..items.len() {
+                    for j in (i + 1)..items.len() {
+                        if crate::rt::equiv(py, items[i].clone_ref(py), items[j].clone_ref(py))? {
+                            let key_str = crate::printer::print::pr_str(py, items[i].clone_ref(py))?;
+                            return Err(errors::make(
+                                format!("Duplicate key: {}", key_str),
+                                start_line,
+                                start_col,
+                            ));
+                        }
+                    }
+                }
                 let tup = PyTuple::new(py, &items)?;
                 let s = crate::collections::phashset::hash_set(py, tup)?;
-                // Duplicate check: if the set's count is less than items.len(),
-                // at least one duplicate was present in the literal.
-                let s_count: usize = s.bind(py).call_method0("__len__")?.extract()?;
-                if s_count != items_len {
-                    return Err(errors::make(
-                        "Duplicate key in set literal",
-                        start_line,
-                        start_col,
-                    ));
-                }
                 return Ok(s.into_any());
             }
             Some(')') | Some(']') => {

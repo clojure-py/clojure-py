@@ -95,3 +95,21 @@ def test_dup_key_message_includes_first_dup():
     msg = str(ei.value)
     assert "Duplicate key" in msg
     assert (":a" in msg) or (":b" in msg)
+
+
+# ---------- Set duplicate keys ----------
+
+def test_set_dup_message_includes_key():
+    with pytest.raises(ReaderError) as ei:
+        read_string('#{:a :a}')
+    msg = str(ei.value)
+    assert "Duplicate key" in msg
+    assert ":a" in msg
+
+
+def test_set_dup_message_includes_int_key():
+    with pytest.raises(ReaderError) as ei:
+        read_string('#{1 1}')
+    msg = str(ei.value)
+    assert "Duplicate key" in msg
+    assert "1" in msg
