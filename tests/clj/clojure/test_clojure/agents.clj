@@ -62,9 +62,8 @@
 (deftest default-modes
   (is (= :fail (error-mode (agent nil))))
   ;; Vanilla: when an :error-handler is given without an explicit
-  ;; :error-mode, the mode defaults to :continue. Our agent doesn't
-  ;; auto-shift; it stays :fail. Verify what we actually do.
-  (is (= :fail (error-mode (agent nil :error-handler println))))
+  ;; :error-mode, the mode defaults to :continue.
+  (is (= :continue (error-mode (agent nil :error-handler println))))
   ;; Explicit :error-mode :continue still works.
   (is (= :continue (error-mode (agent nil :error-mode :continue
                                           :error-handler println)))))

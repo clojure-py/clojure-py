@@ -197,13 +197,9 @@ def test_error_mode_default_is_fail():
 
 def test_error_mode_default_continue_when_handler_given_at_ctor():
     # Vanilla rule: if :error-handler is supplied but :error-mode is not,
-    # default mode is :continue. We honor that in the Clojure layer.
-    # (Our Rust agent-new leaves mode :fail unless the caller sets it; to
-    # match, users should explicitly set :error-mode :continue when giving
-    # :error-handler. Test documents current behavior.)
+    # default mode is :continue.
     _ev("(def --em2 (agent 0 :error-handler (fn* [a e] nil)))")
-    # Our current behavior: mode is still :fail. Accept that.
-    assert _ev("(error-mode --em2)") == _ev(":fail")
+    assert _ev("(error-mode --em2)") == _ev(":continue")
 
 
 # --- Validator ---

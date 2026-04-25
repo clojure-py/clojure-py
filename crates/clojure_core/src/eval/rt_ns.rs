@@ -2016,6 +2016,8 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
                         "agent: options must be key/value pairs",
                     ));
                 }
+                let mut had_error_handler = false;
+                let mut had_error_mode = false;
                 let mut i = 0;
                 while i < opts.len() {
                     let k = opts[i].bind(py);
@@ -2040,9 +2042,11 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
                             agent_py.bind(py).get().install_error_handler(
                                 if v.is_none() { None } else { Some(v.clone().unbind()) },
                             );
+                            had_error_handler = true;
                         }
                         "error-mode" => {
                             agent_py.bind(py).get().install_error_mode(v.clone().unbind());
+                            had_error_mode = true;
                         }
                         other => {
                             return Err(IllegalArgumentException::new_err(format!(
@@ -2052,6 +2056,12 @@ pub(crate) fn init(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
                         }
                     }
                     i += 2;
+                }
+                // Vanilla: :error-handler without explicit :error-mode shifts to :continue.
+                // Explicit :error-mode always wins.
+                if had_error_handler && !had_error_mode {
+                    let continue_kw = crate::keyword::keyword(py, "continue", None)?;
+                    agent_py.bind(py).get().install_error_mode(continue_kw.into_any());
                 }
             }
         }
