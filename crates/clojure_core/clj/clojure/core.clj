@@ -5041,6 +5041,26 @@
   "When true, `pr-on` dispatches via `print-dup` instead of `print-method`."
   false)
 
+(def ^:dynamic *print-length*
+  "If non-nil int, truncates collection printing after that many elements
+  and appends `...`. nil = no limit."
+  nil)
+
+(def ^:dynamic *print-level*
+  "If non-nil int, truncates nested collection printing beyond that depth
+  (replacing too-deep collections with `#`). nil = no limit."
+  nil)
+
+(def ^:dynamic *print-meta*
+  "If true, every meta-bearing value is prefixed with `^M ` where M is its
+  meta map's printed form."
+  false)
+
+(def ^:dynamic *print-namespace-maps*
+  "If true, maps whose keys are all keywords sharing one common namespace
+  print as `#:ns{:k v ...}` rather than `{:ns/k v ...}`."
+  false)
+
 (defmulti print-method
   "Multimethod for printing the textual representation of any value to a
   writer. Dispatches on `(type x)`. Users may extend for their own types:
