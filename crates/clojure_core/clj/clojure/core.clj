@@ -5114,22 +5114,43 @@
                     (recur r (inc n)))))))))
       (clojure.lang.RT/writer-write w close))))
 
+(defn ^:private common-keyword-ns
+  "Returns the common namespace string if every key in m is a keyword with
+  a non-nil namespace and all share that namespace, else nil."
+  [m]
+  (let [entries (seq m)]
+    (when entries
+      (let [first-k (key (first entries))]
+        (when (and (keyword? first-k) (namespace first-k))
+          (let [ns-str (namespace first-k)]
+            (when (every? (fn [e]
+                            (and (keyword? (key e))
+                                 (= ns-str (namespace (key e)))))
+                          entries)
+              ns-str)))))))
+
 (defn ^:private print-map [m w]
   (cond
     (and *print-level* (zero? *print-level*))
     (clojure.lang.RT/writer-write w "#")
     :else
-    (do
-      (clojure.lang.RT/writer-write w "{")
+    (let [common-ns (when *print-namespace-maps* (common-keyword-ns m))]
+      (clojure.lang.RT/writer-write
+        w
+        (if common-ns (str "#:" common-ns "{") "{"))
       (let [limit *print-length*]
         (binding [*print-level* (some-> *print-level* dec)]
           (loop [entries (seq m) n 0]
             (when entries
               (if (and limit (>= n limit))
                 (clojure.lang.RT/writer-write w "...")
-                (let [e (first entries)]
-                  (print-meta-prefix (key e) w)
-                  (print-method (key e) w)
+                (let [e (first entries)
+                      k (key e)]
+                  (if common-ns
+                    (clojure.lang.RT/writer-write w (str ":" (name k)))
+                    (do
+                      (print-meta-prefix k w)
+                      (print-method k w)))
                   (clojure.lang.RT/writer-write w " ")
                   (print-meta-prefix (val e) w)
                   (print-method (val e) w)

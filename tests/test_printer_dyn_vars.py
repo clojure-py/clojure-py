@@ -116,3 +116,47 @@ def test_print_meta_no_meta_no_prefix():
     """Even with *print-meta* true, values without meta print normally."""
     src = '(binding [*print-meta* true] (pr-str (quote sym)))'
     assert e(src) == "sym"
+
+
+# ---------- *print-namespace-maps* ----------
+
+def test_print_namespace_maps_on_uniform_keys():
+    """When all keys share a namespace and the var is true → #:ns{...} form."""
+    src = '(binding [*print-namespace-maps* true] (pr-str {:a/x 1 :a/y 2}))'
+    result = e(src)
+    assert result.startswith("#:a{")
+    assert result.endswith("}")
+    assert ":x 1" in result
+    assert ":y 2" in result
+
+
+def test_print_namespace_maps_off_default():
+    """Default false: standard form."""
+    src = '(pr-str {:a/x 1 :a/y 2})'
+    result = e(src)
+    assert result.startswith("{")
+    assert ":a/x 1" in result
+    assert ":a/y 2" in result
+
+
+def test_print_namespace_maps_mixed_namespaces():
+    """If keys span multiple namespaces, fall back to standard form even when var is true."""
+    src = '(binding [*print-namespace-maps* true] (pr-str {:a/x 1 :b/y 2}))'
+    result = e(src)
+    assert result.startswith("{")
+    assert ":a/x 1" in result
+    assert ":b/y 2" in result
+
+
+def test_print_namespace_maps_non_keyword_keys():
+    """Non-keyword keys also disqualify the short form."""
+    src = '(binding [*print-namespace-maps* true] (pr-str {"a" 1 "b" 2}))'
+    result = e(src)
+    assert result.startswith("{")
+
+
+def test_print_namespace_maps_unqualified_keys():
+    """Keys without namespace also disqualify the short form."""
+    src = '(binding [*print-namespace-maps* true] (pr-str {:x 1 :y 2}))'
+    result = e(src)
+    assert result.startswith("{")
