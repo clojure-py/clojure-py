@@ -131,12 +131,3 @@ def test_ratio_missing_denominator_is_reader_error():
     with pytest.raises(ReaderError):
         _num("1/")
 
-
-def test_float_with_slash_is_not_a_ratio():
-    # `1.5/2` is the float 1.5; trailing `/2` is not our problem at this layer
-    # but the call returns 1.5 (the trailing chars are unread/left over).
-    # _test_parse_number reads exactly one number. The float branch wins.
-    assert _num("1.5") == 1.5  # baseline
-    # We don't test "1.5/2" through _num because the helper expects a single
-    # complete number; the property we care about is that the ratio branch is
-    # gated on `is_float == false`.

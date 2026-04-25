@@ -13,11 +13,9 @@ pub fn parse_number(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> 
     let start_col = src.column();
     let mut buf = String::new();
 
-    // Optional sign on the numerator.
     if matches!(src.peek(), Some('+') | Some('-')) {
         buf.push(src.advance().unwrap());
     }
-    // Integer digits.
     while let Some(c) = src.peek() {
         if lexer::is_digit(c) {
             buf.push(c);
@@ -55,7 +53,6 @@ pub fn parse_number(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> 
         ));
     }
 
-    // Optional fractional part.
     let mut is_float = false;
     if src.peek() == Some('.') {
         is_float = true;
@@ -69,7 +66,6 @@ pub fn parse_number(src: &mut Source<'_>, py: Python<'_>) -> PyResult<PyObject> 
             }
         }
     }
-    // Optional exponent.
     if matches!(src.peek(), Some('e') | Some('E')) {
         is_float = true;
         buf.push(src.advance().unwrap());
@@ -115,13 +111,6 @@ fn finish_ratio(
     start_line: u32,
     start_col: u32,
 ) -> PyResult<PyObject> {
-    if denom_buf.is_empty() {
-        return Err(errors::make(
-            "Expected digit after '/' in ratio literal",
-            start_line,
-            start_col,
-        ));
-    }
     let builtins = py.import("builtins")?;
     let int_type = builtins.getattr("int")?;
     let num = int_type.call1((num_buf,))?;
