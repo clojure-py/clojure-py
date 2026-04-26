@@ -6,7 +6,9 @@
   the top, and (c) `defrecord` Cell/Ant in place of `defstruct` (clojure-py
   does not implement defstruct)."
   (:import [tkinter Tk Canvas]
-           [time sleep]))
+           [time sleep]
+           [queue Queue]
+           [builtins dict]))
 
 ;; --- Dimensions and rates ---------------------------------------------
 ;; All values are verbatim from the 2009 source.
@@ -220,3 +222,80 @@
          (alter (place [x y])
                 assoc :home true)
          (create-ant [x y] (rand-int 8)))))))
+
+;; --- Tk bridge ----------------------------------------------------------
+
+(def scale 8)           ;; pixels per world cell — bumped from original's 5 for Tk
+(def render-queue (Queue 8))   ;; bounded; drop on overflow (we're behind, not wrong)
+
+(defn snapshot-world
+  "Inside one dosync, build a flat seq of cell records suitable for the
+  renderer. Frame is internally consistent."
+  []
+  (dosync
+    (vec
+      (for [x (range dim) y (range dim)
+            :let [c @(place [x y])]]
+        {:x x :y y
+         :pher (:pher c) :food (:food c)
+         :home (:home c) :ant (:ant c)}))))
+
+;; --- Tk colour helpers --------------------------------------------------
+
+(defn pher-color
+  "Tk color string for a pheromone level."
+  [pher]
+  (let [g (max 0 (min 255 (int (* 255 (/ pher pher-scale)))))]
+    (format "#00%02x00" g)))
+
+(defn food-color
+  "Tk color string for a food level."
+  [food]
+  (let [r (max 0 (min 255 (int (* 255 (/ food food-scale)))))]
+    (format "#%02x0000" r)))
+
+;; --- Tk rendering -------------------------------------------------------
+;; kwargs do NOT work through (.method obj ...) — the VM uses call_method1
+;; which is positional-only.  Tk canvas create_* methods accept an optional
+;; `cnf` dict as their last positional argument, so we use
+;;   (dict [["fill" "red"] ["outline" ""]])
+;; instead of :fill "red" :outline "".
+
+(defn render-cell [canvas cell]
+  (let [{:keys [x y pher food home ant]} cell
+        x0 (* x scale) y0 (* y scale)
+        x1 (+ x0 scale) y1 (+ y0 scale)]
+    (when (pos? pher)
+      (.create_rectangle canvas x0 y0 x1 y1
+                         (dict [["fill" (pher-color pher)] ["outline" ""]])))
+    (when (pos? food)
+      (.create_rectangle canvas (+ x0 1) (+ y0 1) (- x1 1) (- y1 1)
+                         (dict [["fill" (food-color food)] ["outline" ""]])))
+    (when home
+      (.create_rectangle canvas x0 y0 x1 y1
+                         (dict [["fill" ""] ["outline" "blue"]])))
+    (when ant
+      (let [color (if (:food ant) "red" "black")]
+        (.create_oval canvas (+ x0 1) (+ y0 1) (- x1 1) (- y1 1)
+                      (dict [["fill" color] ["outline" ""]]))))))
+
+(defn render
+  "Drain the canvas, redraw the world snapshot, and frame it."
+  [canvas]
+  (.delete canvas "all")
+  (doseq [c (snapshot-world)]
+    (render-cell canvas c))
+  (.create_rectangle canvas 0 0 (* dim scale) (* dim scale)
+                     (dict [["fill" ""] ["outline" "black"]])))
+
+;; --- Animator agent action ----------------------------------------------
+
+(defn animation
+  "Periodically push a render request to the queue."
+  [_]
+  (when running
+    (send-off *agent* #'animation))
+  (try (.put_nowait render-queue 1)
+       (catch Exception _ nil))   ;; queue full — drop frame
+  (sleep (/ animation-sleep-ms 1000.0))
+  nil)
