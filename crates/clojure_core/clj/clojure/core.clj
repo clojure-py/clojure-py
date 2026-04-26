@@ -5534,7 +5534,9 @@
     (clojure._core/py_getattr module attr)
     (catch Exception _
       (clojure.lang.RT/throw-iae
-        (str "No such attribute '" attr "' on module '" module-name "'")))))
+        (clojure.lang.RT/str-concat
+          (clojure.lang.RT/str-concat "No such attribute '" attr)
+          (clojure.lang.RT/str-concat "' on module '" (clojure.lang.RT/str-concat module-name "'")))))))
 
 (defn ^:private import-one
   "Process one import spec. Spec is a Symbol or sequential collection.
@@ -5570,7 +5572,9 @@
 
       :else
       (clojure.lang.RT/throw-iae
-        (str "import spec must be a Symbol, Vector, or List; got: " (pr-str spec))))))
+        (clojure.lang.RT/str-concat
+          "import spec must be a Symbol, Vector, or List; got: "
+          (pr-str spec))))))
 
 (defn import
   "Import Python modules and classes into the current namespace.
