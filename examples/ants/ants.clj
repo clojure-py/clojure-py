@@ -5,7 +5,8 @@
   (a) Tk method calls instead of Swing, (b) `(:import [tkinter ...])` at
   the top, and (c) `defrecord` Cell/Ant in place of `defstruct` (clojure-py
   does not implement defstruct)."
-  (:import [tkinter Tk Canvas]))
+  (:import [tkinter Tk Canvas]
+           [time sleep]))
 
 ;; --- Dimensions and rates ---------------------------------------------
 ;; All values are verbatim from the 2009 source.
@@ -86,3 +87,100 @@
   [[x y] dir]
   (let [[dx dy] (dir-delta (bound 8 dir))]
     [(bound dim (+ x dx)) (bound dim (+ y dy))]))
+
+;; --- Ant behaviour --------------------------------------------------------
+
+(defn turn
+  "turns the ant at the location by the given amount"
+  [loc amt]
+  (dosync
+   (let [p (place loc)
+         ant (:ant @p)]
+     (alter p assoc :ant (assoc ant :dir (bound 8 (+ (:dir ant) amt))))))
+  loc)
+
+(defn move
+  "moves the ant in the direction it is heading. Must be called in a
+  transaction that has verified the way is clear"
+  [loc]
+  (let [oldp (place loc)
+        ant (:ant @oldp)
+        newloc (delta-loc loc (:dir ant))
+        p (place newloc)]
+    ;move the ant
+    (alter p assoc :ant ant)
+    (alter oldp assoc :ant nil)
+    ;leave pheromone trail
+    (when-not (:home @oldp)
+      (alter oldp assoc :pher (inc (:pher @oldp))))
+    newloc))
+
+(defn take-food [loc]
+  "Takes one food from current location. Must be called in a
+  transaction that has verified there is food available"
+  (let [p (place loc)
+        ant (:ant @p)]
+    (alter p assoc
+           :food (dec (:food @p))
+           :ant (assoc ant :food true))
+    loc))
+
+(defn drop-food [loc]
+  "Drops food at current location. Must be called in a
+  transaction that has verified the ant has food"
+  (let [p (place loc)
+        ant (:ant @p)]
+    (alter p assoc
+           :food (inc (:food @p))
+           :ant (assoc ant :food nil))
+    loc))
+
+(defn rank-by
+  "returns a map of xs to their 1-based rank when sorted by keyfn"
+  [keyfn xs]
+  (let [sorted (sort-by (comp float keyfn) xs)]
+    (reduce (fn [ret i] (assoc ret (nth sorted i) (inc i)))
+            {} (range (count sorted)))))
+
+(defn behave
+  "the main function for the ant agent"
+  [loc]
+  (let [p (place loc)
+        ant (:ant @p)
+        ahead (place (delta-loc loc (:dir ant)))
+        ahead-left (place (delta-loc loc (dec (:dir ant))))
+        ahead-right (place (delta-loc loc (inc (:dir ant))))
+        places [ahead ahead-left ahead-right]]
+    (sleep (/ ant-sleep-ms 1000.0))
+    (dosync
+     (when running
+       (send-off *agent* #'behave))
+     (if (:food ant)
+       ;going home
+       (cond
+        (:home @p)
+          (-> loc drop-food (turn 4))
+        (and (:home @ahead) (not (:ant @ahead)))
+          (move loc)
+        :else
+          (let [ranks (merge-with +
+                        (rank-by (comp #(if (:home %) 1 0) deref) places)
+                        (rank-by (comp :pher deref) places))]
+          (([move #(turn % -1) #(turn % 1)]
+            (wrand [(if (:ant @ahead) 0 (ranks ahead))
+                    (ranks ahead-left) (ranks ahead-right)]))
+           loc)))
+       ;foraging
+       (cond
+        (and (pos? (:food @p)) (not (:home @p)))
+          (-> loc take-food (turn 4))
+        (and (pos? (:food @ahead)) (not (:home @ahead)) (not (:ant @ahead)))
+          (move loc)
+        :else
+          (let [ranks (merge-with +
+                                  (rank-by (comp :food deref) places)
+                                  (rank-by (comp :pher deref) places))]
+          (([move #(turn % -1) #(turn % 1)]
+            (wrand [(if (:ant @ahead) 0 (ranks ahead))
+                    (ranks ahead-left) (ranks ahead-right)]))
+           loc)))))))
