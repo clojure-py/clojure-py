@@ -94,3 +94,18 @@ def test_import_unknown_attr_raises():
         eval_string("(import 'tkinter.NoSuchAttr)")
     msg = str(ei.value)
     assert "NoSuchAttr" in msg and "tkinter" in msg
+
+
+def test_ns_form_import_directive():
+    """`(:import [tkinter Tk Canvas])` inside `(ns ...)` works the same
+    as a top-level `(import '[tkinter Tk Canvas])`."""
+    import tkinter
+    import tkinter.font
+    eval_string("""
+    (ns import.test.ns-form-1
+      (:import [tkinter Tk Canvas]
+               [tkinter.font Font]))
+    """)
+    result = eval_string("[Tk Canvas Font]")
+    items = list(result)
+    assert items == [tkinter.Tk, tkinter.Canvas, tkinter.font.Font]

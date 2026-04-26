@@ -5633,8 +5633,12 @@
                       (map (fn [s]
                              (list 'clojure.core/use (list 'quote s)))
                            specs)
+                      (= k :import)
+                      (map (fn [s]
+                             (list 'clojure.core/import (list 'quote s)))
+                           specs)
                       :else
-                      ;; :import etc. — best-effort no-op for now.
+                      ;; Unknown directive — ignore for now.
                       nil)))
                 references)]
     `(do
