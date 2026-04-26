@@ -184,3 +184,23 @@
             (wrand [(if (:ant @ahead) 0 (ranks ahead))
                     (ranks ahead-left) (ranks ahead-right)]))
            loc)))))))
+
+;; --- Evaporation ----------------------------------------------------------
+
+(defn evaporate
+  "causes all the pheromones to evaporate a bit"
+  []
+  (dorun
+   (for [x (range dim) y (range dim)]
+     (dosync
+      (let [p (place [x y])]
+        (alter p assoc :pher (* evap-rate (:pher @p))))))))
+
+(defn evaporation
+  "agent action: evaporate once, sleep, then re-send itself"
+  [_]
+  (when running
+    (send-off *agent* #'evaporation))
+  (evaporate)
+  (sleep (/ evap-sleep-ms 1000.0))
+  nil)
