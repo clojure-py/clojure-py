@@ -5526,6 +5526,67 @@
           (apply refer ns-sym (concat extra exclude rename)))))
     nil))
 
+(defn ^:private py-resolve-attr
+  "Look up `attr` on `module`. Throws an IllegalArgumentException with a
+  message that names both the module and the missing attribute."
+  [module module-name attr]
+  (try
+    (clojure._core/py_getattr module attr)
+    (catch Exception _
+      (clojure.lang.RT/throw-iae
+        (str "No such attribute '" attr "' on module '" module-name "'")))))
+
+(defn ^:private import-one
+  "Process one import spec. Spec is a Symbol or sequential collection.
+  Records each resulting class/module in *ns*'s __clj_imports__ via
+  `clojure._core/import_cls`."
+  [spec]
+  (let [ns *ns*]
+    (cond
+      ;; Bare or dotted symbol: 'tkinter  or  'tkinter.Tk
+      (symbol? spec)
+      (let [sname (name spec)
+            dot   (.rfind sname ".")]
+        (if (neg? dot)
+          ;; Whole-module: `(import 'tkinter)` — intern the module under its name.
+          (let [m (clojure._core/py_import_module sname)]
+            (clojure._core/import_cls ns (clojure.core/symbol sname) m))
+          ;; Dotted: split on last dot, pull the named attribute from the module.
+          (let [mod-name (subs sname 0 dot)
+                attr     (subs sname (inc dot))
+                m        (clojure._core/py_import_module mod-name)
+                cls      (py-resolve-attr m mod-name attr)]
+            (clojure._core/import_cls ns (clojure.core/symbol attr) cls))))
+
+      ;; Sequential: vector or list — first element is module, rest are names.
+      (sequential? spec)
+      (let [mod-name (name (first spec))
+            names    (rest spec)
+            m        (clojure._core/py_import_module mod-name)]
+        (doseq [n names]
+          (let [nname (name n)
+                cls   (py-resolve-attr m mod-name nname)]
+            (clojure._core/import_cls ns (clojure.core/symbol nname) cls))))
+
+      :else
+      (clojure.lang.RT/throw-iae
+        (str "import spec must be a Symbol, Vector, or List; got: " (pr-str spec))))))
+
+(defn import
+  "Import Python modules and classes into the current namespace.
+
+  Specs may be:
+    'mod.name              ; intern Class `name` from module `mod`
+    'mod                   ; intern module `mod` itself (Python-only)
+    '[mod Class1 Class2]   ; intern Class1 and Class2 from module `mod`
+    '(mod Class1 Class2)   ; same, list form
+
+  Multiple specs are accepted; each is processed independently."
+  [& specs]
+  (doseq [s specs]
+    (import-one s))
+  nil)
+
 (defn require
   "Loads namespaces, with options.
 

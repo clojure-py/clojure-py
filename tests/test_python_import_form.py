@@ -14,16 +14,19 @@ from clojure._core import (
 
 @pytest.fixture(autouse=True)
 def _restore_ns():
-    """Restore *ns* to clojure.user after each test so global state
-    doesn't leak into subsequent tests in other modules."""
+    """Save *ns* and restore it after each test, so that tests which
+    switch namespaces don't leak into other test files."""
+    saved = eval_string("(str (ns-name *ns*))")
     yield
-    eval_string("(in-ns 'clojure.user)")
+    eval_string(f"(in-ns '{saved})")
 
 
 def _fresh_ns(name: str):
-    """Make a fresh ns and switch *ns* to it, returning the ns object."""
+    """Make a fresh ns, switch *ns* to it, refer clojure.core, and
+    return the ns object."""
     ns = create_ns(symbol(name))
     eval_string(f"(in-ns '{name})")
+    eval_string("(clojure.core/refer 'clojure.core)")
     return ns
 
 
@@ -36,3 +39,58 @@ def test_imports_dict_lookup_resolves_unqualified():
     # Symbol Tk should now resolve to the Tk class.
     result = eval_string("Tk")
     assert result is tkinter.Tk
+
+
+def test_import_dotted_class():
+    _fresh_ns("import.test.dotted1")
+    eval_string("(import 'tkinter.Tk)")
+    import tkinter
+    assert eval_string("Tk") is tkinter.Tk
+
+
+def test_import_bare_module():
+    _fresh_ns("import.test.bare1")
+    eval_string("(import 'tkinter)")
+    import tkinter
+    assert eval_string("tkinter") is tkinter
+
+
+def test_import_vector_form():
+    _fresh_ns("import.test.vec1")
+    eval_string("(import '[tkinter Tk Canvas])")
+    import tkinter
+    assert eval_string("Tk") is tkinter.Tk
+    assert eval_string("Canvas") is tkinter.Canvas
+
+
+def test_import_list_form():
+    _fresh_ns("import.test.list1")
+    eval_string("(import '(tkinter Tk Canvas))")
+    import tkinter
+    assert eval_string("Tk") is tkinter.Tk
+    assert eval_string("Canvas") is tkinter.Canvas
+
+
+def test_import_multi_group():
+    _fresh_ns("import.test.multi1")
+    eval_string("(import '[tkinter Tk] '[tkinter.font Font])")
+    import tkinter
+    import tkinter.font
+    assert eval_string("Tk") is tkinter.Tk
+    assert eval_string("Font") is tkinter.font.Font
+
+
+def test_import_unknown_module_raises():
+    _fresh_ns("import.test.err1")
+    with pytest.raises(Exception) as ei:
+        eval_string("(import 'no_such_module_xyz)")
+    msg = str(ei.value)
+    assert "no_such_module_xyz" in msg
+
+
+def test_import_unknown_attr_raises():
+    _fresh_ns("import.test.err2")
+    with pytest.raises(Exception) as ei:
+        eval_string("(import 'tkinter.NoSuchAttr)")
+    msg = str(ei.value)
+    assert "NoSuchAttr" in msg and "tkinter" in msg
