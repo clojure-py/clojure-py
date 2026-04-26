@@ -80,6 +80,25 @@ pub fn import_cls(py: Python<'_>, ns: PyObject, alias_sym: Py<Symbol>, cls: PyOb
     Ok(())
 }
 
+/// `(py-import-module "name")` — wrapper around `importlib.import_module`.
+/// Returns the imported module as a Python object. Raises `ImportError`
+/// (Python-side) if the module cannot be loaded; the message includes the
+/// requested name.
+#[pyfunction]
+pub fn py_import_module(py: Python<'_>, name: &str) -> PyResult<PyObject> {
+    let importlib = py.import("importlib")?;
+    let module = importlib.call_method1("import_module", (name,))?;
+    Ok(module.unbind())
+}
+
+/// `(py-getattr obj "name")` — wrapper around Python's `getattr(obj, name)`.
+/// Used by `(import ...)` to pull named attributes off a module after
+/// `py-import-module`. Raises `AttributeError` (Python-side) if missing.
+#[pyfunction]
+pub fn py_getattr(py: Python<'_>, obj: PyObject, name: &str) -> PyResult<PyObject> {
+    Ok(obj.bind(py).getattr(name)?.unbind())
+}
+
 /// `(ns-map ns)` — a dict of `{sym: var}` for every Var-valued attribute of `ns`.
 #[pyfunction]
 pub fn ns_map(py: Python<'_>, ns: PyObject) -> PyResult<Py<PyDict>> {
@@ -127,6 +146,8 @@ pub(crate) fn register(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()>
     m.add_function(wrap_pyfunction!(refer, m)?)?;
     m.add_function(wrap_pyfunction!(alias, m)?)?;
     m.add_function(wrap_pyfunction!(import_cls, m)?)?;
+    m.add_function(wrap_pyfunction!(py_import_module, m)?)?;
+    m.add_function(wrap_pyfunction!(py_getattr, m)?)?;
     m.add_function(wrap_pyfunction!(ns_map, m)?)?;
     m.add_function(wrap_pyfunction!(ns_aliases, m)?)?;
     m.add_function(wrap_pyfunction!(ns_refers, m)?)?;
