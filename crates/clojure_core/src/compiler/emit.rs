@@ -358,6 +358,21 @@ impl Compiler {
             }
         }
 
+        // __clj_imports__ lookup: bare symbols matching a recorded import
+        // resolve as the imported class/module (a const, not a Var).
+        if let Ok(imports_obj) = current.getattr("__clj_imports__") {
+            if let Ok(imports) = imports_obj.cast::<pyo3::types::PyDict>() {
+                let key = Py::new(
+                    py,
+                    crate::symbol::Symbol::new(None, std::sync::Arc::from(sym.name.as_ref())),
+                )?;
+                if let Some(cls) = imports.get_item(key)? {
+                    let ix = self.cur_mut().pool.intern_const(cls.unbind());
+                    return Ok(Resolved::Const(ix));
+                }
+            }
+        }
+
         let sys = py.import("sys")?;
         let modules = sys.getattr("modules")?;
         if let Ok(core_ns) = modules.get_item("clojure.core") {
