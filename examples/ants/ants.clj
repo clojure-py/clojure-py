@@ -204,3 +204,19 @@
   (evaporate)
   (sleep (/ evap-sleep-ms 1000.0))
   nil)
+
+;; --- World setup ----------------------------------------------------------
+
+(defn setup
+  "places initial food and ants, returns seq of ant agents"
+  []
+  (dosync
+    (dotimes [i food-places]
+      (let [p (place [(rand-int dim) (rand-int dim)])]
+        (alter p assoc :food (rand-int food-range))))
+    (doall
+     (for [x home-range y home-range]
+       (do
+         (alter (place [x y])
+                assoc :home true)
+         (create-ant [x y] (rand-int 8)))))))
