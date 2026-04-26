@@ -8,7 +8,8 @@
   (:import [tkinter Tk Canvas]
            [time sleep]
            [queue Queue]
-           [builtins dict]))
+           [builtins dict]
+           os))
 
 ;; --- Dimensions and rates ---------------------------------------------
 ;; All values are verbatim from the 2009 source.
@@ -261,6 +262,29 @@
 ;;   (dict [["fill" "red"] ["outline" ""]])
 ;; instead of :fill "red" :outline "".
 
+(defn ant-triangle
+  "Return [px1 py1 px2 py2 px3 py3] — the 6 polygon coords for an ant
+  triangle inscribed in cell (x0,y0)..(+ x0 scale, + y0 scale), pointing
+  in direction `dir` (0..7). Adapted from the original's render-ant."
+  [x0 y0 dir]
+  (let [cx (+ x0 (/ scale 2.0))
+        cy (+ y0 (/ scale 2.0))
+        [dx dy] (dir-delta dir)
+        ;; Diagonal directions have unit length sqrt(2); shrink so visual
+        ;; ant size stays roughly constant across all 8 directions.
+        norm (if (and (not= dx 0) (not= dy 0)) 0.7071 1.0)
+        fx (* dx norm (/ scale 2.0))
+        fy (* dy norm (/ scale 2.0))
+        ;; Base center sits slightly behind the geometric center.
+        bx (- cx (* dx norm (/ scale 3.0)))
+        by (- cy (* dy norm (/ scale 3.0)))
+        ;; Perpendicular to (dx,dy) is (-dy, dx); base half-width = scale/3.
+        px (* (- dy) norm (/ scale 3.0))
+        py (* dx norm (/ scale 3.0))]
+    [(+ cx fx) (+ cy fy)
+     (+ bx px) (+ by py)
+     (- bx px) (- by py)]))
+
 (defn render-cell [canvas cell]
   (let [{:keys [x y pher food home ant]} cell
         x0 (* x scale) y0 (* y scale)
@@ -275,9 +299,10 @@
       (.create_rectangle canvas x0 y0 x1 y1
                          (dict [["fill" ""] ["outline" "blue"]])))
     (when ant
-      (let [color (if (:food ant) "red" "black")]
-        (.create_oval canvas (+ x0 1) (+ y0 1) (- x1 1) (- y1 1)
-                      (dict [["fill" color] ["outline" ""]]))))))
+      (let [color (if (:food ant) "red" "black")
+            [tx1 ty1 tx2 ty2 tx3 ty3] (ant-triangle x0 y0 (:dir ant))]
+        (.create_polygon canvas tx1 ty1 tx2 ty2 tx3 ty3
+                         (dict [["fill" color] ["outline" ""]]))))))
 
 (defn render
   "Drain the canvas, redraw the world snapshot, and frame it."
@@ -344,6 +369,5 @@
 ;; Auto-launch when run via `python -m clojure examples/ants/ants.clj`,
 ;; unless ANTS_NO_GUI=1 (used by the smoke test). clojure-py has no
 ;; System/getenv, so go through Python's os.environ directly.
-(import 'os)
 (when (not (= "1" (.get (.-environ os) "ANTS_NO_GUI" "")))
   (launch))
