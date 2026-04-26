@@ -299,3 +299,51 @@
        (catch Exception _ nil))   ;; queue full — drop frame
   (sleep (/ animation-sleep-ms 1000.0))
   nil)
+
+;; --- Launch -------------------------------------------------------------
+
+(defn -drain-and-render
+  "Tk-thread polling callback. If the queue has a render request, drain
+  it (collapse multiple → one repaint) and redraw. Always re-schedules
+  itself."
+  [root canvas]
+  (when-not (.empty render-queue)
+    ;; Drain everything, then render once.
+    (loop []
+      (when-not (.empty render-queue)
+        (try (.get_nowait render-queue) (catch Exception _ nil))
+        (recur)))
+    (render canvas))
+  (.after root animation-sleep-ms
+          (fn [] (-drain-and-render root canvas))))
+
+(defn launch
+  "Build the world, spawn agents, open a Tk window, and enter the event
+  loop. Blocks until the window is closed."
+  []
+  (let [ants (setup)
+        evap-agent (agent nil)
+        anim-agent (agent nil)
+        root (Tk)
+        canvas (Canvas root
+                       (dict [["width" (* dim scale)]
+                              ["height" (* dim scale)]
+                              ["bg" "white"]]))]
+    (.title root "Ants")
+    (.pack canvas)
+    ;; Kick off ant agents
+    (doseq [a ants] (send-off a #'behave))
+    ;; Kick off evaporator + animator
+    (send-off evap-agent #'evaporation)
+    (send-off anim-agent #'animation)
+    ;; Tk poll loop
+    (.after root animation-sleep-ms
+            (fn [] (-drain-and-render root canvas)))
+    (.mainloop root)))
+
+;; Auto-launch when run via `python -m clojure examples/ants/ants.clj`,
+;; unless ANTS_NO_GUI=1 (used by the smoke test). clojure-py has no
+;; System/getenv, so go through Python's os.environ directly.
+(import 'os)
+(when (not (= "1" (.get (.-environ os) "ANTS_NO_GUI" "")))
+  (launch))
