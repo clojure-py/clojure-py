@@ -1,4 +1,4 @@
-"""`python -m clojure` — launch a REPL.
+"""`python -m clojure` — launch a REPL or run a script.
 
 Flags:
   --simple          Force the stdlib-only REPL.
@@ -7,6 +7,9 @@ Flags:
   -v, --verbose     Show full Python tracebacks on exceptions.
   -e, --eval EXPR   Evaluate EXPR and exit.
   -h, --help        Show this help.
+
+Positional:
+  script            Path to a .clj file to load and evaluate.
 
 Default (no --simple/--rich): rich if stdin is a tty AND prompt_toolkit
 is importable; simple otherwise. Piped input always uses simple.
@@ -33,6 +36,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="show full Python tracebacks")
     p.add_argument("-e", "--eval", dest="eval_expr", metavar="EXPR",
                    help="evaluate EXPR and exit")
+    p.add_argument("script", nargs="?", default=None,
+                   help="path to a .clj file to load and evaluate")
     return p.parse_args(argv)
 
 
@@ -54,6 +59,32 @@ def _run_one(expr: str, verbose: bool) -> int:
     return 0
 
 
+def _run_script(path: str, verbose: bool) -> int:
+    """Load a .clj file into a fresh ns and return."""
+    import os
+    from clojure._core import (
+        create_ns,
+        load_file_into_ns,
+        symbol,
+    )
+    if not os.path.exists(path):
+        print(f"error: no such file: {path}", file=sys.stderr)
+        return 2
+    # Derive a ns name from the file path: strip extension, replace os.sep with '.'.
+    rel = os.path.splitext(path)[0]
+    ns_name = rel.replace(os.sep, ".").lstrip(".")
+    ns = create_ns(symbol(ns_name))
+    try:
+        load_file_into_ns(path, ns)
+    except Exception as e:  # noqa: BLE001
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+    return 0
+
+
 def _clj_string(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -71,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.eval_expr is not None:
         return _run_one(args.eval_expr, args.verbose)
+
+    if args.script is not None:
+        return _run_script(args.script, args.verbose)
 
     # Pick a REPL.
     if args.simple:
