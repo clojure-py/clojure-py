@@ -10,6 +10,7 @@ arc-swap.workspace = true
 inventory.workspace = true
 once_cell.workspace = true
 clojure_rt_macros.workspace = true
+parking_lot.workspace = true
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"

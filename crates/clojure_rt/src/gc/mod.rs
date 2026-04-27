@@ -2,6 +2,7 @@
 //! RCImmix and friends slot in behind this trait without touching clients.
 
 pub mod naive;
+pub mod rcimmix;
 
 use core::alloc::Layout;
 use core::ptr::null;
