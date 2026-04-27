@@ -75,12 +75,16 @@ pub fn expand(input: TokenStream) -> TokenStream {
         }
 
         impl #name {
+            #[inline]
             pub fn alloc(#ctor_args) -> ::clojure_rt::Value {
                 let id = *#id_cell.get()
                     .expect(concat!(stringify!(#name), ": clojure_rt::init() not called"));
                 unsafe {
-                    let h = ::clojure_rt::gc::allocator()
-                        .alloc(::core::alloc::Layout::new::<#name>(), id);
+                    // Direct call into RCImmix's concrete fast path —
+                    // bypasses the `dyn GcAllocator` vtable so LLVM can
+                    // inline through to the bump-pointer hot path.
+                    let h = ::clojure_rt::gc::rcimmix::RCIMMIX
+                        .alloc_inline(::core::alloc::Layout::new::<#name>(), id);
                     let body = h.add(1) as *mut #name;
                     ::core::ptr::write(body, #name { #ctor_inits });
                     ::clojure_rt::Value::from_heap(h)

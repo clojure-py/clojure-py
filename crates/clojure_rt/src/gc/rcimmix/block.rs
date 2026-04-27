@@ -94,9 +94,19 @@ pub fn line_range(byte_start: u32, byte_end_exclusive: u32) -> (usize, usize) {
 /// The caller must ensure that `byte_start` and `byte_end_exclusive` are
 /// valid byte offsets within a block, and that `byte_end_exclusive > byte_start`.
 /// The owning thread may safely call this function (Cell access is owner-only).
-#[inline]
+#[inline(always)]
 pub unsafe fn inc_line_counts(header: &BlockHeader, byte_start: u32, byte_end_exclusive: u32) {
-    let (l0, l1) = line_range(byte_start, byte_end_exclusive);
+    let l0 = (byte_start as usize) / LINE_SIZE;
+    let l1 = ((byte_end_exclusive as usize) - 1) / LINE_SIZE;
+    // Hot path: single line. Most small objects fit in one line.
+    if l0 == l1 {
+        let cell = &header.line_counts[l0];
+        let v = cell.get();
+        debug_assert!(v < u8::MAX, "line count overflow at line {}", l0);
+        cell.set(v.saturating_add(1));
+        return;
+    }
+    // Cold path: multi-line.
     for line in l0..=l1 {
         let cell = &header.line_counts[line];
         let v = cell.get();
@@ -111,9 +121,19 @@ pub unsafe fn inc_line_counts(header: &BlockHeader, byte_start: u32, byte_end_ex
 /// The caller must ensure that `byte_start` and `byte_end_exclusive` are
 /// valid byte offsets within a block, and that `byte_end_exclusive > byte_start`.
 /// The owning thread may safely call this function (Cell access is owner-only).
-#[inline]
+#[inline(always)]
 pub unsafe fn dec_line_counts(header: &BlockHeader, byte_start: u32, byte_end_exclusive: u32) {
-    let (l0, l1) = line_range(byte_start, byte_end_exclusive);
+    let l0 = (byte_start as usize) / LINE_SIZE;
+    let l1 = ((byte_end_exclusive as usize) - 1) / LINE_SIZE;
+    // Hot path: single line.
+    if l0 == l1 {
+        let cell = &header.line_counts[l0];
+        let v = cell.get();
+        debug_assert!(v > 0, "line count underflow at line {} (double free?)", l0);
+        cell.set(v.saturating_sub(1));
+        return;
+    }
+    // Cold path: multi-line.
     for line in l0..=l1 {
         let cell = &header.line_counts[line];
         let v = cell.get();
