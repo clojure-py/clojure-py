@@ -43,4 +43,4 @@ macro_rules! __inventory_submit_impl {
     ($e:expr) => { $crate::inventory::submit! { $e } };
 }
 
-pub use clojure_rt_macros::{register_type, protocol};
+pub use clojure_rt_macros::{register_type, protocol, implements};

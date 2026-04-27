@@ -4,6 +4,7 @@ use proc_macro::TokenStream;
 
 mod register_type;
 mod protocol;
+mod implements;
 
 #[proc_macro]
 pub fn register_type(input: TokenStream) -> TokenStream {
@@ -13,4 +14,9 @@ pub fn register_type(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn protocol(input: TokenStream) -> TokenStream {
     protocol::expand(input.into()).into()
+}
+
+#[proc_macro]
+pub fn implements(input: TokenStream) -> TokenStream {
+    implements::expand(input.into()).into()
 }
