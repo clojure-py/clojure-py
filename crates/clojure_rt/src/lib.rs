@@ -28,6 +28,7 @@ pub mod registry;
 pub use registry::init;
 
 pub mod exception;
+pub mod primitives;
 pub mod protocols;
 pub mod rt;
 

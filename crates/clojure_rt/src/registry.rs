@@ -74,6 +74,11 @@ pub fn init() {
             }
         }
 
+        // 1.5. Primitives — first-class type-id slots so impls targeting
+        // Nil/Bool/Int64/etc. resolve through the same per-type table as
+        // heap types.
+        crate::primitives::init();
+
         // 2. Types.
         for ty in inventory::iter::<StaticTypeRegistration> {
             let id = register_static_type(ty.name, ty.layout, ty.destruct);

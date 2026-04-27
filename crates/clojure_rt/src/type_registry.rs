@@ -55,6 +55,27 @@ pub fn register_dynamic_type(
     destruct: unsafe fn(*mut Header),
 ) -> TypeId { register_type_inner(name, layout, destruct) }
 
+/// Register a primitive type at its compile-time-known fixed slot
+/// (`type_id < FIRST_HEAP_TYPE`). Layout/destruct are inert because
+/// primitives are inline in `Value` and never heap-allocated. Idempotent
+/// — re-registration overwrites the slot, but `init()` is `Once`-guarded
+/// so this only runs once per process in practice.
+pub fn register_primitive(type_id: TypeId, name: &'static str) {
+    assert!(
+        type_id < FIRST_HEAP_TYPE,
+        "register_primitive: id {type_id} >= FIRST_HEAP_TYPE",
+    );
+    unsafe fn primitive_destruct(_: *mut Header) {
+        unreachable!("primitive types have no heap header to destruct");
+    }
+    let layout = Layout::from_size_align(0, 1).unwrap();
+    let meta = Box::leak(Box::new(TypeMeta {
+        type_id, name, layout, destruct: primitive_destruct,
+        table: ArcSwap::from(Arc::new(PerTypeTable::empty())),
+    }));
+    TYPES[type_id as usize].store(meta as *mut _, Ordering::Release);
+}
+
 /// Look up a type by id. Panics if the id has no registered meta.
 pub fn get(id: TypeId) -> &'static TypeMeta {
     try_get(id).unwrap_or_else(|| panic!("clojure_rt: no TypeMeta for type_id {id}"))
