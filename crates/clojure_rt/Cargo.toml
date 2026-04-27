@@ -24,5 +24,9 @@ workspace = true
 name = "lazy_cons"
 harness = false
 
+[[bench]]
+name = "dispatch"
+harness = false
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
