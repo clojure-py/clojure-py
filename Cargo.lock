@@ -162,6 +162,8 @@ dependencies = [
 name = "clojure_rt_macros"
 version = "0.1.0"
 dependencies = [
+ "clojure_rt",
+ "once_cell",
  "proc-macro2",
  "quote",
  "syn",
