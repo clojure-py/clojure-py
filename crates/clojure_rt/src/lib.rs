@@ -18,3 +18,6 @@ pub use value::{
 };
 pub use header::Header;
 pub use rc::{dup, drop_value, share};
+
+pub mod registry;
+pub use registry::init;
