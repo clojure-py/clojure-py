@@ -10,6 +10,7 @@ arc-swap.workspace = true
 inventory.workspace = true
 once_cell.workspace = true
 clojure_rt_macros.workspace = true
+parking_lot.workspace = true
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
@@ -30,6 +31,14 @@ harness = false
 
 [[bench]]
 name = "rc_micro"
+harness = false
+
+[[bench]]
+name = "rcimmix_lazy_cons"
+harness = false
+
+[[bench]]
+name = "rcimmix_remote_free"
 harness = false
 
 [lints.rust]

@@ -11,11 +11,24 @@ dispatch. Nothing Clojure-specific is built yet.
 
 ## Heap allocator
 
-- **Naive `std::alloc`-backed allocator only.** Each heap object is a
-  separate `alloc`/`dealloc`. Behind a `GcAllocator` trait so future
-  allocators slot in without touching client code.
-- **Deferred:** RCImmix line-and-block heap, copying evacuation,
-  sticky mark bits, lazy mod-buffer, age-oriented collection.
+- **In v1+:** `RCImmixAllocator` — thread-local-bump on 32 KB blocks
+  with 128 B lines and intrusive cross-thread free lists. Owner-thread
+  alloc fast path is bump + line-counter increment, no atomics. Cross-
+  thread `dealloc` CAS-prepends onto a per-block remote-free list;
+  owner drains during slow path. Large objects (>8 KB) fall through to
+  `std::alloc`. See `doc/rcimmix-allocator.md`.
+- **Deferred:**
+  - **Compaction / copying evacuation** — sparse-block defragmentation.
+    Full RCImmix paper feature.
+  - **Sticky mark bits / age-oriented collection** — generational RC.
+  - **TLAB stealing across thread boundaries** — beyond
+    `partial_pool`/`empty_pool` cooperation.
+  - **Orphan reaping on thread exit** — biased-RC objects owned by an
+    exited thread leak in v1+. Auto-share-on-exit hooks deferred.
+  - **Slab-level OS release** — blocks alloc'd 8 at a time can't be
+    individually returned to OS; we leak past the empty_pool cap until
+    process exit. Track slab origin and ref-count blocks within their
+    slab to enable per-slab release.
 
 ## Reference counting
 
