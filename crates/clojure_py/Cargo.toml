@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 clojure_rt = { workspace = true }
 clojure_rt_macros = { workspace = true }
 pyo3 = { workspace = true }
+once_cell = { workspace = true }
 
 [features]
 default = []
