@@ -110,6 +110,39 @@ pub unsafe fn dec_line_counts(header: &BlockHeader, byte_start: u32, byte_end_ex
     }
 }
 
+/// Find the next allocation hole in this block, starting after `after_byte`.
+/// A hole is a maximal run of consecutive lines all with `line_counts == 0`.
+/// Returns `Some((start, end))` where `start..end` is a byte range big
+/// enough for `min_size` bytes; or `None` if no such hole exists in this
+/// block.
+///
+/// The returned start is line-aligned; the returned end is the byte after
+/// the last byte of the last zero-count line in the run.
+pub fn find_next_hole(header: &BlockHeader, after_byte: u32, min_size: usize) -> Option<(u32, u32)> {
+    let start_line = (after_byte as usize).div_ceil(LINE_SIZE).max(crate::gc::rcimmix::RESERVED_LINES);
+    let mut line = start_line;
+
+    while line < LINES_PER_BLOCK {
+        // Skip occupied lines.
+        if header.line_counts[line].get() != 0 {
+            line += 1;
+            continue;
+        }
+        // Found start of a candidate hole.
+        let hole_start = line;
+        while line < LINES_PER_BLOCK && header.line_counts[line].get() == 0 {
+            line += 1;
+        }
+        let hole_end = line; // exclusive
+        let bytes = (hole_end - hole_start) * LINE_SIZE;
+        if bytes >= min_size {
+            return Some(((hole_start * LINE_SIZE) as u32, (hole_end * LINE_SIZE) as u32));
+        }
+        // Hole too small; continue scanning past it.
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +195,67 @@ mod tests {
         let block_addr: usize = 0x1_0000_0000; // 4 GB, BLOCK_ALIGN-aligned
         let interior = block_addr + 384 + 47;
         assert_eq!(block_of(interior as *const u8) as usize, block_addr);
+    }
+
+    use core::cell::Cell;
+
+    fn make_header_with_counts(counts: &[(usize, u8)]) -> BlockHeader {
+        let header = BlockHeader {
+            owner_tid: AtomicU64::new(0),
+            line_counts: core::array::from_fn(|_| Cell::new(0)),
+            bump_ptr: Cell::new(BUMP_START as u32),
+            bump_end: Cell::new(BLOCK_SIZE as u32),
+            remote_free_head: AtomicPtr::new(core::ptr::null_mut()),
+            next_in_pool: Cell::new(core::ptr::null_mut()),
+        };
+        for &(line, count) in counts {
+            header.line_counts[line].set(count);
+        }
+        header
+    }
+
+    #[test]
+    fn find_hole_empty_block() {
+        let h = make_header_with_counts(&[]);
+        let hole = find_next_hole(&h, BUMP_START as u32, 100).unwrap();
+        // Hole spans from line RESERVED_LINES to LINES_PER_BLOCK.
+        assert_eq!(hole.0, BUMP_START as u32);
+        assert_eq!(hole.1, BLOCK_SIZE as u32);
+    }
+
+    #[test]
+    fn find_hole_full_block() {
+        // Mark every usable line as occupied.
+        let counts: Vec<(usize, u8)> =
+            (crate::gc::rcimmix::RESERVED_LINES..LINES_PER_BLOCK).map(|i| (i, 1)).collect();
+        let h = make_header_with_counts(&counts);
+        assert!(find_next_hole(&h, BUMP_START as u32, 100).is_none());
+    }
+
+    #[test]
+    fn find_hole_after_occupied_run() {
+        // Lines 3..10 occupied; lines 10..256 free.
+        let counts: Vec<(usize, u8)> = (3..10).map(|i| (i, 1)).collect();
+        let h = make_header_with_counts(&counts);
+        let hole = find_next_hole(&h, BUMP_START as u32, 100).unwrap();
+        assert_eq!(hole.0, (10 * LINE_SIZE) as u32);
+        assert_eq!(hole.1, BLOCK_SIZE as u32);
+    }
+
+    #[test]
+    fn find_hole_skips_too_small() {
+        // 2-line hole starting at line 5, then 3-line hole starting at line 10.
+        // Need a 3-line hole minimum.
+        let counts: Vec<(usize, u8)> = vec![
+            (3, 1), (4, 1),                  // occupied (RESERVED_LINES start)
+            (7, 1), (8, 1), (9, 1),          // separates the two holes
+            (13, 1),                         // ends second hole at line 13
+        ].into_iter().chain((14..LINES_PER_BLOCK).map(|i| (i, 1))).collect();
+        let h = make_header_with_counts(&counts);
+        // Lines 5..7 are 2 lines (256 B); lines 10..13 are 3 lines (384 B).
+        // Need >= 300 bytes -> takes the second hole.
+        let hole = find_next_hole(&h, BUMP_START as u32, 300).unwrap();
+        assert_eq!(hole.0, (10 * LINE_SIZE) as u32);
+        assert_eq!(hole.1, (13 * LINE_SIZE) as u32);
     }
 }
