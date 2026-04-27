@@ -33,5 +33,9 @@ harness = false
 name = "rc_micro"
 harness = false
 
+[[bench]]
+name = "rcimmix_lazy_cons"
+harness = false
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
