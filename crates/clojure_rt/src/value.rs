@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(Value::int(-1).as_int(), Some(-1));
         assert_eq!(Value::int(i64::MAX).as_int(), Some(i64::MAX));
         assert_eq!(Value::int(i64::MIN).as_int(), Some(i64::MIN));
-        assert_eq!(Value::float(3.14).as_float(), Some(3.14));
+        assert_eq!(Value::float(1.5_f64).as_float(), Some(1.5_f64));
         assert_eq!(Value::char('λ').as_int(), None);
         assert_eq!(Value::TRUE.as_bool(), Some(true));
         assert_eq!(Value::FALSE.as_bool(), Some(false));

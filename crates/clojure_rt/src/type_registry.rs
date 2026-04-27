@@ -23,6 +23,7 @@ pub struct TypeMeta {
     pub table:    ArcSwap<PerTypeTable>,
 }
 
+#[allow(clippy::declare_interior_mutable_const)]
 const NULL_META: AtomicPtr<TypeMeta> = AtomicPtr::new(null_mut());
 static TYPES: [AtomicPtr<TypeMeta>; MAX_TYPES] = [NULL_META; MAX_TYPES];
 static NEXT_ID: AtomicU32 = AtomicU32::new(FIRST_HEAP_TYPE);
