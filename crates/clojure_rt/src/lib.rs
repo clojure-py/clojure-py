@@ -8,6 +8,7 @@ pub mod gc;
 pub mod rc;
 pub mod type_registry;
 pub mod dispatch;
+pub mod protocol;
 
 pub use value::{
     Value, TypeId,
