@@ -32,7 +32,10 @@ pub unsafe fn drain_remote_frees(block: NonNull<Block>) {
         let meta = type_registry::get(type_id);
 
         let offset = (head as usize - block_addr) as u32;
-        let total = (HEADER_SIZE + meta.layout.size()) as u32;
+        // Mirror the .max(8) in total_size (mod.rs): alloc_fast pads bodies
+        // smaller than 8 bytes to 8, so line counts must use the same padded
+        // total or dec_line_counts will undercount the spanned range.
+        let total = (HEADER_SIZE + meta.layout.size().max(8)) as u32;
         unsafe { dec_line_counts(header, offset, offset + total); }
 
         head = next;

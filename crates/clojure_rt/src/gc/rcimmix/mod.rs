@@ -64,14 +64,22 @@ fn align_up(x: u32, align: u32) -> u32 {
 /// Compute the total in-block size for an object: HEADER_SIZE + body_size,
 /// where body_size is rounded up to body_align (which must be ≤ 16, the
 /// Header alignment).
+///
+/// Body size is forced to a minimum of 8 bytes because `dealloc_remote`
+/// repurposes body bytes 0..8 as a `next: *mut Header` pointer in the
+/// remote-free chain. Bodies smaller than 8 would clobber adjacent memory.
 #[inline(always)]
 fn total_size(body_layout: Layout) -> u32 {
-    let body = body_layout.size();
+    let body = body_layout.size().max(8); // see dealloc_remote: body bytes 0..8 repurposed for remote-free `next` pointer
     (HEADER_SIZE + body) as u32
 }
 
 /// Owner-thread alloc fast path. Returns null if the current hole is
 /// too small (caller falls through to slow path).
+///
+/// # Safety
+/// Caller must hold ownership of `block` (i.e. `block.header.owner_tid ==
+/// current_tid()`). `body_layout.align()` must be ≤ 16.
 #[inline]
 unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
     let header = unsafe { &block.as_ref().header };
@@ -104,6 +112,11 @@ unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
 
 /// Owner-thread alloc slow path. Drains remote frees, finds next hole
 /// in the current block, and transitions to a new block if needed.
+///
+/// # Safety
+/// Caller must hold ownership of `block` (i.e. `block.header.owner_tid ==
+/// current_tid()`) and must have just observed `alloc_fast` returning null
+/// on the same block. `body_layout.size()` must be ≤ `LARGE_THRESHOLD`.
 #[cold]
 #[inline(never)]
 unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
@@ -134,9 +147,14 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
     //    partial_pool is LIFO: we'd immediately re-pop the same block and
     //    spin forever. empty_pool / fresh blocks always have enough space
     //    for requests ≤ LARGE_THRESHOLD (asserted below).
-    debug_assert!(total <= LARGE_THRESHOLD,
-        "alloc_slow reached with total={} > LARGE_THRESHOLD={}; should have taken large path",
-        total, LARGE_THRESHOLD);
+    //
+    //    Note: the dispatcher gates on body_layout.size() <= LARGE_THRESHOLD,
+    //    not on total. For body sizes in (LARGE_THRESHOLD - HEADER_SIZE,
+    //    LARGE_THRESHOLD], total > LARGE_THRESHOLD while the body is still
+    //    within the RCImmix threshold. Assert on body size, not total.
+    debug_assert!(body_layout.size() <= LARGE_THRESHOLD,
+        "alloc_slow reached with body_size={} > LARGE_THRESHOLD={}; should have taken large path",
+        body_layout.size(), LARGE_THRESHOLD);
 
     // 3a. Try a partial_pool block first (drain may reclaim space).
     if let Some(partial) = unsafe { crate::gc::rcimmix::pool::partial_pool().lock().pop() } {
@@ -153,12 +171,19 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
             partial_header.bump_end.set(end);
             unsafe { crate::gc::rcimmix::tlab::replace_tlab(partial); }
             let h = unsafe { alloc_fast(partial, body_layout, type_id) };
-            if !h.is_null() { return h; }
+            // alloc_fast cannot fail after find_next_hole returned a sufficient
+            // hole. If it somehow does, that is a bug — catch it with the assert
+            // rather than silently falling through (which would corrupt pool state
+            // because replace_tlab has already transferred ownership to TLAB).
+            debug_assert!(!h.is_null(),
+                "alloc_fast must succeed after find_next_hole returned a sufficient hole");
+            return h;
         }
 
-        // Drain didn't free enough space. Relinquish ownership and push
-        // back to partial_pool (live objects remain). Do NOT retry from
-        // partial_pool — LIFO would give us the same block again and spin.
+        // find_next_hole found nothing: drain didn't free enough space.
+        // Relinquish ownership and push back to partial_pool (live objects
+        // remain). Do NOT retry from partial_pool — LIFO would give us the
+        // same block again and spin.
         partial_header.owner_tid.store(0, core::sync::atomic::Ordering::Release);
         unsafe { crate::gc::rcimmix::pool::partial_pool().lock().push(partial); }
     }
@@ -180,7 +205,9 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
         fresh_header.bump_end.set(end);
         unsafe { crate::gc::rcimmix::tlab::replace_tlab(fresh); }
         let h = unsafe { alloc_fast(fresh, body_layout, type_id) };
-        if !h.is_null() { return h; }
+        debug_assert!(!h.is_null(),
+            "alloc_fast must succeed after find_next_hole returned a sufficient hole");
+        return h;
     }
     // Should be unreachable: a fully-empty block always fits total ≤ LARGE_THRESHOLD.
     panic!(
@@ -192,6 +219,11 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
 
 /// Owner-thread dealloc: decrement line counts for the spanned range.
 /// Caller has already verified that this thread is the owner.
+///
+/// # Safety
+/// Caller must hold ownership of `block` (i.e. `block.header.owner_tid ==
+/// current_tid()`). The destructor for the object at `ptr` must have
+/// already run before this is called.
 #[inline]
 unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: Layout) {
     let header = unsafe { &block.as_ref().header };
@@ -205,6 +237,13 @@ unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: La
 /// The destructor has already run (in `rc::destruct_and_dealloc`), so
 /// the body bytes are garbage. Repurpose body bytes 0..8 as a `next:
 /// *mut Header` pointer.
+///
+/// # Safety
+/// `ptr` must point to a heap-allocated object whose destructor has already
+/// run (body bytes may be overwritten). Body size must be ≥ 8 bytes, which
+/// is enforced by `total_size` in `alloc_fast` (bodies are padded to a
+/// minimum of 8). `block` must be the block containing `ptr` (use
+/// `block_of(ptr)` to recover it).
 #[cold]
 #[inline(never)]
 unsafe fn dealloc_remote(block: NonNull<Block>, ptr: *mut Header) {
