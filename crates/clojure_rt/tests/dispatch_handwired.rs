@@ -36,12 +36,8 @@ fn dispatch_hits_ic_after_first_resolve() {
     static GREET: ProtocolMethod = ProtocolMethod::new("Greeter/greet");
 
     // Patch method_id at runtime (the macros do this via init).
-    // SAFETY: single-threaded test setup before any dispatch.
-    unsafe {
-        let m: *const ProtocolMethod = &GREET;
-        (*(m as *mut ProtocolMethod)).method_id = 7;
-        (*(m as *mut ProtocolMethod)).proto_id  = 1;
-    }
+    GREET.method_id.store(7, std::sync::atomic::Ordering::Release);
+    GREET.proto_id.store(1, std::sync::atomic::Ordering::Release);
 
     let body = Layout::from_size_align(8, 8).unwrap();
     let foo_id = register_static_type("Foo", body, no_destruct);
@@ -89,11 +85,8 @@ fn slow_path_panics_on_unimplemented() {
     ensure_installed();
 
     static M: ProtocolMethod = ProtocolMethod::new("Missing/method");
-    unsafe {
-        let m: *const ProtocolMethod = &M;
-        (*(m as *mut ProtocolMethod)).method_id = 9999;
-        (*(m as *mut ProtocolMethod)).proto_id  = 99;
-    }
+    M.method_id.store(9999, std::sync::atomic::Ordering::Release);
+    M.proto_id.store(99, std::sync::atomic::Ordering::Release);
 
     let body = Layout::from_size_align(8, 8).unwrap();
     let id = register_static_type("Empty", body, no_destruct);

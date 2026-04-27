@@ -70,13 +70,8 @@ pub fn init() {
             for entry in proto.methods {
                 let method_id = NEXT_METHOD_ID.fetch_add(1, Ordering::AcqRel);
                 entry.method_id_cell.set(method_id).ok();
-                // SAFETY: pre-init, no other thread reads these fields.
-                unsafe {
-                    let m: *const ProtocolMethod = entry.method;
-                    let mm = m as *mut ProtocolMethod;
-                    (*mm).method_id = method_id;
-                    (*mm).proto_id  = proto_id;
-                }
+                entry.method.method_id.store(method_id, Ordering::Release);
+                entry.method.proto_id.store(proto_id, Ordering::Release);
             }
         }
 

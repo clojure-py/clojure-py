@@ -29,7 +29,7 @@ pub fn slow_path(
 ) -> Value {
     let type_id = value.tag;
 
-    if let Some(f) = stub_cache::lookup(type_id, method.method_id) {
+    if let Some(f) = stub_cache::lookup(type_id, method.method_id.load(Ordering::Relaxed)) {
         let key = ICSlot::make_key(type_id, method.version.load(Ordering::Relaxed));
         ic.publish(key, f as *const ());
         return unsafe { f(args.as_ptr(), args.len()) };
@@ -37,8 +37,9 @@ pub fn slow_path(
 
     if let Some(meta) = type_registry::try_get(type_id) {
         let table = meta.table.load();
-        if let Some(f) = table.lookup(method.method_id) {
-            stub_cache::insert(type_id, method.method_id, f as *const ());
+        let mid = method.method_id.load(Ordering::Relaxed);
+        if let Some(f) = table.lookup(mid) {
+            stub_cache::insert(type_id, mid, f as *const ());
             let key = ICSlot::make_key(type_id, method.version.load(Ordering::Relaxed));
             ic.publish(key, f as *const ());
             return unsafe { f(args.as_ptr(), args.len()) };
