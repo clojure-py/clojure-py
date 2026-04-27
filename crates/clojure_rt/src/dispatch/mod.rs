@@ -18,7 +18,8 @@ pub type MethodFn = unsafe extern "C" fn(args: *const Value, n: usize) -> Value;
 
 /// Slow-path resolver. Called on IC miss. Walks tier-3 stub cache, then
 /// the type's tier-2 perfect-hash table, then the method's fallback;
-/// panics via `resolution_failure` on total miss.
+/// returns a throwable exception Value via `resolution_failure` on
+/// total miss.
 #[cold]
 #[inline(never)]
 pub fn slow_path(
@@ -50,7 +51,7 @@ pub fn slow_path(
         return unsafe { f(args.as_ptr(), args.len()) };
     }
 
-    error::resolution_failure(method, type_id);
+    error::resolution_failure(method, type_id)
 }
 
 /// Top-level dispatch entry. The `dispatch!` macro inlines the fast path

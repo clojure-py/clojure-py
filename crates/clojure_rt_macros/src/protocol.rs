@@ -12,10 +12,25 @@
 //!     }
 //! }
 //! ```
+//!
+//! A method may optionally carry a *default body*; this is wired as the
+//! protocol method's fallback (slow_path uses it when no per-type impl
+//! is registered):
+//!
+//! ```ignore
+//! protocol! {
+//!     pub trait Counted {
+//!         fn count(this: Value) -> Value {
+//!             // default body — runs for any unregistered type
+//!             ::clojure_rt::error::resolution_failure(&COUNT, this.tag)
+//!         }
+//!     }
+//! }
+//! ```
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse2, ItemTrait, TraitItem, TraitItemFn};
+use syn::{parse2, FnArg, ItemTrait, Pat, TraitItem, TraitItemFn};
 
 pub fn expand(input: TokenStream) -> TokenStream {
     let item: ItemTrait = match parse2(input) {
@@ -36,11 +51,50 @@ pub fn expand(input: TokenStream) -> TokenStream {
         let id_cell = format_ident!("{}_METHOD_ID", mname.to_string().to_uppercase());
         let method_static = format_ident!("{}", mname.to_string().to_uppercase());
         let mname_str = format!("{}/{}", proto_name, mname);
-        quote! {
-            pub static #id_cell: ::once_cell::sync::OnceCell<u32>
-                = ::once_cell::sync::OnceCell::new();
-            pub static #method_static: ::clojure_rt::protocol::ProtocolMethod =
-                ::clojure_rt::protocol::ProtocolMethod::new(#mname_str);
+
+        match &m.default {
+            None => quote! {
+                pub static #id_cell: ::once_cell::sync::OnceCell<u32>
+                    = ::once_cell::sync::OnceCell::new();
+                pub static #method_static: ::clojure_rt::protocol::ProtocolMethod =
+                    ::clojure_rt::protocol::ProtocolMethod::new(#mname_str);
+            },
+            Some(block) => {
+                let fallback_fn = format_ident!("__cljrt_fallback_{}_{}", proto_name, mname);
+                let n_expected = m.sig.inputs.len();
+                let arg_binds = m.sig.inputs.iter().enumerate().filter_map(|(i, a)| {
+                    if let FnArg::Typed(pat) = a {
+                        if let Pat::Ident(id) = &*pat.pat {
+                            let ident = &id.ident;
+                            let ty = &pat.ty;
+                            return Some(quote! {
+                                let #ident: #ty = unsafe { *args.add(#i) };
+                            });
+                        }
+                    }
+                    None
+                });
+                quote! {
+                    pub static #id_cell: ::once_cell::sync::OnceCell<u32>
+                        = ::once_cell::sync::OnceCell::new();
+
+                    #[allow(non_snake_case)]
+                    unsafe extern "C" fn #fallback_fn(
+                        args: *const ::clojure_rt::Value,
+                        n: usize,
+                    ) -> ::clojure_rt::Value {
+                        debug_assert_eq!(n, #n_expected);
+                        #(#arg_binds)*
+                        #block
+                    }
+
+                    pub static #method_static: ::clojure_rt::protocol::ProtocolMethod =
+                        ::clojure_rt::protocol::ProtocolMethod::with_fallback(
+                            #mname_str,
+                            #fallback_fn,
+                        );
+                }
+            }
         }
     });
 

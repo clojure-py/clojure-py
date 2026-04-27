@@ -1,18 +1,18 @@
-//! Substrate error helpers. Currently panic-only; later rounds will route
-//! these to a Clojure-level exception via the `error_value` Value tag.
+//! Substrate error helpers. Dispatch failures and similar recoverable
+//! errors are surfaced as throwable Values (see `crate::exception`),
+//! not as panics — panics in `clojure_rt` are reserved for true bugs
+//! (corrupted Value tags, broken invariants) so that an embedded Python
+//! REPL stays alive across user-level errors.
 
+use crate::exception;
 use crate::protocol::ProtocolMethod;
-use crate::type_registry;
-use crate::value::TypeId;
+use crate::value::{TypeId, Value};
 
-/// Panic with a uniform "no impl" message. Centralized so we can swap to
-/// raise-as-Value later without touching call sites.
+/// Build a uniform "no impl of `proto/method` for `type`" exception Value.
+/// Centralized so future error machinery (richer ex-info maps, source
+/// locations, etc.) only has to grow in one place.
 #[cold]
 #[inline(never)]
-pub fn resolution_failure(method: &ProtocolMethod, type_id: TypeId) -> ! {
-    let type_name = type_registry::try_get(type_id)
-        .map(|m| m.name)
-        .unwrap_or("<unregistered>");
-    panic!("clojure_rt: no impl of {} for type {} (id={type_id})",
-           method.name, type_name);
+pub fn resolution_failure(method: &ProtocolMethod, type_id: TypeId) -> Value {
+    exception::make_no_impl(method, type_id)
 }

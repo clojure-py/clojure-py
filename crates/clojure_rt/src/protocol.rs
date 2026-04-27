@@ -24,4 +24,14 @@ impl ProtocolMethod {
             fallback:  None,
         }
     }
+
+    pub const fn with_fallback(name: &'static str, fallback: MethodFn) -> Self {
+        Self {
+            method_id: AtomicU32::new(0),
+            proto_id:  AtomicU32::new(0),
+            name,
+            version:   AtomicU32::new(1),
+            fallback:  Some(fallback),
+        }
+    }
 }

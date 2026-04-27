@@ -77,6 +77,20 @@ impl Value {
     pub fn as_heap(self) -> Option<*const crate::header::Header> {
         if self.is_heap() { Some(self.payload as *const _) } else { None }
     }
+
+    /// True iff this Value points at a live `ExceptionObject` (a throwable).
+    /// Returns false before `init()` has run (the exception type id is not
+    /// yet assigned).
+    #[inline]
+    pub fn is_exception(self) -> bool {
+        if !self.is_heap() {
+            return false;
+        }
+        match crate::exception::EXCEPTIONOBJECT_TYPE_ID.get() {
+            Some(&id) => self.tag == id,
+            None      => false,
+        }
+    }
 }
 
 #[cfg(test)]

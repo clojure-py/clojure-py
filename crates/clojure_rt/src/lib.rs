@@ -2,6 +2,11 @@
 //!
 //! See `docs/superpowers/specs/2026-04-26-clojure-py-runtime-substrate-design.md`.
 
+// Lets `::clojure_rt::...` paths emitted by `clojure_rt_macros` resolve
+// when the macros are invoked from inside this crate (e.g. ports in
+// `protocols/`).
+extern crate self as clojure_rt;
+
 pub mod value;
 pub mod header;
 pub mod gc;
@@ -21,6 +26,10 @@ pub use rc::{dup, drop_value, share};
 
 pub mod registry;
 pub use registry::init;
+
+pub mod exception;
+pub mod protocols;
+pub mod rt;
 
 #[doc(hidden)]
 pub use inventory;
