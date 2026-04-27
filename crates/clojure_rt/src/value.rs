@@ -38,6 +38,21 @@ impl Value {
         Value { tag: TYPE_CHAR, _pad: 0, payload: c as u64 }
     }
 
+    /// Wrap a foreign Python object pointer in a `Value`.
+    ///
+    /// Reference semantics are **borrowed**: this Value does not incref
+    /// the pointed-to PyObject, and `drop_value` on it does not decref.
+    /// The caller is responsible for keeping the underlying PyObject
+    /// alive for as long as any copy of the returned Value is reachable.
+    /// Sound for synchronous protocol dispatch driven by a Python frame
+    /// that owns the reference; unsound for cross-frame storage. The
+    /// owning variant arrives once a protocol port needs PyObject
+    /// storage.
+    #[inline(always)]
+    pub fn pyobject(ptr: *mut core::ffi::c_void) -> Value {
+        Value { tag: TYPE_PYOBJECT, _pad: 0, payload: ptr as u64 }
+    }
+
     #[inline(always)]
     pub fn as_int(self) -> Option<i64> {
         if self.tag == TYPE_INT64 { Some(self.payload as i64) } else { None }

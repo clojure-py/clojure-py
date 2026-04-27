@@ -1,0 +1,29 @@
+[package]
+name = "clojure_py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# `cdylib` is what maturin links into the `clojure._core` extension module;
+# `rlib` lets `cargo test` link the crate as an ordinary Rust library.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clojure_rt = { workspace = true }
+clojure_rt_macros = { workspace = true }
+pyo3 = { workspace = true }
+
+[features]
+default = []
+# Enabled by maturin (see pyproject.toml `[tool.maturin] features`). When
+# building under `cargo test` we leave this off so PyO3 can auto-init a
+# fresh interpreter via the dev-dep feature below.
+extension-module = ["pyo3/extension-module"]
+
+[dev-dependencies]
+# Brings in `auto-initialize` only when the crate is compiled for tests.
+# Disjoint from `extension-module`, which expects to be loaded BY a Python
+# process.
+pyo3 = { workspace = true, features = ["auto-initialize"] }

@@ -13,7 +13,7 @@ classifiers = [
 ]
 
 [tool.maturin]
-manifest-path = "crates/clojure_core/Cargo.toml"
+manifest-path = "crates/clojure_py/Cargo.toml"
 module-name = "clojure._core"
 python-source = "python"
 features = ["pyo3/extension-module"]

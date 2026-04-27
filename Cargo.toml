@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/clojure_rt", "crates/clojure_rt_macros"]
+members = ["crates/clojure_rt", "crates/clojure_rt_macros", "crates/clojure_py"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,3 +22,4 @@ criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 trybuild = "1"
 parking_lot = "0.12"
+pyo3 = { version = "0.28", default-features = false, features = ["macros"] }

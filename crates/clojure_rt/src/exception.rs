@@ -18,6 +18,11 @@ use crate::value::{TypeId, Value};
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ExceptionKind {
     NoProtocolImpl,
+    /// Raised by a foreign-language embedding (PyO3 today, possibly
+    /// other hosts later) when the embedding language's exception
+    /// machinery throws inside a protocol impl. The message carries the
+    /// embedding-language type name and details.
+    Foreign,
 }
 
 clojure_rt_macros::register_type! {
@@ -38,6 +43,13 @@ pub fn make_no_impl(method: &ProtocolMethod, type_id: TypeId) -> Value {
         method.name, type_name, type_id,
     );
     ExceptionObject::alloc(ExceptionKind::NoProtocolImpl, message.into_boxed_str())
+}
+
+/// Construct a `Foreign` exception Value carrying a message produced by
+/// an embedding-language exception bridge (e.g. PyO3's `PyErr` →
+/// throwable Value path in `clojure_core`).
+pub fn make_foreign(message: String) -> Value {
+    ExceptionObject::alloc(ExceptionKind::Foreign, message.into_boxed_str())
 }
 
 /// Borrow the message of an exception Value, copied to an owned `String`
