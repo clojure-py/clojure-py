@@ -2,8 +2,10 @@
 //!
 //! See `docs/superpowers/specs/2026-04-26-clojure-py-runtime-substrate-design.md`.
 
-#[cfg(test)]
-mod sanity {
-    #[test]
-    fn it_compiles() {}
-}
+pub mod value;
+
+pub use value::{
+    Value, TypeId,
+    TYPE_NIL, TYPE_BOOL, TYPE_INT64, TYPE_FLOAT64, TYPE_CHAR, TYPE_PYOBJECT,
+    FIRST_HEAP_TYPE,
+};
