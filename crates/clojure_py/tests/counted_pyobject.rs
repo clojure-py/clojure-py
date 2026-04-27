@@ -4,7 +4,7 @@
 //! each test process.
 
 use clojure_rt::{exception, protocol, rt, Value};
-use clojure_rt::protocols::counted::Counted;
+use clojure_rt::protocols::counted::ICounted;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString};
 use pyo3::IntoPyObject;
@@ -61,7 +61,7 @@ fn count_of_python_int_returns_no_impl_exception() {
             exception::kind(result),
         );
         let msg = exception::message(result).expect("exception payload missing");
-        assert!(msg.contains("Counted"), "message should name Counted, got: {msg}");
+        assert!(msg.contains("ICounted"), "message should name ICounted, got: {msg}");
         assert!(msg.contains("py:int"), "message should name py:int, got: {msg}");
     });
 }
@@ -72,7 +72,7 @@ fn satisfies_counted_for_python_list_is_true() {
     Python::attach(|py| {
         let lst = PyList::new(py, [1i64, 2, 3]).unwrap();
         let v = Value::pyobject(lst.as_ptr() as *mut _);
-        assert!(protocol::satisfies(&Counted::COUNT, v));
+        assert!(protocol::satisfies(&ICounted::COUNT, v));
     });
 }
 
@@ -82,7 +82,7 @@ fn satisfies_counted_for_python_int_is_false() {
     Python::attach(|py| {
         let n = 42i64.into_pyobject(py).unwrap();
         let v = Value::pyobject(n.as_ptr() as *mut _);
-        assert!(!protocol::satisfies(&Counted::COUNT, v));
+        assert!(!protocol::satisfies(&ICounted::COUNT, v));
     });
 }
 

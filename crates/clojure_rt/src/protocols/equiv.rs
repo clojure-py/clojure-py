@@ -5,7 +5,7 @@
 //! Category-discriminated: `(= 1 1.0)` is *false* — `Numbers.equal`
 //! requires `category(x) == category(y)` before doing the numeric
 //! comparison, so Int64 vs Float64 never crosses. This is what
-//! preserves the contract `equiv(a, b) ⟹ hasheq(a) == hasheq(b)`,
+//! preserves the contract `equiv(a, b) ⟹ hash(a) == hash(b)`,
 //! since Int64 and Float64 hash differently for the same numeric
 //! value.
 //!

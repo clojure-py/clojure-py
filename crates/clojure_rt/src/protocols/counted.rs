@@ -1,4 +1,6 @@
-//! Port of `clojure.lang.Counted` (`int count()`).
+//! Port of ClojureScript's `ICounted` (Clojure JVM's `Counted`).
+//! Single method: `count` returning element count as a Value-tagged
+//! int.
 //!
 //! Per-primitive Clojure semantics are installed as ordinary `implements!`
 //! blocks against the marker types in `crate::primitives`; dispatch finds
@@ -9,13 +11,13 @@ use crate::primitives::*;
 use crate::value::Value;
 
 clojure_rt_macros::protocol! {
-    pub trait Counted {
+    pub trait ICounted {
         fn count(this: ::clojure_rt::Value) -> ::clojure_rt::Value;
     }
 }
 
 clojure_rt_macros::implements! {
-    impl Counted for Nil {
+    impl ICounted for Nil {
         fn count(this: Value) -> Value {
             let _ = this;
             Value::int(0)

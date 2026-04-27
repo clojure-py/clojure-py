@@ -1,4 +1,4 @@
-//! `Counted` impl bound to the Python ABC `collections.abc.Sized`.
+//! `ICounted` impl bound to the Python ABC `collections.abc.Sized`.
 //!
 //! Direct FFI: one `PyObject_Length` C call, no `Bound` construction,
 //! no incref/decref pair. The borrowed semantics of
@@ -12,7 +12,7 @@
 //! through this single function.
 
 use clojure_rt::protocol::extend_type;
-use clojure_rt::protocols::counted::Counted;
+use clojure_rt::protocols::counted::ICounted;
 use clojure_rt::value::{TypeId, Value};
 use pyo3::ffi as pyffi;
 use pyo3::{PyErr, Python};
@@ -23,7 +23,7 @@ unsafe extern "C" fn counted_count_via_pyobject_length(
 ) -> Value {
     let this = unsafe { *args };
     let ptr = this.payload as *mut pyffi::PyObject;
-    debug_assert!(!ptr.is_null(), "Counted/count: null Python object pointer");
+    debug_assert!(!ptr.is_null(), "ICounted/count: null Python object pointer");
 
     Python::attach(|py| {
         let n = unsafe { pyffi::PyObject_Length(ptr) };
@@ -37,8 +37,8 @@ unsafe extern "C" fn counted_count_via_pyobject_length(
     })
 }
 
-/// Install `Counted/count` as the impl for the given Sized TypeId.
+/// Install `ICounted/count` as the impl for the given Sized TypeId.
 /// Called from `crate::abcs::init` once Sized has been interned.
 pub fn install(sized_tid: TypeId) {
-    extend_type(sized_tid, &Counted::COUNT, counted_count_via_pyobject_length);
+    extend_type(sized_tid, &ICounted::COUNT, counted_count_via_pyobject_length);
 }

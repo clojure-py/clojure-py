@@ -104,8 +104,8 @@ fn equiv_implies_hash_equal_contract() {
     for &a in xs {
         for &b in xs {
             if eq(a, b) {
-                let ha = rt::hasheq(a).as_int().unwrap();
-                let hb = rt::hasheq(b).as_int().unwrap();
+                let ha = rt::hash(a).as_int().unwrap();
+                let hb = rt::hash(b).as_int().unwrap();
                 assert_eq!(
                     ha, hb,
                     "contract violation: equiv true but hashes differ \

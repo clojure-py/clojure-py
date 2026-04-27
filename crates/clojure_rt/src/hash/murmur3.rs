@@ -9,9 +9,9 @@
 //! Java's `>>>`.
 //!
 //! `hash_ordered` / `hash_unordered` take pre-hashed `i32` iterables
-//! rather than calling out to `rt::hasheq` directly — this keeps the
+//! rather than calling out to `rt::hash` directly — this keeps the
 //! `hash` module a pure leaf with no protocol dependencies; collection
-//! ports hash their elements via `rt::hasheq` and feed the resulting
+//! ports hash their elements via `rt::hash` and feed the resulting
 //! `i32`s in.
 
 const SEED: i32 = 0;
@@ -118,7 +118,7 @@ pub fn mix_coll_hash(hash: i32, count: i32) -> i32 {
 }
 
 /// Vector / list / seq hash from element hashes (already produced by
-/// `rt::hasheq`). Mirrors `Murmur3.hashOrdered`.
+/// `rt::hash`). Mirrors `Murmur3.hashOrdered`.
 pub fn hash_ordered<I: IntoIterator<Item = i32>>(hashes: I) -> i32 {
     let mut n: i32 = 0;
     let mut hash: i32 = 1;
@@ -130,7 +130,7 @@ pub fn hash_ordered<I: IntoIterator<Item = i32>>(hashes: I) -> i32 {
 }
 
 /// Set / map hash from element hashes (already produced by
-/// `rt::hasheq`). Mirrors `Murmur3.hashUnordered`.
+/// `rt::hash`). Mirrors `Murmur3.hashUnordered`.
 pub fn hash_unordered<I: IntoIterator<Item = i32>>(hashes: I) -> i32 {
     let mut hash: i32 = 0;
     let mut n: i32 = 0;

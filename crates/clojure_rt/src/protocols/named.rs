@@ -1,9 +1,11 @@
-//! Port of `clojure.lang.Named` — types that have a name (and
-//! optional namespace). Implemented by `SymbolObj` and `KeywordObj`.
+//! Port of ClojureScript's `INamed` (Clojure JVM's `Named`). Methods
+//! `name` and `namespace` match cljs's `-name` / `-namespace`. The
+//! leading `-` convention disappears at the Rust level; `rt::name` /
+//! `rt::namespace` are the user-facing wrappers.
 
 clojure_rt_macros::protocol! {
-    pub trait Named {
-        fn get_namespace(this: ::clojure_rt::Value) -> ::clojure_rt::Value;
-        fn get_name(this: ::clojure_rt::Value) -> ::clojure_rt::Value;
+    pub trait INamed {
+        fn name(this: ::clojure_rt::Value) -> ::clojure_rt::Value;
+        fn namespace(this: ::clojure_rt::Value) -> ::clojure_rt::Value;
     }
 }

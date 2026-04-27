@@ -1,7 +1,7 @@
 //! Native UTF-8 string heap type. Counterpart to `java.lang.String`
 //! in JVM Clojure, but stored as UTF-8 (Rust-native) rather than
 //! UTF-16. Hashing iterates the UTF-16 code-unit form lazily so
-//! `IHashEq` agrees with Symbol/Keyword's name-hashing without
+//! `IHash` agrees with Symbol/Keyword's name-hashing without
 //! doubling memory for ASCII content.
 //!
 //! `Counted/count` returns the **codepoint count** (Pythonic
@@ -13,9 +13,9 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::hash::murmur3;
-use crate::protocols::counted::Counted;
+use crate::protocols::counted::ICounted;
 use crate::protocols::equiv::IEquiv;
-use crate::protocols::hash_eq::IHashEq;
+use crate::protocols::hash::IHash;
 use crate::value::Value;
 
 clojure_rt_macros::register_type! {
@@ -53,7 +53,7 @@ impl StringObj {
 }
 
 clojure_rt_macros::implements! {
-    impl Counted for StringObj {
+    impl ICounted for StringObj {
         fn count(this: Value) -> Value {
             unsafe {
                 let s = StringObj::as_str_unchecked(this);
@@ -64,8 +64,8 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IHashEq for StringObj {
-        fn hasheq(this: Value) -> Value {
+    impl IHash for StringObj {
+        fn hash(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const StringObj;
                 let cached = (*body).hash.load(Ordering::Relaxed);

@@ -30,44 +30,44 @@ fn count_of_unicode_string_is_codepoint_count() {
 }
 
 #[test]
-fn hasheq_of_empty_string_matches_murmur3() {
+fn hash_of_empty_string_matches_murmur3() {
     init();
     let s = rt::str_new("");
     assert_eq!(
-        rt::hasheq(s).as_int(),
+        rt::hash(s).as_int(),
         Some(murmur3::hash_unencoded_chars("") as i64),
     );
     drop_value(s);
 }
 
 #[test]
-fn hasheq_of_ascii_string_matches_murmur3() {
+fn hash_of_ascii_string_matches_murmur3() {
     init();
     let s = rt::str_new("hello");
     assert_eq!(
-        rt::hasheq(s).as_int(),
+        rt::hash(s).as_int(),
         Some(murmur3::hash_unencoded_chars("hello") as i64),
     );
     drop_value(s);
 }
 
 #[test]
-fn hasheq_of_unicode_string_matches_murmur3() {
+fn hash_of_unicode_string_matches_murmur3() {
     init();
     let s = rt::str_new("λclojure");
     assert_eq!(
-        rt::hasheq(s).as_int(),
+        rt::hash(s).as_int(),
         Some(murmur3::hash_unencoded_chars("λclojure") as i64),
     );
     drop_value(s);
 }
 
 #[test]
-fn hasheq_is_cached_across_calls() {
+fn hash_is_cached_across_calls() {
     init();
     let s = rt::str_new("anything");
-    let h1 = rt::hasheq(s);
-    let h2 = rt::hasheq(s);
+    let h1 = rt::hash(s);
+    let h2 = rt::hash(s);
     assert_eq!(h1.as_int(), h2.as_int());
     drop_value(s);
 }

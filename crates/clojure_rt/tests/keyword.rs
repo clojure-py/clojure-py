@@ -81,8 +81,8 @@ fn keyword_hash_matches_sym_hash_plus_golden_ratio() {
     init();
     let kw  = rt::keyword(None, "foo");
     let sym = rt::symbol(None, "foo");
-    let kh = rt::hasheq(kw).as_int().unwrap() as i32;
-    let sh = rt::hasheq(sym).as_int().unwrap() as i32;
+    let kh = rt::hash(kw).as_int().unwrap() as i32;
+    let sh = rt::hash(sym).as_int().unwrap() as i32;
     let golden = 0x9e3779b9_u32 as i32;
     assert_eq!(kh, sh.wrapping_add(golden));
     drop_value(kw);
@@ -94,8 +94,8 @@ fn keyword_hash_with_ns_matches_sym_hash() {
     init();
     let kw  = rt::keyword(Some("clj"), "core");
     let sym = rt::symbol(Some("clj"), "core");
-    let kh = rt::hasheq(kw).as_int().unwrap() as i32;
-    let sh = rt::hasheq(sym).as_int().unwrap() as i32;
+    let kh = rt::hash(kw).as_int().unwrap() as i32;
+    let sh = rt::hash(sym).as_int().unwrap() as i32;
     let golden = 0x9e3779b9_u32 as i32;
     assert_eq!(kh, sh.wrapping_add(golden));
     drop_value(kw);

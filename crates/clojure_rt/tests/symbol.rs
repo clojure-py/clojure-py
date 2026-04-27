@@ -83,9 +83,9 @@ fn symbol_hash_is_deterministic_and_stable() {
     init();
     let a = rt::symbol(Some("ns"), "foo");
     let b = rt::symbol(Some("ns"), "foo");
-    let h1 = rt::hasheq(a).as_int();
-    let h2 = rt::hasheq(b).as_int();
-    let h1_again = rt::hasheq(a).as_int();
+    let h1 = rt::hash(a).as_int();
+    let h2 = rt::hash(b).as_int();
+    let h1_again = rt::hash(a).as_int();
     assert_eq!(h1, h2, "equal symbols must hash equal");
     assert_eq!(h1, h1_again, "hash must be cached deterministically");
     drop_value(a);
@@ -97,7 +97,7 @@ fn symbol_hash_differs_with_ns() {
     init();
     let a = rt::symbol(None, "foo");
     let b = rt::symbol(Some("ns"), "foo");
-    assert_ne!(rt::hasheq(a).as_int(), rt::hasheq(b).as_int());
+    assert_ne!(rt::hash(a).as_int(), rt::hash(b).as_int());
     drop_value(a);
     drop_value(b);
 }
@@ -126,7 +126,7 @@ fn with_meta_replaces_metadata_and_preserves_identity() {
     // Equiv still holds: same name+ns → equal regardless of meta.
     assert_eq!(rt::equiv(s, s_with_m).as_bool(), Some(true));
     // Hash also unchanged.
-    assert_eq!(rt::hasheq(s).as_int(), rt::hasheq(s_with_m).as_int());
+    assert_eq!(rt::hash(s).as_int(), rt::hash(s_with_m).as_int());
 
     drop_value(m);
     drop_value(s);

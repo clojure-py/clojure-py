@@ -1,4 +1,6 @@
-//! Ports of `clojure.lang.IMeta` and `clojure.lang.IObj`.
+//! Ports of ClojureScript's `IMeta` and `IWithMeta` (Clojure JVM's
+//! `IMeta` and `IObj`). Method names match cljs (`-meta`,
+//! `-with-meta`).
 //!
 //! **Deviation from JVM:** `meta` is a `Value` (any), not an
 //! `IPersistentMap`. We don't have maps yet, and the IPersistentMap
@@ -14,7 +16,7 @@ clojure_rt_macros::protocol! {
 }
 
 clojure_rt_macros::protocol! {
-    pub trait IObj {
+    pub trait IWithMeta {
         fn with_meta(
             this: ::clojure_rt::Value,
             meta: ::clojure_rt::Value,

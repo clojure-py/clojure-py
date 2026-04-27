@@ -7,11 +7,11 @@
 //! propagate unobstructed; numeric extraction (`.as_int()`) happens at
 //! the leaf call site.
 
-use crate::protocols::counted::Counted;
+use crate::protocols::counted::ICounted;
 use crate::protocols::equiv::IEquiv;
-use crate::protocols::hash_eq::IHashEq;
-use crate::protocols::meta::{IMeta, IObj};
-use crate::protocols::named::Named;
+use crate::protocols::hash::IHash;
+use crate::protocols::meta::{IMeta, IWithMeta};
+use crate::protocols::named::INamed;
 use crate::types::keyword::KeywordObj;
 use crate::types::string::StringObj;
 use crate::types::symbol::SymbolObj;
@@ -19,12 +19,12 @@ use crate::value::Value;
 
 #[inline]
 pub fn count(v: Value) -> Value {
-    clojure_rt_macros::dispatch!(Counted::count, &[v])
+    clojure_rt_macros::dispatch!(ICounted::count, &[v])
 }
 
 #[inline]
-pub fn hasheq(v: Value) -> Value {
-    clojure_rt_macros::dispatch!(IHashEq::hasheq, &[v])
+pub fn hash(v: Value) -> Value {
+    clojure_rt_macros::dispatch!(IHash::hash, &[v])
 }
 
 #[inline]
@@ -49,12 +49,12 @@ pub fn keyword(ns: Option<&str>, name: &str) -> Value {
 
 #[inline]
 pub fn name(v: Value) -> Value {
-    clojure_rt_macros::dispatch!(Named::get_name, &[v])
+    clojure_rt_macros::dispatch!(INamed::name, &[v])
 }
 
 #[inline]
 pub fn namespace(v: Value) -> Value {
-    clojure_rt_macros::dispatch!(Named::get_namespace, &[v])
+    clojure_rt_macros::dispatch!(INamed::namespace, &[v])
 }
 
 #[inline]
@@ -64,5 +64,5 @@ pub fn meta(v: Value) -> Value {
 
 #[inline]
 pub fn with_meta(v: Value, m: Value) -> Value {
-    clojure_rt_macros::dispatch!(IObj::with_meta, &[v, m])
+    clojure_rt_macros::dispatch!(IWithMeta::with_meta, &[v, m])
 }

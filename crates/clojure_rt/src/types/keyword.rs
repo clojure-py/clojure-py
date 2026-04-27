@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
 use crate::protocols::equiv::IEquiv;
-use crate::protocols::hash_eq::IHashEq;
-use crate::protocols::named::Named;
+use crate::protocols::hash::IHash;
+use crate::protocols::named::INamed;
 use crate::types::symbol::SymbolObj;
 use crate::value::Value;
 
@@ -58,17 +58,17 @@ impl KeywordObj {
 }
 
 clojure_rt_macros::implements! {
-    impl IHashEq for KeywordObj {
-        fn hasheq(this: Value) -> Value {
+    impl IHash for KeywordObj {
+        fn hash(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const KeywordObj;
                 let cached = (*body).hash.load(Ordering::Relaxed);
                 if cached != 0 {
                     return Value::int(cached as i64);
                 }
-                // hasheq = sym.hasheq() + 0x9e3779b9 (matches JVM).
+                // hash = sym.hash() + 0x9e3779b9 (matches JVM Keyword).
                 let sym_h = clojure_rt_macros::dispatch!(
-                    IHashEq::hasheq, &[(*body).sym]
+                    IHash::hash, &[(*body).sym]
                 ).as_int().unwrap() as i32;
                 let h = sym_h.wrapping_add(0x9e3779b9_u32 as i32);
                 (*body).hash.store(h, Ordering::Relaxed);
@@ -96,19 +96,18 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl Named for KeywordObj {
-        fn get_namespace(this: Value) -> Value {
+    impl INamed for KeywordObj {
+        fn namespace(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const KeywordObj;
-                clojure_rt_macros::dispatch!(Named::get_namespace, &[(*body).sym])
+                clojure_rt_macros::dispatch!(INamed::namespace, &[(*body).sym])
             }
         }
-        fn get_name(this: Value) -> Value {
+        fn name(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const KeywordObj;
-                clojure_rt_macros::dispatch!(Named::get_name, &[(*body).sym])
+                clojure_rt_macros::dispatch!(INamed::name, &[(*body).sym])
             }
         }
     }
 }
-

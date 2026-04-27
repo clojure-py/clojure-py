@@ -7,9 +7,9 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::hash::{murmur3, util};
 use crate::protocols::equiv::IEquiv;
-use crate::protocols::hash_eq::IHashEq;
-use crate::protocols::meta::{IMeta, IObj};
-use crate::protocols::named::Named;
+use crate::protocols::hash::IHash;
+use crate::protocols::meta::{IMeta, IWithMeta};
+use crate::protocols::named::INamed;
 use crate::types::string::StringObj;
 use crate::value::Value;
 
@@ -37,7 +37,7 @@ impl SymbolObj {
 
     /// Allocate a new SymbolObj sharing `ns` and `name` with `this`
     /// (their refcounts get bumped) but with a fresh `meta`. Used by
-    /// the IObj impl.
+    /// the IWithMeta impl.
     ///
     /// # Safety
     /// `this` must be a live `Value` of `SymbolObj`.
@@ -54,8 +54,8 @@ impl SymbolObj {
 }
 
 clojure_rt_macros::implements! {
-    impl IHashEq for SymbolObj {
-        fn hasheq(this: Value) -> Value {
+    impl IHash for SymbolObj {
+        fn hash(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const SymbolObj;
                 let cached = (*body).hash.load(Ordering::Relaxed);
@@ -121,8 +121,8 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl Named for SymbolObj {
-        fn get_namespace(this: Value) -> Value {
+    impl INamed for SymbolObj {
+        fn namespace(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const SymbolObj;
                 let v = (*body).ns;
@@ -130,7 +130,7 @@ clojure_rt_macros::implements! {
                 v
             }
         }
-        fn get_name(this: Value) -> Value {
+        fn name(this: Value) -> Value {
             unsafe {
                 let body = this.as_heap().unwrap().add(1) as *const SymbolObj;
                 let v = (*body).name;
@@ -155,7 +155,7 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IObj for SymbolObj {
+    impl IWithMeta for SymbolObj {
         fn with_meta(this: Value, meta: Value) -> Value {
             // The new SymbolObj owns its meta reference.
             crate::rc::dup(meta);
