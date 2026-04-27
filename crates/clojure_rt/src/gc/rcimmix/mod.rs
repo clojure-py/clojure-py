@@ -51,7 +51,7 @@ use core::sync::atomic::AtomicI32;
 
 use crate::header::Header;
 use crate::value::TypeId;
-use crate::gc::rcimmix::block::{Block, inc_line_counts, find_next_hole};
+use crate::gc::rcimmix::block::{Block, inc_line_counts, dec_line_counts, find_next_hole};
 
 /// Round `x` up to a multiple of `align` (where `align` is a power of two).
 #[inline(always)]
@@ -143,4 +143,16 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
         panic!("clojure_rt: RCImmix can't fit object of body_layout {:?} in a fresh block", body_layout);
     }
     h
+}
+
+/// Owner-thread dealloc: decrement line counts for the spanned range.
+/// Caller has already verified that this thread is the owner.
+#[inline]
+#[allow(dead_code)]
+unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: Layout) {
+    let header = unsafe { &block.as_ref().header };
+    let block_addr = block.as_ptr() as usize;
+    let offset = (ptr as usize - block_addr) as u32;
+    let total = total_size(body_layout);
+    unsafe { dec_line_counts(header, offset, offset + total); }
 }
