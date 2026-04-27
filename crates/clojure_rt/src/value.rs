@@ -59,10 +59,13 @@ impl Value {
     #[inline(always)]
     pub fn is_nil(self) -> bool { self.tag == TYPE_NIL }
 
-    /// Build a heap-pointing Value. The caller asserts `h` is non-null and
-    /// 16-aligned; `tag` becomes the Header's `type_id`.
+    /// Build a heap-pointing Value.
+    ///
+    /// # Safety
+    /// `h` must be non-null, 16-aligned, and point at a live `Header` whose
+    /// `type_id` is `>= FIRST_HEAP_TYPE`. Debug builds assert these.
     #[inline(always)]
-    pub fn from_heap(h: *const crate::header::Header) -> Value {
+    pub unsafe fn from_heap(h: *const crate::header::Header) -> Value {
         debug_assert!(!h.is_null());
         debug_assert!((h as usize) % 16 == 0);
         let tag = unsafe { (*h).type_id };
