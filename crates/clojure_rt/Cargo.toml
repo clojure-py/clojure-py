@@ -1,0 +1,21 @@
+[package]
+name = "clojure_rt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+arc-swap.workspace = true
+inventory.workspace = true
+once_cell.workspace = true
+clojure_rt_macros.workspace = true
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[dev-dependencies.criterion]
+workspace = true
