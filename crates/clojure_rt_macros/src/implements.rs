@@ -1,6 +1,13 @@
 //! `implements!` — implements a protocol for a type. Generates one
 //! `unsafe extern "C" fn` per method body and emits an inventory entry
 //! per method that init wires into the type's PerTypeTable.
+//!
+//! **Empty body → marker registration.** An impl block with no `fn`
+//! items (e.g. `implements! { impl ISequential for ConsObj {} }`)
+//! emits a single registration against the protocol's synthetic
+//! `MARKER` method (see `protocol!` for the generation), with a no-op
+//! fn pointer. This makes `clojure_rt::protocol::satisfies(&Proto::MARKER, v)`
+//! answer correctly without users needing to write a sentinel method.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -30,13 +37,51 @@ pub fn expand(input: TokenStream) -> TokenStream {
     };
     let type_id_cell = format_ident!("{}_TYPE_ID", type_name.to_string().to_uppercase());
 
-    let method_outputs = item.items.iter().filter_map(|i| match i {
-        ImplItem::Fn(m) => Some(emit_method(&proto_name, &type_name, &type_id_cell, m)),
+    let fns: Vec<&ImplItemFn> = item.items.iter().filter_map(|i| match i {
+        ImplItem::Fn(m) => Some(m),
         _ => None,
-    });
+    }).collect();
+
+    if fns.is_empty() {
+        // Marker impl: register a no-op against the protocol's MARKER
+        // method. The protocol! macro guarantees MARKER exists for any
+        // zero-method protocol; for protocols that *do* declare methods,
+        // an empty implements! block is a user error caught here.
+        return emit_marker(&proto_name, &type_name, &type_id_cell);
+    }
+
+    let method_outputs = fns.iter().map(|m| emit_method(&proto_name, &type_name, &type_id_cell, m));
 
     quote! {
         #(#method_outputs)*
+    }
+}
+
+fn emit_marker(
+    proto: &syn::Ident,
+    type_name: &syn::Ident,
+    type_id_cell: &syn::Ident,
+) -> TokenStream {
+    let extern_fn = format_ident!("__cljrt_marker_{}_{}", proto, type_name);
+    quote! {
+        #[allow(non_snake_case)]
+        unsafe extern "C" fn #extern_fn(
+            _args: *const ::clojure_rt::Value,
+            _n: usize,
+        ) -> ::clojure_rt::Value {
+            // Marker impl — never called by user code; presence in the
+            // type's per-type table is what `satisfies?` detects.
+            ::clojure_rt::Value::NIL
+        }
+
+        ::clojure_rt::__inventory_submit_impl! {
+            ::clojure_rt::registry::StaticImplRegistration {
+                type_cell: &#type_id_cell,
+                method_id_cell: &#proto::MARKER_METHOD_ID,
+                method_version: &#proto::MARKER.version,
+                fn_ptr: #extern_fn as *const (),
+            }
+        }
     }
 }
 

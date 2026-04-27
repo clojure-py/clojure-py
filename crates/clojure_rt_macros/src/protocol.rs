@@ -1,4 +1,4 @@
-//! `protocol!` — declares a protocol with one or more methods.
+//! `protocol!` — declares a protocol with zero or more methods.
 //! Generates a module with `ProtocolMethod` statics and `OnceCell<u32>`
 //! method-id cells, plus an inventory submission.
 //!
@@ -27,6 +27,13 @@
 //!     }
 //! }
 //! ```
+//!
+//! **Marker protocols** — a trait body with no `fn` items is treated
+//! as a marker. The macro synthesizes a single `MARKER` method
+//! (`<ProtoName>/<marker>`) whose presence in a type's per-type
+//! table answers `clojure_rt::protocol::satisfies`. Implementers
+//! write `implements! { impl ISequential for ConsObj {} }` (empty
+//! body); see `implements!` for the matching marker-impl emission.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -46,7 +53,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         if let TraitItem::Fn(m) = i { Some(m) } else { None }
     }).collect();
 
-    let static_decls = methods.iter().map(|m| {
+    let mut static_decls: Vec<TokenStream> = methods.iter().map(|m| {
         let mname = &m.sig.ident;
         let id_cell = format_ident!("{}_METHOD_ID", mname.to_string().to_uppercase());
         let method_static = format_ident!("{}", mname.to_string().to_uppercase());
@@ -96,9 +103,9 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 }
             }
         }
-    });
+    }).collect();
 
-    let table_entries = methods.iter().map(|m| {
+    let mut table_entries: Vec<TokenStream> = methods.iter().map(|m| {
         let mname = &m.sig.ident;
         let id_cell = format_ident!("{}_METHOD_ID", mname.to_string().to_uppercase());
         let method_static = format_ident!("{}", mname.to_string().to_uppercase());
@@ -110,7 +117,25 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 method_id_cell: &#mod_name::#id_cell,
             }
         }
-    });
+    }).collect();
+
+    // Marker protocol: zero declared methods → synthesize MARKER.
+    if methods.is_empty() {
+        let marker_name = format!("{}/<marker>", proto_name);
+        static_decls.push(quote! {
+            pub static MARKER_METHOD_ID: ::once_cell::sync::OnceCell<u32>
+                = ::once_cell::sync::OnceCell::new();
+            pub static MARKER: ::clojure_rt::protocol::ProtocolMethod =
+                ::clojure_rt::protocol::ProtocolMethod::new(#marker_name);
+        });
+        table_entries.push(quote! {
+            ::clojure_rt::registry::StaticProtocolMethodEntry {
+                name: "<marker>",
+                method: &#mod_name::MARKER,
+                method_id_cell: &#mod_name::MARKER_METHOD_ID,
+            }
+        });
+    }
 
     let proto_str = format!("{}", proto_name);
 

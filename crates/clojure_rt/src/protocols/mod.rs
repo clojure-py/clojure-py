@@ -7,8 +7,11 @@
 //! built-in fallback semantics for primitive Value tags. Per-type impls
 //! for concrete types (PersistentList, etc.) live alongside those types.
 
+pub mod coll;
 pub mod counted;
 pub mod equiv;
 pub mod hash;
 pub mod meta;
 pub mod named;
+pub mod seq;
+pub mod sequential;

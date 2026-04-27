@@ -7,5 +7,6 @@
 //! `clojure_rt::drop_value` manage it.
 
 pub mod keyword;
+pub mod list;
 pub mod string;
 pub mod symbol;
