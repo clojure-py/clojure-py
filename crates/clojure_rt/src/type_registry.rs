@@ -9,7 +9,7 @@ use arc_swap::ArcSwap;
 
 use crate::header::Header;
 use crate::value::{TypeId, FIRST_HEAP_TYPE};
-use crate::dispatch::perfect_hash::PerTypeTable;
+pub use crate::dispatch::perfect_hash::PerTypeTable;
 
 /// Maximum simultaneous types. v1 simplification — adjust later.
 pub const MAX_TYPES: usize = 1 << 16;
