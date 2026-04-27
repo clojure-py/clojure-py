@@ -64,15 +64,13 @@ pub fn empty_pool() -> &'static Mutex<Pool> {
     EMPTY_POOL.get_or_init(|| Mutex::new(Pool::new()))
 }
 
-/// Acquire an unowned block: prefer empty_pool (fully empty blocks),
-/// then alloc a fresh slab. The returned block has `owner_tid == 0`;
-/// the caller is responsible for CAS'ing it to its own tid.
-///
-/// Note: v1 does not use partial_pool for new TLAB acquisition. While
-/// partial_pool blocks may have reclaimable holes after drain, finding
-/// them reliably is deferred; auto-orphan-reaping is also deferred.
-/// This keeps TLAB acquisition simple and avoids fragmentation issues.
+/// Acquire an unowned block: prefer partial_pool, then empty_pool, then
+/// alloc a fresh slab. The returned block has `owner_tid == 0`; the
+/// caller is responsible for CAS'ing it to its own tid.
 pub unsafe fn acquire_block() -> NonNull<Block> {
+    if let Some(block) = unsafe { partial_pool().lock().pop() } {
+        return block;
+    }
     if let Some(block) = unsafe { empty_pool().lock().pop() } {
         return block;
     }
