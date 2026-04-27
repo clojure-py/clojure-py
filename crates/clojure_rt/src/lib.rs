@@ -16,3 +16,5 @@ pub use header::Header;
 pub mod gc;
 
 pub mod rc;
+
+pub mod type_registry;
