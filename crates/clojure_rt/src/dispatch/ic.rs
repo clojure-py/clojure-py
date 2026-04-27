@@ -14,6 +14,10 @@ pub struct ICSlot {
 }
 
 impl ICSlot {
+    /// Initializer template for `[ICSlot::EMPTY; N]`. Each array slot is
+    /// independently constructed from this const expression — the const
+    /// itself is never used as a shared instance.
+    #[allow(clippy::declare_interior_mutable_const)]
     pub const EMPTY: ICSlot = ICSlot {
         key:    AtomicU64::new(0),
         fn_ptr: AtomicPtr::new(null_mut()),
