@@ -10,7 +10,6 @@ use once_cell::sync::OnceCell;
 use crate::dispatch::perfect_hash::PerTypeTable;
 use crate::header::Header;
 use crate::gc::{allocator_uninstalled, install_allocator};
-use crate::gc::naive::NAIVE;
 use crate::protocol::ProtocolMethod;
 use crate::type_registry::{register_static_type, get};
 use crate::value::TypeId;
@@ -61,7 +60,7 @@ static INIT: Once = Once::new();
 pub fn init() {
     INIT.call_once(|| {
         if allocator_uninstalled() {
-            install_allocator(&NAIVE);
+            install_allocator(&crate::gc::rcimmix::RCIMMIX);
         }
 
         // 1. Protocols and methods.

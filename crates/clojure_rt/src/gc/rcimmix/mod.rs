@@ -131,15 +131,21 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
     debug_assert_eq!(prev, 0);
     unsafe { crate::gc::rcimmix::tlab::replace_tlab(new_block); }
 
-    // 4. Retry alloc on the new block.
-    let h = unsafe { alloc_fast(new_block, body_layout, type_id) };
-    if h.is_null() {
-        // The fresh block doesn't have a hole big enough? Only possible
-        // if total > BLOCK_SIZE - BUMP_START. That's the >8 KB case
-        // (LARGE_THRESHOLD), which should have been routed to large.rs.
-        panic!("clojure_rt: RCImmix can't fit object of body_layout {:?} in a fresh block", body_layout);
+    // 4. The new block may have stale bump_ptr/bump_end from a previous
+    //    owner (if it came from partial_pool). Drain its remote frees
+    //    (which may open holes) and find a fresh hole anywhere in the
+    //    block.
+    unsafe { crate::gc::rcimmix::drain::drain_remote_frees(new_block); }
+    if let Some((start, end)) = find_next_hole(new_header, BUMP_START as u32, total) {
+        new_header.bump_ptr.set(start);
+        new_header.bump_end.set(end);
+        let h = unsafe { alloc_fast(new_block, body_layout, type_id) };
+        if !h.is_null() { return h; }
     }
-    h
+    panic!(
+        "clojure_rt: RCImmix can't fit object of body_layout {:?} in a fresh block (BLOCK_SIZE={}, total={})",
+        body_layout, BLOCK_SIZE, total
+    );
 }
 
 /// Owner-thread dealloc: decrement line counts for the spanned range.
