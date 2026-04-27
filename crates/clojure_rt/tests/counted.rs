@@ -44,19 +44,19 @@ fn count_of_unhandled_type_returns_exception_value() {
 #[test]
 fn satisfies_counted_for_nil_is_true() {
     init();
-    assert!(clojure_rt::protocol::satisfies(&ICounted::COUNT, Value::NIL));
+    assert!(clojure_rt::protocol::satisfies(&ICounted::COUNT_1, Value::NIL));
 }
 
 #[test]
 fn satisfies_counted_for_int_is_false() {
     init();
-    assert!(!clojure_rt::protocol::satisfies(&ICounted::COUNT, Value::int(7)));
+    assert!(!clojure_rt::protocol::satisfies(&ICounted::COUNT_1, Value::int(7)));
 }
 
 #[test]
 fn satisfies_counted_for_bag_is_true() {
     init();
     let bag = Bag::alloc(Value::int(0));
-    assert!(clojure_rt::protocol::satisfies(&ICounted::COUNT, bag));
+    assert!(clojure_rt::protocol::satisfies(&ICounted::COUNT_1, bag));
     drop_value(bag);
 }

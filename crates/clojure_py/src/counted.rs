@@ -40,5 +40,5 @@ unsafe extern "C" fn counted_count_via_pyobject_length(
 /// Install `ICounted/count` as the impl for the given Sized TypeId.
 /// Called from `crate::abcs::init` once Sized has been interned.
 pub fn install(sized_tid: TypeId) {
-    extend_type(sized_tid, &ICounted::COUNT, counted_count_via_pyobject_length);
+    extend_type(sized_tid, &ICounted::COUNT_1, counted_count_via_pyobject_length);
 }

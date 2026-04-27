@@ -72,7 +72,7 @@ fn satisfies_counted_for_python_list_is_true() {
     Python::attach(|py| {
         let lst = PyList::new(py, [1i64, 2, 3]).unwrap();
         let v = Value::pyobject(lst.as_ptr() as *mut _);
-        assert!(protocol::satisfies(&ICounted::COUNT, v));
+        assert!(protocol::satisfies(&ICounted::COUNT_1, v));
     });
 }
 
@@ -82,7 +82,7 @@ fn satisfies_counted_for_python_int_is_false() {
     Python::attach(|py| {
         let n = 42i64.into_pyobject(py).unwrap();
         let v = Value::pyobject(n.as_ptr() as *mut _);
-        assert!(!protocol::satisfies(&ICounted::COUNT, v));
+        assert!(!protocol::satisfies(&ICounted::COUNT_1, v));
     });
 }
 

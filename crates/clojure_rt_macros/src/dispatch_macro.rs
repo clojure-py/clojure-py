@@ -1,10 +1,19 @@
 //! `dispatch!(Proto::method, &args)` — emits a per-call-site IC slot
 //! (a `static IC: ICSlot`) and the tier-1 fast path with fall-through
 //! to `clojure_rt::dispatch::slow_path`.
+//!
+//! The args expression *must* be a literal slice (`&[a, b, c]`) so that
+//! the macro can count its elements at expand time. The element count
+//! becomes the arity, which is used to mangle the path's last segment
+//! to its arity-suffixed form (`Proto::method` + 2 elems →
+//! `Proto::METHOD_2`). If the path already carries an explicit
+//! `_<digits>` suffix it must match the slice length.
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parser, punctuated::Punctuated, Expr, Token};
+use syn::{parse::Parser, punctuated::Punctuated, Expr, ExprArray, ExprReference, Token};
+
+use crate::arity::mangled_ident_at;
 
 pub fn expand(input: TokenStream) -> TokenStream {
     let parser = Punctuated::<Expr, Token![,]>::parse_terminated;
@@ -24,10 +33,15 @@ pub fn expand(input: TokenStream) -> TokenStream {
             "dispatch!: expected args slice").to_compile_error(),
     };
 
-    // For Proto::method, the static is Proto::METHOD (uppercase). The
-    // user is expected to write `Proto::method` in the macro input;
-    // we preserve the path's last segment but uppercase it.
-    let method_static = uppercase_last_segment(&method);
+    let arity = match arity_from_slice_literal(&args_expr) {
+        Ok(n) => n,
+        Err(e) => return e.to_compile_error(),
+    };
+
+    let method_static = match mangle_path(&method, arity) {
+        Ok(ts) => ts,
+        Err(e) => return e.to_compile_error(),
+    };
 
     quote! {{
         static IC: ::clojure_rt::dispatch::ic::ICSlot
@@ -38,15 +52,38 @@ pub fn expand(input: TokenStream) -> TokenStream {
     }}
 }
 
-fn uppercase_last_segment(method: &Expr) -> TokenStream {
-    use quote::ToTokens;
-    if let Expr::Path(p) = method {
-        let mut path = p.path.clone();
-        if let Some(last) = path.segments.last_mut() {
-            let upper = last.ident.to_string().to_uppercase();
-            last.ident = syn::Ident::new(&upper, last.ident.span());
+/// Pull the element count out of a literal slice expression.
+/// Accepts `&[a, b, c]` and `&[a; 0]` is rejected (the repeat form is
+/// uncommon in our call sites and would smuggle a non-literal length).
+fn arity_from_slice_literal(expr: &Expr) -> Result<usize, syn::Error> {
+    if let Expr::Reference(ExprReference { expr: inner, .. }) = expr {
+        if let Expr::Array(ExprArray { elems, .. }) = &**inner {
+            return Ok(elems.len());
         }
-        return path.to_token_stream();
     }
-    method.to_token_stream()
+    Err(syn::Error::new_spanned(
+        expr,
+        "dispatch!: args must be a literal slice like `&[a, b, c]` so the macro can derive arity",
+    ))
+}
+
+/// Mangle the last segment of `Proto::method` to its arity-suffixed,
+/// uppercase form: `Proto::METHOD_<arity>`. Path may already carry an
+/// explicit suffix; if so it must match.
+fn mangle_path(method: &Expr, arity: usize) -> Result<TokenStream, syn::Error> {
+    use quote::ToTokens;
+    let Expr::Path(p) = method else {
+        return Ok(method.to_token_stream());
+    };
+    let mut path = p.path.clone();
+    let Some(last) = path.segments.last_mut() else {
+        return Ok(path.to_token_stream());
+    };
+    let mangled = mangled_ident_at(&last.ident, arity, last.ident.span())?;
+    let upper = syn::Ident::new(
+        &mangled.to_string().to_uppercase(),
+        last.ident.span(),
+    );
+    last.ident = upper;
+    Ok(path.to_token_stream())
 }

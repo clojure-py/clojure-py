@@ -2,6 +2,7 @@
 
 use proc_macro::TokenStream;
 
+mod arity;
 mod register_type;
 mod protocol;
 mod implements;

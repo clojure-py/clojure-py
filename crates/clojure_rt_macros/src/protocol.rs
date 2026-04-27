@@ -22,10 +22,35 @@
 //!     pub trait Counted {
 //!         fn count(this: Value) -> Value {
 //!             // default body — runs for any unregistered type
-//!             ::clojure_rt::error::resolution_failure(&COUNT, this.tag)
+//!             ::clojure_rt::error::resolution_failure(&COUNT_1, this.tag)
 //!         }
 //!     }
 //! }
+//! ```
+//!
+//! **Multi-arity methods.** Slot identity is `(stem, arity)`. The static
+//! name and id-cell are *always* arity-suffixed (`<NAME>_<arity>` and
+//! `<NAME>_<arity>_METHOD_ID`), regardless of whether the user wrote
+//! `fn count(this)` or `fn count_1(this)`. A trailing `_<digits>` on
+//! the method name, if present, must match the input count or the macro
+//! emits a compile error. To declare multiple arities of the same stem,
+//! write them as separate fns with explicit suffixes:
+//!
+//! ```ignore
+//! protocol! {
+//!     pub trait ILookup {
+//!         fn lookup_2(this: Value, k: Value) -> Value;
+//!         fn lookup_3(this: Value, k: Value, not_found: Value) -> Value;
+//!     }
+//! }
+//! ```
+//!
+//! Call sites use the un-suffixed stem; `dispatch!` mangles based on the
+//! literal slice length:
+//!
+//! ```ignore
+//! dispatch!(ILookup::lookup, &[coll, k])     // → ILookup::LOOKUP_2
+//! dispatch!(ILookup::lookup, &[coll, k, nf]) // → ILookup::LOOKUP_3
 //! ```
 //!
 //! **Marker protocols** — a trait body with no `fn` items is treated
@@ -38,6 +63,8 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse2, FnArg, ItemTrait, Pat, TraitItem, TraitItemFn};
+
+use crate::arity::{ArityName, parse_arity_name};
 
 pub fn expand(input: TokenStream) -> TokenStream {
     let item: ItemTrait = match parse2(input) {
@@ -53,22 +80,35 @@ pub fn expand(input: TokenStream) -> TokenStream {
         if let TraitItem::Fn(m) = i { Some(m) } else { None }
     }).collect();
 
-    let mut static_decls: Vec<TokenStream> = methods.iter().map(|m| {
-        let mname = &m.sig.ident;
-        let id_cell = format_ident!("{}_METHOD_ID", mname.to_string().to_uppercase());
-        let method_static = format_ident!("{}", mname.to_string().to_uppercase());
-        let mname_str = format!("{}/{}", proto_name, mname);
+    let mut errors: Vec<TokenStream> = Vec::new();
+    let mut static_decls: Vec<TokenStream> = Vec::new();
+    let mut table_entries: Vec<TokenStream> = Vec::new();
+
+    for m in &methods {
+        let arity = m.sig.inputs.len();
+        let parsed = match parse_arity_name(&m.sig.ident, arity) {
+            Ok(p) => p,
+            Err(e) => {
+                errors.push(e.to_compile_error());
+                continue;
+            }
+        };
+        let ArityName { mangled_ident, mangled_str, .. } = parsed;
+
+        let id_cell = format_ident!("{}_METHOD_ID", mangled_ident.to_string().to_uppercase());
+        let method_static = format_ident!("{}", mangled_ident.to_string().to_uppercase());
+        let mname_str = format!("{}/{}", proto_name, mangled_str);
 
         match &m.default {
-            None => quote! {
+            None => static_decls.push(quote! {
                 pub static #id_cell: ::once_cell::sync::OnceCell<u32>
                     = ::once_cell::sync::OnceCell::new();
                 pub static #method_static: ::clojure_rt::protocol::ProtocolMethod =
                     ::clojure_rt::protocol::ProtocolMethod::new(#mname_str);
-            },
+            }),
             Some(block) => {
-                let fallback_fn = format_ident!("__cljrt_fallback_{}_{}", proto_name, mname);
-                let n_expected = m.sig.inputs.len();
+                let fallback_fn = format_ident!("__cljrt_fallback_{}_{}", proto_name, mangled_ident);
+                let n_expected = arity;
                 let arg_binds = m.sig.inputs.iter().enumerate().filter_map(|(i, a)| {
                     if let FnArg::Typed(pat) = a {
                         if let Pat::Ident(id) = &*pat.pat {
@@ -81,7 +121,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                     }
                     None
                 });
-                quote! {
+                static_decls.push(quote! {
                     pub static #id_cell: ::once_cell::sync::OnceCell<u32>
                         = ::once_cell::sync::OnceCell::new();
 
@@ -100,24 +140,18 @@ pub fn expand(input: TokenStream) -> TokenStream {
                             #mname_str,
                             #fallback_fn,
                         );
-                }
+                });
             }
         }
-    }).collect();
 
-    let mut table_entries: Vec<TokenStream> = methods.iter().map(|m| {
-        let mname = &m.sig.ident;
-        let id_cell = format_ident!("{}_METHOD_ID", mname.to_string().to_uppercase());
-        let method_static = format_ident!("{}", mname.to_string().to_uppercase());
-        let mname_str = format!("{}", mname);
-        quote! {
+        table_entries.push(quote! {
             ::clojure_rt::registry::StaticProtocolMethodEntry {
-                name: #mname_str,
+                name: #mangled_str,
                 method: &#mod_name::#method_static,
                 method_id_cell: &#mod_name::#id_cell,
             }
-        }
-    }).collect();
+        });
+    }
 
     // Marker protocol: zero declared methods → synthesize MARKER.
     if methods.is_empty() {
@@ -140,6 +174,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
     let proto_str = format!("{}", proto_name);
 
     quote! {
+        #(#errors)*
+
         #[allow(non_snake_case)]
         #vis mod #mod_name {
             #![allow(non_upper_case_globals)]

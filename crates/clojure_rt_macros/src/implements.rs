@@ -13,6 +13,8 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse2, FnArg, ImplItem, ImplItemFn, ItemImpl, Pat, Type, TypePath};
 
+use crate::arity::parse_arity_name;
+
 pub fn expand(input: TokenStream) -> TokenStream {
     let item: ItemImpl = match parse2(input) {
         Ok(i) => i,
@@ -50,7 +52,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
         return emit_marker(&proto_name, &type_name, &type_id_cell);
     }
 
-    let method_outputs = fns.iter().map(|m| emit_method(&proto_name, &type_name, &type_id_cell, m));
+    let mut method_outputs: Vec<TokenStream> = Vec::new();
+    for m in &fns {
+        match emit_method(&proto_name, &type_name, &type_id_cell, m) {
+            Ok(ts) => method_outputs.push(ts),
+            Err(e) => method_outputs.push(e.to_compile_error()),
+        }
+    }
 
     quote! {
         #(#method_outputs)*
@@ -90,12 +98,15 @@ fn emit_method(
     type_name: &syn::Ident,
     type_id_cell: &syn::Ident,
     m: &ImplItemFn,
-) -> TokenStream {
+) -> Result<TokenStream, syn::Error> {
     let mname = &m.sig.ident;
     let body  = &m.block;
-    let extern_fn = format_ident!("__cljrt_impl_{}_{}_{}", proto, type_name, mname);
-    let mid_cell = format_ident!("{}_METHOD_ID", mname.to_string().to_uppercase());
-    let method_static = format_ident!("{}", mname.to_string().to_uppercase());
+    let arity = m.sig.inputs.len();
+    let parsed = parse_arity_name(mname, arity)?;
+    let mangled = parsed.mangled_ident;
+    let extern_fn = format_ident!("__cljrt_impl_{}_{}_{}", proto, type_name, mangled);
+    let mid_cell = format_ident!("{}_METHOD_ID", mangled.to_string().to_uppercase());
+    let method_static = format_ident!("{}", mangled.to_string().to_uppercase());
 
     // Bind named args from `args[i]`. Names come from the user's fn sig.
     let arg_binds = m.sig.inputs.iter().enumerate().filter_map(|(i, a)| {
@@ -111,9 +122,9 @@ fn emit_method(
         None
     });
 
-    let n_expected = m.sig.inputs.len();
+    let n_expected = arity;
 
-    quote! {
+    Ok(quote! {
         #[allow(non_snake_case)]
         unsafe extern "C" fn #extern_fn(
             args: *const ::clojure_rt::Value,
@@ -132,5 +143,5 @@ fn emit_method(
                 fn_ptr: #extern_fn as *const (),
             }
         }
-    }
+    })
 }

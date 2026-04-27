@@ -7,5 +7,5 @@ protocol! {
 }
 
 fn main() {
-    let _id_cell = &P::M_METHOD_ID;
+    let _id_cell = &P::M_1_METHOD_ID;
 }

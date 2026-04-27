@@ -28,7 +28,7 @@ fn implements_wires_method_into_type_table() {
     use clojure_rt::dispatch::dispatch_fn;
     use clojure_rt::dispatch::ic::ICSlot;
     static IC: ICSlot = ICSlot::EMPTY;
-    let r = dispatch_fn(&IC, &Greeter::GREET, &[foo]);
+    let r = dispatch_fn(&IC, &Greeter::GREET_1, &[foo]);
     assert_eq!(r.as_int(), Some(42));
 
     clojure_rt::drop_value(foo);
