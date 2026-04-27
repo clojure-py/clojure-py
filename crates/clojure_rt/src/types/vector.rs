@@ -111,16 +111,24 @@ static EMPTY_VECTOR_SINGLETON: OnceLock<Value> = OnceLock::new();
 /// The root is an empty Internal node so that the first tail-promotion
 /// (`push_tail` at `shift = SHIFT_STEP`) finds the right shape — an
 /// Internal node whose children will be leaf-blocks at level 0.
+///
+/// Like the empty-list singleton, this Value is published from the
+/// first caller's thread to all other threads via the `OnceLock`. We
+/// flip the rc to shared-mode inside `get_or_init` before publication
+/// so subsequent dup/drop calls from other threads use the atomic
+/// path. (See the matching note in `types/list.rs::empty_list`.)
 pub fn empty_vector() -> Value {
     let v = *EMPTY_VECTOR_SINGLETON.get_or_init(|| {
-        PersistentVector::alloc(
+        let v = PersistentVector::alloc(
             0,
             SHIFT_STEP,
             PVNode::empty_internal(),
             Vec::<Value>::new().into_boxed_slice(),
             Value::NIL,
             AtomicI32::new(0),
-        )
+        );
+        crate::rc::share(v);
+        v
     });
     crate::rc::dup(v);
     v

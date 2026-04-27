@@ -47,8 +47,20 @@ static EMPTY_LIST_SINGLETON: OnceLock<Value> = OnceLock::new();
 /// first call after `clojure_rt::init` has run. Increments the
 /// refcount before returning, so callers should `drop_value` when
 /// they're done.
+///
+/// The singleton is published from the first caller's thread to all
+/// other threads via `OnceLock`, so we flip its rc to shared-mode
+/// (`rc::share`) inside `get_or_init` *before* the OnceLock makes the
+/// Value visible to anyone else. Without this step, dups/drops from
+/// other threads would race against the owner's biased-mode
+/// non-atomic mutations and corrupt the count — the same publication
+/// rule that the keyword and symbol interns follow.
 pub fn empty_list() -> Value {
-    let v = *EMPTY_LIST_SINGLETON.get_or_init(|| EmptyList::alloc(Value::NIL));
+    let v = *EMPTY_LIST_SINGLETON.get_or_init(|| {
+        let v = EmptyList::alloc(Value::NIL);
+        crate::rc::share(v);
+        v
+    });
     crate::rc::dup(v);
     v
 }
