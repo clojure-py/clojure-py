@@ -8,9 +8,21 @@
 //! the leaf call site.
 
 use crate::protocols::counted::Counted;
+use crate::protocols::equiv::IEquiv;
+use crate::protocols::hash_eq::IHashEq;
 use crate::value::Value;
 
 #[inline]
 pub fn count(v: Value) -> Value {
     clojure_rt_macros::dispatch!(Counted::count, &[v])
+}
+
+#[inline]
+pub fn hasheq(v: Value) -> Value {
+    clojure_rt_macros::dispatch!(IHashEq::hasheq, &[v])
+}
+
+#[inline]
+pub fn equiv(a: Value, b: Value) -> Value {
+    clojure_rt_macros::dispatch!(IEquiv::equiv, &[a, b])
 }

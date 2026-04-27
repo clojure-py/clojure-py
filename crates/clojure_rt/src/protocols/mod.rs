@@ -6,3 +6,5 @@
 //! for concrete types (PersistentList, etc.) live alongside those types.
 
 pub mod counted;
+pub mod equiv;
+pub mod hash_eq;
