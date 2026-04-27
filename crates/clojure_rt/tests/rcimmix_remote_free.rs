@@ -77,3 +77,29 @@ fn remote_free_contention_8_threads() {
         clojure_rt::drop_value(v);
     }
 }
+
+#[test]
+fn thread_exit_orphan_handling_does_not_corrupt() {
+    init();
+    // Spawn a thread that allocates biased-RC objects and exits
+    // without dropping them. Verify the main thread can continue
+    // allocating without corruption.
+    let h = thread::spawn(|| {
+        for i in 0..100 {
+            let _v = RCell::alloc(Value::int(i));
+            // Don't drop. Don't share. Just leak — biased rc never reaches 0.
+            // When this thread exits, its TLAB is returned to partial_pool
+            // with these objects still occupying lines.
+        }
+        // Don't free anything.
+    });
+    h.join().unwrap();
+
+    // Main thread continues. Its allocations may end up in the
+    // partial-pool block left by the exited thread (LIFO pool); the
+    // owner's slow-path scan must skip the still-occupied lines.
+    for i in 0..1_000 {
+        let v = RCell::alloc(Value::int(i + 1000));
+        clojure_rt::drop_value(v);
+    }
+}
