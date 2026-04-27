@@ -1,7 +1,5 @@
 //! The fat 16-byte Value: tag (= type_id) + 64-bit payload.
 
-use core::mem::{align_of, size_of};
-
 pub type TypeId = u32;
 
 pub const TYPE_NIL:        TypeId = 0;
