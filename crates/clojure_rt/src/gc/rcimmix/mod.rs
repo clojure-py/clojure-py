@@ -44,3 +44,62 @@ pub const EMPTY_POOL_CAP: usize = 16;
 
 /// Slab batch size for fresh OS allocation. 8 × 32 KB = 256 KB per syscall.
 pub const SLAB_BATCH: usize = 8;
+
+use core::alloc::Layout;
+use core::ptr::NonNull;
+use core::sync::atomic::AtomicI32;
+
+use crate::header::Header;
+use crate::value::TypeId;
+use crate::gc::rcimmix::block::{Block, inc_line_counts};
+
+/// Round `x` up to a multiple of `align` (where `align` is a power of two).
+#[inline(always)]
+#[allow(dead_code)]
+fn align_up(x: u32, align: u32) -> u32 {
+    debug_assert!(align.is_power_of_two());
+    (x + align - 1) & !(align - 1)
+}
+
+/// Compute the total in-block size for an object: HEADER_SIZE + body_size,
+/// where body_size is rounded up to body_align (which must be ≤ 16, the
+/// Header alignment).
+#[inline(always)]
+#[allow(dead_code)]
+fn total_size(body_layout: Layout) -> u32 {
+    let body = body_layout.size();
+    (HEADER_SIZE + body) as u32
+}
+
+/// Owner-thread alloc fast path. Returns null if the current hole is
+/// too small (caller falls through to slow path).
+#[inline]
+#[allow(dead_code)]
+unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
+    let header = unsafe { &block.as_ref().header };
+    let bump = header.bump_ptr.get();
+    // Header alignment is 16; body alignment must be ≤ 16 (asserted on
+    // the slow path). Header sits at offset `aligned`; body follows.
+    let aligned = align_up(bump, 16);
+    let total = total_size(body_layout);
+    let new_bump = aligned + total;
+    if new_bump > header.bump_end.get() {
+        return core::ptr::null_mut();
+    }
+    // Compute object pointer: block_addr + aligned.
+    let block_addr = block.as_ptr() as usize;
+    let h = (block_addr + aligned as usize) as *mut Header;
+    // Initialize Header.
+    unsafe {
+        core::ptr::write(h, Header {
+            type_id,
+            flags: 0,
+            rc: AtomicI32::new(Header::INITIAL_RC),
+            _pad: 0,
+        });
+    }
+    header.bump_ptr.set(new_bump);
+    // Update line counts.
+    unsafe { inc_line_counts(header, aligned, new_bump); }
+    h
+}
