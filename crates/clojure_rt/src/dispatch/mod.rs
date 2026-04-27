@@ -3,6 +3,7 @@
 
 pub mod ic;
 pub mod perfect_hash;
+pub mod stub_cache;
 
 use crate::value::Value;
 
