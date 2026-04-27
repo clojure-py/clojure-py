@@ -19,3 +19,6 @@ proptest.workspace = true
 
 [dev-dependencies.criterion]
 workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
