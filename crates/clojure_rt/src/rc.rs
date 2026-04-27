@@ -49,6 +49,31 @@ pub unsafe fn drop_heap(h: *const Header) -> bool {
     }
 }
 
+/// Mark a heap object as shared (atomic mode). Idempotent. Called only
+/// by sharing primitives (atom/ref/channel) on the owner thread BEFORE
+/// publication of the object to another thread.
+///
+/// # Safety
+/// `h` must point at a live `Header`. Caller thread must currently be
+/// the owner (i.e. the only thread mutating `rc`).
+#[inline]
+pub unsafe fn share_heap(h: *const Header) {
+    loop {
+        let r = unsafe { (*h).rc.load(Ordering::Relaxed) };
+        if r > 0 {
+            return; // already shared
+        }
+        // Biased mode: r < 0. Flip to +(-r) atomically.
+        let new = -r;
+        match unsafe {
+            (*h).rc.compare_exchange(r, new, Ordering::Release, Ordering::Relaxed)
+        } {
+            Ok(_) => return,
+            Err(_) => continue,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +134,35 @@ mod tests {
         unsafe {
             assert!(drop_heap(&*h));                         // rc: 1 -> 0
             assert_eq!(h.rc.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn share_flips_biased_to_shared() {
+        let h = fresh_header();                 // rc = -1
+        unsafe {
+            share_heap(&*h);
+            assert_eq!(h.rc.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn share_is_idempotent_on_shared() {
+        let h = shared_header();                // rc = 1
+        unsafe {
+            share_heap(&*h);
+            assert_eq!(h.rc.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn share_preserves_count_magnitude() {
+        let h = fresh_header();                 // rc = -1
+        unsafe {
+            dup_heap(&*h);                      // rc = -2
+            dup_heap(&*h);                      // rc = -3
+            share_heap(&*h);                    // rc = +3
+            assert_eq!(h.rc.load(Ordering::Relaxed), 3);
         }
     }
 }
