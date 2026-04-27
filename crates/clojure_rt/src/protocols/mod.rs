@@ -8,3 +8,5 @@
 pub mod counted;
 pub mod equiv;
 pub mod hash_eq;
+pub mod meta;
+pub mod named;

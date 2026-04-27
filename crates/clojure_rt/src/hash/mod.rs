@@ -7,3 +7,4 @@
 //! no allocator, no global state.
 
 pub mod murmur3;
+pub mod util;
