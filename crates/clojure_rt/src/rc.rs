@@ -8,6 +8,9 @@
 use core::sync::atomic::{fence, Ordering};
 
 use crate::header::Header;
+use crate::value::Value;
+use crate::gc::allocator;
+use crate::type_registry;
 
 /// Increment the refcount of a heap object.
 ///
@@ -72,6 +75,40 @@ pub unsafe fn share_heap(h: *const Header) {
             Err(_) => continue,
         }
     }
+}
+
+/// Increment refcount of a Value (no-op for primitives).
+#[inline]
+pub fn dup(v: Value) {
+    if v.is_heap() {
+        unsafe { dup_heap(v.payload as *const Header) };
+    }
+}
+
+/// Decrement refcount of a Value (no-op for primitives). On drop-to-zero,
+/// runs the type's destructor and deallocates.
+#[inline]
+pub fn drop_value(v: Value) {
+    if !v.is_heap() { return; }
+    let h = v.payload as *mut Header;
+    let zeroed = unsafe { drop_heap(h) };
+    if zeroed {
+        unsafe { destruct_and_dealloc(h); }
+    }
+}
+
+/// Mark a Value as shared (escape op). No-op for primitives.
+#[inline]
+pub fn share(v: Value) {
+    if v.is_heap() {
+        unsafe { share_heap(v.payload as *const Header) };
+    }
+}
+
+unsafe fn destruct_and_dealloc(h: *mut Header) {
+    let meta = type_registry::get(unsafe { (*h).type_id });
+    unsafe { (meta.destruct)(h); }
+    unsafe { allocator().dealloc(h, meta.layout); }
 }
 
 #[cfg(test)]
