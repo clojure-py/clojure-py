@@ -5,7 +5,7 @@
 use core::cell::Cell;
 use core::sync::atomic::{AtomicPtr, AtomicU64};
 
-use crate::gc::rcimmix::{BLOCK_SIZE, BUMP_START, LINES_PER_BLOCK};
+use crate::gc::rcimmix::{BLOCK_SIZE, BLOCK_SIZE as _BS, BUMP_START, LINES_PER_BLOCK, LINE_SIZE};
 use crate::header::Header;
 
 /// Per-block bookkeeping. Sits in-band at the start of every block.
@@ -66,6 +66,50 @@ impl BlockHeader {
     }
 }
 
+/// Compute the block address from any pointer interior to it.
+#[inline(always)]
+pub fn block_of<T>(ptr: *const T) -> *mut Block {
+    ((ptr as usize) & !(_BS - 1)) as *mut Block
+}
+
+/// Return the inclusive line index range `[line_start, line_end]` that
+/// the byte range `[byte_start, byte_end_exclusive)` spans within a block.
+#[inline]
+pub fn line_range(byte_start: u32, byte_end_exclusive: u32) -> (usize, usize) {
+    debug_assert!(byte_end_exclusive > byte_start);
+    let line_start = (byte_start as usize) / LINE_SIZE;
+    let line_end = ((byte_end_exclusive as usize) - 1) / LINE_SIZE;
+    (line_start, line_end)
+}
+
+/// Increment line counts for the spanned range. Saturates at u8::MAX
+/// to avoid overflow panic in release; debug-asserts no saturation
+/// occurs in well-formed programs (max counter value is bounded by
+/// objects-per-line, far below 255).
+#[inline]
+pub unsafe fn inc_line_counts(header: &BlockHeader, byte_start: u32, byte_end_exclusive: u32) {
+    let (l0, l1) = line_range(byte_start, byte_end_exclusive);
+    for line in l0..=l1 {
+        let cell = &header.line_counts[line];
+        let v = cell.get();
+        debug_assert!(v < u8::MAX, "line count overflow at line {}", line);
+        cell.set(v.saturating_add(1));
+    }
+}
+
+/// Decrement line counts for the spanned range. Debug-asserts that no
+/// underflow occurs (would indicate a double-free or accounting bug).
+#[inline]
+pub unsafe fn dec_line_counts(header: &BlockHeader, byte_start: u32, byte_end_exclusive: u32) {
+    let (l0, l1) = line_range(byte_start, byte_end_exclusive);
+    for line in l0..=l1 {
+        let cell = &header.line_counts[line];
+        let v = cell.get();
+        debug_assert!(v > 0, "line count underflow at line {} (double free?)", line);
+        cell.set(v.saturating_sub(1));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +128,39 @@ mod tests {
         // Ensures BlockHeader didn't accidentally grow to consume the
         // entire block.
         const _: () = assert!(BLOCK_SIZE > size_of::<BlockHeader>());
+    }
+
+    #[test]
+    fn line_range_single_line() {
+        // Object [0..16) is in line 0.
+        assert_eq!(line_range(0, 16), (0, 0));
+        // Object [16..128) is in line 0 (exclusive end at line boundary).
+        assert_eq!(line_range(16, 128), (0, 0));
+        // Object [0..128) is in line 0 (exclusive end at line boundary).
+        assert_eq!(line_range(0, 128), (0, 0));
+    }
+
+    #[test]
+    fn line_range_two_lines() {
+        // Object [0..129) spans lines 0 and 1.
+        assert_eq!(line_range(0, 129), (0, 1));
+        // Object [127..128) is in line 0 only.
+        assert_eq!(line_range(127, 128), (0, 0));
+        // Object [127..129) spans lines 0 and 1.
+        assert_eq!(line_range(127, 129), (0, 1));
+    }
+
+    #[test]
+    fn line_range_many_lines() {
+        // Object spanning lines 5-7 inclusive: [5*128 .. 7*128 + 1) = [640, 897).
+        assert_eq!(line_range(640, 897), (5, 7));
+    }
+
+    #[test]
+    fn block_of_recovers_block_address() {
+        // Construct a fake block address (must be BLOCK_ALIGN-aligned).
+        let block_addr: usize = 0x1_0000_0000; // 4 GB, BLOCK_ALIGN-aligned
+        let interior = block_addr + 384 + 47;
+        assert_eq!(block_of(interior as *const u8) as usize, block_addr);
     }
 }
