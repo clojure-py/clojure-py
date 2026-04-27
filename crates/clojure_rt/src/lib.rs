@@ -9,6 +9,7 @@ pub mod rc;
 pub mod type_registry;
 pub mod dispatch;
 pub mod protocol;
+pub mod error;
 
 pub use value::{
     Value, TypeId,
