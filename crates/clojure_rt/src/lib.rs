@@ -9,3 +9,6 @@ pub use value::{
     TYPE_NIL, TYPE_BOOL, TYPE_INT64, TYPE_FLOAT64, TYPE_CHAR, TYPE_PYOBJECT,
     FIRST_HEAP_TYPE,
 };
+
+pub mod header;
+pub use header::Header;
