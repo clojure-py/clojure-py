@@ -9,6 +9,7 @@ use arc_swap::ArcSwap;
 
 use crate::header::Header;
 use crate::value::{TypeId, FIRST_HEAP_TYPE};
+use crate::dispatch::perfect_hash::PerTypeTable;
 
 /// Maximum simultaneous types. v1 simplification — adjust later.
 pub const MAX_TYPES: usize = 1 << 16;
@@ -20,15 +21,6 @@ pub struct TypeMeta {
     pub layout:   Layout,
     pub destruct: unsafe fn(*mut Header),
     pub table:    ArcSwap<PerTypeTable>,
-}
-
-/// Placeholder for the tier-2 perfect-hash table. Real impl lands in
-/// `dispatch/perfect_hash.rs` (Task 11). For now an empty struct so the
-/// registry compiles in isolation.
-pub struct PerTypeTable;
-
-impl PerTypeTable {
-    pub fn empty() -> Arc<Self> { Arc::new(PerTypeTable) }
 }
 
 const NULL_META: AtomicPtr<TypeMeta> = AtomicPtr::new(null_mut());
@@ -44,7 +36,7 @@ fn register_type_inner(
     assert!((id as usize) < MAX_TYPES, "clojure_rt: type id space exhausted");
     let meta = Box::leak(Box::new(TypeMeta {
         type_id: id, name, layout, destruct,
-        table: ArcSwap::from(PerTypeTable::empty()),
+        table: ArcSwap::from(Arc::new(PerTypeTable::empty())),
     }));
     TYPES[id as usize].store(meta as *mut _, Ordering::Release);
     id

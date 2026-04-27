@@ -7,6 +7,7 @@ pub mod header;
 pub mod gc;
 pub mod rc;
 pub mod type_registry;
+pub mod dispatch;
 
 pub use value::{
     Value, TypeId,
