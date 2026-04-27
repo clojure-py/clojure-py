@@ -82,4 +82,33 @@ mod tests {
             assert_eq!(h.rc.load(Ordering::Relaxed), 0);
         }
     }
+
+    fn shared_header() -> Box<Header> {
+        // Manually start in shared mode at count=1
+        Box::new(Header {
+            type_id: 16, flags: 0,
+            rc: AtomicI32::new(1),
+            _pad: 0,
+        })
+    }
+
+    #[test]
+    fn shared_dup_then_drop_balances() {
+        let h = shared_header();
+        unsafe {
+            dup_heap(&*h);                                   // rc: 1 -> 2
+            assert_eq!(h.rc.load(Ordering::Relaxed), 2);
+            assert!(!drop_heap(&*h));                        // rc: 2 -> 1
+            assert_eq!(h.rc.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn shared_final_drop_returns_true() {
+        let h = shared_header();
+        unsafe {
+            assert!(drop_heap(&*h));                         // rc: 1 -> 0
+            assert_eq!(h.rc.load(Ordering::Relaxed), 0);
+        }
+    }
 }
