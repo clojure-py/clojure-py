@@ -37,7 +37,7 @@ pub unsafe fn alloc_large(body_layout: Layout, type_id: TypeId) -> *mut Header {
             type_id,
             flags: 0,
             rc: AtomicI32::new(Header::INITIAL_RC),
-            _pad: 0,
+            owner_tid: super::tid::current_owner_tid(),
         });
     }
     large_objects().lock().insert(h as usize, body_layout);

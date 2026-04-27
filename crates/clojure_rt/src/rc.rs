@@ -21,6 +21,7 @@ use crate::type_registry;
 pub unsafe fn dup_heap(h: *const Header) {
     let r = unsafe { (*h).rc.load(Ordering::Relaxed) };
     if r < 0 {
+        unsafe { debug_assert_owner(h, "dup_heap"); }
         // biased mode: non-atomic decrement (magnitude up by 1)
         unsafe { (*h).rc.store(r - 1, Ordering::Relaxed); }
     } else {
@@ -38,6 +39,7 @@ pub unsafe fn dup_heap(h: *const Header) {
 pub unsafe fn drop_heap(h: *const Header) -> bool {
     let r = unsafe { (*h).rc.load(Ordering::Relaxed) };
     if r < 0 {
+        unsafe { debug_assert_owner(h, "drop_heap"); }
         let new = r + 1;
         unsafe { (*h).rc.store(new, Ordering::Relaxed); }
         new == 0
@@ -49,6 +51,30 @@ pub unsafe fn drop_heap(h: *const Header) -> bool {
         } else {
             false
         }
+    }
+}
+
+/// Debug-only check that the calling thread owns this biased-mode
+/// header. Panics with a clear message if a thread other than the
+/// owner mutates the rc — the symptom of a missing `rc::share()` call
+/// before publishing the value across threads (the bug class behind
+/// the singleton corruption fixed in commit a393ec7).
+///
+/// Compiled out entirely in release builds; the field read and the
+/// `tid` lookup are also gated behind `cfg(debug_assertions)`.
+#[inline(always)]
+unsafe fn debug_assert_owner(_h: *const Header, _op: &'static str) {
+    #[cfg(debug_assertions)]
+    {
+        let owner = unsafe { (*_h).owner_tid };
+        let me = crate::gc::rcimmix::tid::current_tid() as u32;
+        debug_assert_eq!(
+            owner, me,
+            "rc::{}: biased-mode mutation from non-owner thread \
+             (owner_tid={}, current_tid={}) — did you forget to call \
+             rc::share() before publishing this value across threads?",
+            _op, owner, me
+        );
     }
 }
 
@@ -66,12 +92,22 @@ pub unsafe fn share_heap(h: *const Header) {
         if r > 0 {
             return; // already shared
         }
+        unsafe { debug_assert_owner(h, "share_heap"); }
         // Biased mode: r < 0. Flip to +(-r) atomically.
         let new = -r;
         match unsafe {
             (*h).rc.compare_exchange(r, new, Ordering::Release, Ordering::Relaxed)
         } {
-            Ok(_) => return,
+            Ok(_) => {
+                // Clear owner_tid in debug builds — post-share the
+                // header is shared by all threads, so the assertion
+                // path no longer applies. Release builds skip this.
+                #[cfg(debug_assertions)]
+                unsafe {
+                    (*(h as *mut Header)).owner_tid = Header::UNOWNED_TID;
+                }
+                return;
+            }
             Err(_) => continue,
         }
     }
@@ -121,7 +157,7 @@ mod tests {
         Box::new(Header {
             type_id: 16, flags: 0,
             rc: AtomicI32::new(Header::INITIAL_RC),
-            _pad: 0,
+            owner_tid: crate::gc::rcimmix::tid::current_owner_tid(),
         })
     }
 
@@ -150,7 +186,7 @@ mod tests {
         Box::new(Header {
             type_id: 16, flags: 0,
             rc: AtomicI32::new(1),
-            _pad: 0,
+            owner_tid: Header::UNOWNED_TID,
         })
     }
 

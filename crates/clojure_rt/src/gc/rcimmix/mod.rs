@@ -101,7 +101,7 @@ unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
             type_id,
             flags: 0,
             rc: AtomicI32::new(Header::INITIAL_RC),
-            _pad: 0,
+            owner_tid: tid::current_owner_tid(),
         });
     }
     header.bump_ptr.set(new_bump);

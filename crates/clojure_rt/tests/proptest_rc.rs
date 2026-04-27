@@ -19,7 +19,11 @@ proptest! {
 
     #[test]
     fn random_sequence_matches_reference(ops in proptest::collection::vec(op_strategy(), 1..200)) {
-        let h = Header { type_id: 16, flags: 0, rc: AtomicI32::new(Header::INITIAL_RC), _pad: 0 };
+        let h = Header {
+            type_id: 16, flags: 0,
+            rc: AtomicI32::new(Header::INITIAL_RC),
+            owner_tid: clojure_rt::gc::rcimmix::tid::current_owner_tid(),
+        };
         let mut rc_ref: i32 = 1;            // reference live count
         let mut zeroed = false;
         for op in &ops {

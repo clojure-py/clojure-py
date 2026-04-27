@@ -36,7 +36,7 @@ unsafe impl GcAllocator for NaiveAllocator {
                 type_id,
                 flags: 0,
                 rc: AtomicI32::new(Header::INITIAL_RC),
-                _pad: 0,
+                owner_tid: crate::gc::rcimmix::tid::current_owner_tid(),
             });
         }
         self.live.fetch_add(1, Ordering::Relaxed);

@@ -16,6 +16,22 @@ pub fn current_tid() -> u64 {
     MY_TID.with(|t| *t)
 }
 
+/// Owner-tid value to stamp into a freshly-allocated `Header`. In
+/// debug builds this is the low 32 bits of `current_tid()` so that
+/// `rc::{dup,drop}_heap` can debug-assert biased-mode mutations come
+/// from the owner thread. In release builds this collapses to a
+/// constant `0` — no TLS access, no overhead. Collisions across the
+/// 32-bit truncation are negligible (would require 4B distinct
+/// threads in one process).
+#[inline]
+pub fn current_owner_tid() -> u32 {
+    if cfg!(debug_assertions) {
+        current_tid() as u32
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
