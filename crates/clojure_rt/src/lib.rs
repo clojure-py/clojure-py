@@ -21,3 +21,26 @@ pub use rc::{dup, drop_value, share};
 
 pub mod registry;
 pub use registry::init;
+
+#[doc(hidden)]
+pub use inventory;
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __inventory_submit_type {
+    ($e:expr) => { $crate::inventory::submit! { $e } };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __inventory_submit_protocol {
+    ($e:expr) => { $crate::inventory::submit! { $e } };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __inventory_submit_impl {
+    ($e:expr) => { $crate::inventory::submit! { $e } };
+}
+
+pub use clojure_rt_macros::register_type;

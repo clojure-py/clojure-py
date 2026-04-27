@@ -1,2 +1,10 @@
 //! Proc-macros for the clojure-py runtime substrate.
-//! See `crates/clojure_rt/src/lib.rs` for the public surface they target.
+
+use proc_macro::TokenStream;
+
+mod register_type;
+
+#[proc_macro]
+pub fn register_type(input: TokenStream) -> TokenStream {
+    register_type::expand(input.into()).into()
+}
