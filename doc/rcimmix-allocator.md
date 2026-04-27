@@ -2,17 +2,23 @@
 
 The clojure-py heap allocator. Replaces the v1 `NaiveAllocator` (std::alloc-backed) with a thread-local-bump-allocator on 32 KB / 128 B line-and-block heap. Foundation only — compaction, evacuation, and gen-RC are deferred (see `deferred-work.md`).
 
-## Targets
+## Measured (current main)
 
-Validated against `NaiveAllocator` baselines from the substrate round:
+| Bench | Naive baseline | RCImmix v1 | + dyn-dispatch bypass | Speedup vs. naive |
+|---|---|---|---|---|
+| lazy_cons biased step | 30 ns/cell | 15.86 ns | **14.14 ns** | 2.12× |
+| lazy_cons escaped step | 44 ns/cell | 27.57 ns | 27.42 ns | 1.61× |
+| alloc + drop | 14 ns | 7.15 ns | **6.02 ns** | 2.33× |
+| dispatch tier-1 hit | 1.16 ns | 1.16 ns | 1.16 ns | — (allocator-independent) |
+| dispatch megamorphic | 3.21 ns | 3.21 ns | 3.21 ns | — |
 
-| Bench | Naive | RCImmix target |
-|---|---|---|
-| lazy_cons biased | 30 ns/cell | 10–12 ns/cell |
-| lazy_cons escaped | 44 ns/cell | 22–26 ns/cell |
-| drop_to_zero | 14 ns | 2–4 ns |
-| rc_share op | 21 ns | 8–11 ns |
-| dispatch tier-1 hit | 1.16 ns | 1.16 ns (unchanged) |
+The biased step is now 70 M cells/sec on the hot path. The escaped path is dominated by the `share()` CAS + shared-mode `Release fetch_sub`; the dyn-dispatch bypass didn't move it (the allocator is no longer the bottleneck on that path).
+
+## Dyn-dispatch bypass (perf, on main)
+
+Macros emit a direct call to `RCIMMIX.alloc_inline(...)` — a concrete `#[inline(always)]` method on `RCImmixAllocator` — instead of routing through `gc::allocator() -> &dyn GcAllocator -> .alloc(...)`. This lets LLVM inline through to the bump-pointer hot path. The `GcAllocator` trait is preserved for non-default allocators (e.g. tests that opt into `NaiveAllocator`); only the macro-generated alloc path is devirtualized. Dealloc still goes through the trait so opt-out tests keep working.
+
+`inc/dec_line_counts` are also specialized for the single-line common case (most small objects); a fast `if l0 == l1 { single inc; return; }` precedes the multi-line loop.
 
 ## Heap shape
 

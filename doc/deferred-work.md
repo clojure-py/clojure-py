@@ -32,22 +32,62 @@ dispatch. Nothing Clojure-specific is built yet.
 
 ## Reference counting
 
-- **In v1:** biased RC with a single signed counter (`rc < 0` biased,
+- **In v1+:** biased RC with a single signed counter (`rc < 0` biased,
   `rc > 0` shared); manual `gc::dup` / `gc::drop` at call sites.
+  Substrate-level optimizations landed: dyn-dispatch bypass on the
+  alloc fast path (`RCIMMIX.alloc_inline`), single-line specialization
+  in `inc/dec_line_counts`. Current `lazy_cons biased step` is 14 ns;
+  the remaining gap to the original 10-12 ns target is dominated by
+  the RC accounting work itself (two `inc_line_counts` per step), not
+  by allocator overhead.
+
 - **Deferred:**
-  - **Perceus-style automatic dup/drop insertion.** Macros do not yet
-    emit RC ops around argument flow. Callers manage RC manually.
-  - **Reuse pairing / runtime in-place mutation.** When `refcount == 1`
-    a `dup` + `drop` pair becomes a no-op and the storage is reused.
-    This is the FBIP / "automatic transients" win and the largest
-    remaining performance lever.
-  - **Borrow inference.** Compile-time elimination of dup/drop pairs
-    based on parameter usage analysis.
-  - **Drop-guided / frame-limited reuse** (Lorenzen & Leijen 2023).
+
+  ### Perceus (the next major lever — explicitly held)
+
+  The full Perceus pipeline (Reinking et al. 2021) — automatic
+  dup/drop insertion, borrow inference, and reuse pairing
+  (FBIP) — is the largest remaining performance lever. With reuse
+  pairing, the typical functional pattern `Cons(f(h), recur(t))` over
+  a unique-RC list compiles to in-place writes: the alloc and drop
+  cancel, and a list traversal becomes a single rewriting pass. We
+  estimate this would put `lazy_cons biased step` at ~5-8 ns.
+
+  **Why we're holding off.** Perceus is a *compiler* pass, not a
+  runtime feature. It runs over an IR with explicit ownership ops
+  and uses dataflow analysis (last-use, reuse-credit threading,
+  shape matching) to insert and pair RC ops. We don't have a
+  Clojure-level compiler yet — that's a distinct sub-project, and
+  building a compiler primarily to enable Perceus would be putting
+  the cart before the horse. The natural sequence is:
+    1. Persistent collections (HAMT vector/map, lists, sets).
+    2. Reader (text → forms).
+    3. Bytecode evaluator (forms → ops).
+    4. Compiler proper (forms → optimized IR), at which point
+       Perceus is the natural shape of the RC-insertion pass.
+  Until step 4, every alloc/drop is hand-written or macro-generated,
+  so there's no IR for a Perceus pass to operate on. The runtime
+  side of Perceus (the `if rc==1 { reuse } else { alloc+drop }`
+  branch and the line-count adjust-in-place) is buildable today as
+  a hand-written demo in benches but doesn't compose without the
+  compiler.
+
+  Components, ordered by their compiler dependency:
+  - **Reuse pairing / runtime in-place mutation** — needs the
+    compiler to identify alloc/drop pairs.
+  - **Automatic dup/drop insertion** — needs the IR to insert into.
+  - **Borrow inference** — needs lifetime analysis on the IR.
+  - **Drop-guided / frame-limited reuse** (Lorenzen & Leijen 2023) —
+    extension to the above.
+
+  ### Other RC items
+
   - **Bacon trial-deletion cycle collector.** No cycle handling at
-    all in v1. Cycles are leaks until the collector lands.
+    all in v1. Cycles are leaks until the collector lands. Independent
+    of Perceus; can land any time.
   - **Weak references.** No first-class weak ref type yet.
-  - **STM batching of RC ops across transaction commits.**
+  - **STM batching of RC ops across transaction commits.** Requires
+    atom/ref/channel to exist first.
 
 ## Sharing primitives
 
