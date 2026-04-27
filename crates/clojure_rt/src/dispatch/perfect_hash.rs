@@ -60,11 +60,18 @@ impl PerTypeTable {
         }
     }
 
-    /// O(1) lookup: hash, single compare.
+    /// O(1) lookup: hash, single compare. Caller must pass `method_id != 0`
+    /// (0 is the empty-slot sentinel; passing it would match an empty slot
+    /// and transmute a null pointer).
     #[inline]
     pub fn lookup(&self, method_id: u32) -> Option<MethodFn> {
+        debug_assert!(method_id != 0, "method_id 0 is reserved (empty-slot sentinel)");
         let s = self.slots[(method_id & self.mask) as usize];
         if s.method_id == method_id {
+            // SAFETY: on x86-64/aarch64 (the only supported targets),
+            // `*const ()` and `unsafe extern "C" fn` are the same width
+            // and ABI-compatible. Cranelift hardening tracked in
+            // doc/deferred-work.md.
             Some(unsafe { core::mem::transmute::<*const (), MethodFn>(s.fn_ptr) })
         } else { None }
     }
