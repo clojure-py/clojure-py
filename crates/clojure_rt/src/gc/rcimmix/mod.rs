@@ -80,7 +80,7 @@ fn total_size(body_layout: Layout) -> u32 {
 /// # Safety
 /// Caller must hold ownership of `block` (i.e. `block.header.owner_tid ==
 /// current_tid()`). `body_layout.align()` must be ≤ 16.
-#[inline]
+#[inline(always)]
 unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
     let header = unsafe { &block.as_ref().header };
     let bump = header.bump_ptr.get();
@@ -224,7 +224,7 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
 /// Caller must hold ownership of `block` (i.e. `block.header.owner_tid ==
 /// current_tid()`). The destructor for the object at `ptr` must have
 /// already run before this is called.
-#[inline]
+#[inline(always)]
 unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: Layout) {
     let header = unsafe { &block.as_ref().header };
     let block_addr = block.as_ptr() as usize;
@@ -268,8 +268,15 @@ pub struct RCImmixAllocator;
 /// to `gc::install_allocator`.
 pub static RCIMMIX: RCImmixAllocator = RCImmixAllocator;
 
-unsafe impl GcAllocator for RCImmixAllocator {
-    unsafe fn alloc(&self, body_layout: Layout, type_id: TypeId) -> *mut Header {
+impl RCImmixAllocator {
+    /// Concrete inline-able alloc. Macro-generated `Foo::alloc(...)`
+    /// constructors call this directly to bypass the `dyn GcAllocator`
+    /// vtable, letting LLVM inline through to the bump-pointer hot path.
+    ///
+    /// # Safety
+    /// Same contract as `<Self as GcAllocator>::alloc`.
+    #[inline(always)]
+    pub unsafe fn alloc_inline(&self, body_layout: Layout, type_id: TypeId) -> *mut Header {
         // Large or over-aligned objects go through std::alloc.
         // Any body alignment > 16 also takes this path; the line-and-block
         // heap supports body alignment ≤ 16 (i.e. ≤ Header alignment).
@@ -286,7 +293,13 @@ unsafe impl GcAllocator for RCImmixAllocator {
         unsafe { alloc_slow(block, body_layout, type_id) }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut Header, body_layout: Layout) {
+    /// Concrete inline-able dealloc. Called directly from
+    /// `rc::destruct_and_dealloc` for the same reason as `alloc_inline`.
+    ///
+    /// # Safety
+    /// Same contract as `<Self as GcAllocator>::dealloc`.
+    #[inline(always)]
+    pub unsafe fn dealloc_inline(&self, ptr: *mut Header, body_layout: Layout) {
         // Large or over-aligned objects took the std::alloc path on alloc.
         if body_layout.size() > LARGE_THRESHOLD || body_layout.align() > 16 {
             let was_large = unsafe { large::try_dealloc_large(ptr) };
@@ -304,5 +317,15 @@ unsafe impl GcAllocator for RCImmixAllocator {
         } else {
             unsafe { dealloc_remote(block_nn, ptr); }
         }
+    }
+}
+
+unsafe impl GcAllocator for RCImmixAllocator {
+    unsafe fn alloc(&self, body_layout: Layout, type_id: TypeId) -> *mut Header {
+        unsafe { self.alloc_inline(body_layout, type_id) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut Header, body_layout: Layout) {
+        unsafe { self.dealloc_inline(ptr, body_layout) }
     }
 }

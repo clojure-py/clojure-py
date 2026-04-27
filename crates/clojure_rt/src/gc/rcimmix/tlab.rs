@@ -49,7 +49,7 @@ thread_local! {
 /// # Safety
 /// Must be called only from the thread's context (thread-local access
 /// is safe). The returned block is owned by the calling thread.
-#[inline]
+#[inline(always)]
 pub unsafe fn ensure_tlab() -> NonNull<Block> {
     TLAB.with(|tlab| {
         if let Some(block) = tlab.current.get() {

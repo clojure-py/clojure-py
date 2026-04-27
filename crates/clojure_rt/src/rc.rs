@@ -7,9 +7,9 @@
 
 use core::sync::atomic::{fence, Ordering};
 
+use crate::gc::allocator;
 use crate::header::Header;
 use crate::value::Value;
-use crate::gc::allocator;
 use crate::type_registry;
 
 /// Increment the refcount of a heap object.
