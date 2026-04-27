@@ -35,6 +35,22 @@ impl SymbolObj {
         Self::alloc(ns_val, name_val, Value::NIL, AtomicI32::new(0))
     }
 
+    /// Flip the receiver and every heap-typed Value reachable from
+    /// it (ns, name, meta) into shared-RC mode. Call before publishing
+    /// the symbol to a multi-thread-accessible location (e.g. an intern
+    /// table reachable from any thread). See `rc.rs` — "Cross-thread
+    /// sharing must go through share_heap BEFORE publication."
+    ///
+    /// # Safety
+    /// `this` must be a live `Value` of `SymbolObj`.
+    pub unsafe fn share_for_publication(this: Value) {
+        crate::rc::share(this);
+        let body = unsafe { Self::body(this) };
+        crate::rc::share(body.ns);
+        crate::rc::share(body.name);
+        crate::rc::share(body.meta);
+    }
+
     /// Allocate a new SymbolObj sharing `ns` and `name` with `this`
     /// (their refcounts get bumped) but with a fresh `meta`. Used by
     /// the IWithMeta impl.

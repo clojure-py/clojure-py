@@ -50,11 +50,32 @@ impl KeywordObj {
         }
         let sym = SymbolObj::intern(ns, name);
         let kw  = Self::alloc(sym, AtomicI32::new(0));
+
+        // Cross-thread publication: every heap value reachable from the
+        // global KEYWORD_TABLE must be in shared-RC mode before another
+        // thread can `dup`/`drop` it. Without this, a fresh allocation
+        // stays in biased mode (non-atomic refcount mutated by the
+        // owner thread only) — a second thread doing `intern("foo")`
+        // would race the first on the refcount, eventually torning it
+        // and freeing the object while a third thread is reading it.
+        // See `rc.rs:6` — "Cross-thread sharing must go through
+        // share_heap BEFORE publication."
+        publish_for_shared_use(kw);
+
         // Hold an extra ref for the table itself.
         crate::rc::dup(kw);
         table.insert(key, kw);
         kw
     }
+}
+
+/// Flip a freshly-allocated keyword (and everything reachable from it)
+/// into shared-RC mode in preparation for publication to the global
+/// intern table.
+fn publish_for_shared_use(kw: Value) {
+    crate::rc::share(kw);
+    let sym = unsafe { KeywordObj::body(kw) }.sym;
+    unsafe { SymbolObj::share_for_publication(sym); }
 }
 
 clojure_rt_macros::implements! {
