@@ -123,27 +123,69 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
         return unsafe { alloc_fast(block, body_layout, type_id) };
     }
 
-    // 3. Block exhausted: get a new one.
-    let new_block = unsafe { crate::gc::rcimmix::pool::acquire_block() };
-    let new_header = unsafe { &new_block.as_ref().header };
-    let tid = crate::gc::rcimmix::tid::current_tid();
-    let prev = new_header.owner_tid.swap(tid, core::sync::atomic::Ordering::AcqRel);
-    debug_assert_eq!(prev, 0);
-    unsafe { crate::gc::rcimmix::tlab::replace_tlab(new_block); }
+    // 3. Block exhausted: try to find a block that fits the request.
+    //
+    //    Strategy: first try ONE partial_pool block (draining its remote
+    //    frees may open up holes). If it still can't fit, push it back to
+    //    partial_pool (it belongs there — it has live objects) and then
+    //    get a guaranteed-empty block from empty_pool or a fresh mmap slab.
+    //
+    //    We must NOT loop back to partial_pool after a failure because
+    //    partial_pool is LIFO: we'd immediately re-pop the same block and
+    //    spin forever. empty_pool / fresh blocks always have enough space
+    //    for requests ≤ LARGE_THRESHOLD (asserted below).
+    debug_assert!(total <= LARGE_THRESHOLD,
+        "alloc_slow reached with total={} > LARGE_THRESHOLD={}; should have taken large path",
+        total, LARGE_THRESHOLD);
 
-    // 4. The new block may have stale bump_ptr/bump_end from a previous
-    //    owner (if it came from partial_pool). Drain its remote frees
-    //    (which may open holes) and find a fresh hole anywhere in the
-    //    block.
-    unsafe { crate::gc::rcimmix::drain::drain_remote_frees(new_block); }
-    if let Some((start, end)) = find_next_hole(new_header, BUMP_START as u32, total) {
-        new_header.bump_ptr.set(start);
-        new_header.bump_end.set(end);
-        let h = unsafe { alloc_fast(new_block, body_layout, type_id) };
+    // 3a. Try a partial_pool block first (drain may reclaim space).
+    if let Some(partial) = unsafe { crate::gc::rcimmix::pool::partial_pool().lock().pop() } {
+        let partial_header = unsafe { &partial.as_ref().header };
+        let tid = crate::gc::rcimmix::tid::current_tid();
+        let prev = partial_header.owner_tid.swap(tid, core::sync::atomic::Ordering::AcqRel);
+        debug_assert_eq!(prev, 0, "partial_pool block must be unowned");
+
+        // Drain pending remote frees — may open holes in this block.
+        unsafe { crate::gc::rcimmix::drain::drain_remote_frees(partial); }
+
+        if let Some((start, end)) = find_next_hole(partial_header, BUMP_START as u32, total) {
+            partial_header.bump_ptr.set(start);
+            partial_header.bump_end.set(end);
+            unsafe { crate::gc::rcimmix::tlab::replace_tlab(partial); }
+            let h = unsafe { alloc_fast(partial, body_layout, type_id) };
+            if !h.is_null() { return h; }
+        }
+
+        // Drain didn't free enough space. Relinquish ownership and push
+        // back to partial_pool (live objects remain). Do NOT retry from
+        // partial_pool — LIFO would give us the same block again and spin.
+        partial_header.owner_tid.store(0, core::sync::atomic::Ordering::Release);
+        unsafe { crate::gc::rcimmix::pool::partial_pool().lock().push(partial); }
+    }
+
+    // 3b. Get a guaranteed-space block: empty_pool or fresh mmap.
+    //     These blocks have no live objects so find_next_hole must succeed.
+    let fresh = unsafe { crate::gc::rcimmix::pool::acquire_empty_or_fresh() };
+    let fresh_header = unsafe { &fresh.as_ref().header };
+    let tid = crate::gc::rcimmix::tid::current_tid();
+    let prev = fresh_header.owner_tid.swap(tid, core::sync::atomic::Ordering::AcqRel);
+    debug_assert_eq!(prev, 0, "empty/fresh block must be unowned");
+
+    // Even a fresh block may have remote frees queued (unlikely but safe
+    // to drain). Then scan the full block.
+    unsafe { crate::gc::rcimmix::drain::drain_remote_frees(fresh); }
+
+    if let Some((start, end)) = find_next_hole(fresh_header, BUMP_START as u32, total) {
+        fresh_header.bump_ptr.set(start);
+        fresh_header.bump_end.set(end);
+        unsafe { crate::gc::rcimmix::tlab::replace_tlab(fresh); }
+        let h = unsafe { alloc_fast(fresh, body_layout, type_id) };
         if !h.is_null() { return h; }
     }
+    // Should be unreachable: a fully-empty block always fits total ≤ LARGE_THRESHOLD.
     panic!(
-        "clojure_rt: RCImmix can't fit object of body_layout {:?} in a fresh block (BLOCK_SIZE={}, total={})",
+        "clojure_rt: RCImmix can't fit object of body_layout {:?} in a fresh block \
+         (BLOCK_SIZE={}, total={})",
         body_layout, BLOCK_SIZE, total
     );
 }

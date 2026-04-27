@@ -87,6 +87,28 @@ pub unsafe fn acquire_block() -> NonNull<Block> {
     blocks[0]
 }
 
+/// Acquire an unowned block from empty_pool or a fresh slab, bypassing
+/// partial_pool. Used when a partial_pool block was tried and found
+/// unfittable; calling `acquire_block` again would re-pop the same block.
+/// The returned block has `owner_tid == 0`; the caller is responsible for
+/// CAS'ing it to its own tid.
+pub unsafe fn acquire_empty_or_fresh() -> NonNull<Block> {
+    if let Some(block) = unsafe { empty_pool().lock().pop() } {
+        return block;
+    }
+    // Slab path: alloc 8, keep 1, push 7 into empty_pool.
+    let blocks = unsafe { os::alloc_slab() };
+    let mut empty = empty_pool().lock();
+    for &block in &blocks[1..] {
+        if empty.len() < EMPTY_POOL_CAP {
+            unsafe { empty.push(block); }
+        } else {
+            unsafe { os::release_block(block); }
+        }
+    }
+    blocks[0]
+}
+
 /// Release a block back to the partial_pool (called when owner has live
 /// objects in it but is moving on).
 pub unsafe fn release_partial(block: NonNull<Block>) {
