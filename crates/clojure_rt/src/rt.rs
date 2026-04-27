@@ -7,18 +7,25 @@
 //! propagate unobstructed; numeric extraction (`.as_int()`) happens at
 //! the leaf call site.
 
-use crate::protocols::coll::{ICollection, IEmptyableCollection, IIndexed, IStack};
+use crate::protocols::associative::IAssociative;
+use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
+use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
+use crate::protocols::indexed::IIndexed;
+use crate::protocols::lookup::ILookup;
 use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::named::INamed;
+use crate::protocols::reversible::IReversible;
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
+use crate::protocols::stack::IStack;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::{empty_list, PersistentList};
 use crate::types::string::StringObj;
 use crate::types::symbol::SymbolObj;
+use crate::types::vector::PersistentVector;
 use crate::value::Value;
 
 #[inline]
@@ -122,15 +129,58 @@ pub fn nth(coll: Value, n: Value) -> Value {
 
 #[inline]
 pub fn nth_default(coll: Value, n: Value, not_found: Value) -> Value {
-    clojure_rt_macros::dispatch!(IIndexed::nth_default, &[coll, n, not_found])
+    clojure_rt_macros::dispatch!(IIndexed::nth, &[coll, n, not_found])
 }
 
-// --- List constructors ------------------------------------------------------
+// --- Lookup -----------------------------------------------------------------
+
+#[inline]
+pub fn get(coll: Value, k: Value) -> Value {
+    clojure_rt_macros::dispatch!(ILookup::lookup, &[coll, k])
+}
+
+#[inline]
+pub fn get_default(coll: Value, k: Value, not_found: Value) -> Value {
+    clojure_rt_macros::dispatch!(ILookup::lookup, &[coll, k, not_found])
+}
+
+// --- Associative ------------------------------------------------------------
+
+#[inline]
+pub fn assoc(coll: Value, k: Value, v: Value) -> Value {
+    clojure_rt_macros::dispatch!(IAssociative::assoc, &[coll, k, v])
+}
+
+#[inline]
+pub fn contains_key(coll: Value, k: Value) -> Value {
+    clojure_rt_macros::dispatch!(IAssociative::contains_key, &[coll, k])
+}
+
+#[inline]
+pub fn find(coll: Value, k: Value) -> Value {
+    clojure_rt_macros::dispatch!(IAssociative::find, &[coll, k])
+}
+
+// --- Reversible -------------------------------------------------------------
+
+#[inline]
+pub fn rseq(coll: Value) -> Value {
+    clojure_rt_macros::dispatch!(IReversible::rseq, &[coll])
+}
+
+// --- List + vector constructors --------------------------------------------
 
 /// Build a `PersistentList` from a slice of `Value`s.
 #[inline]
 pub fn list(items: &[Value]) -> Value {
     PersistentList::list(items)
+}
+
+/// Build a `PersistentVector` from a slice of `Value`s. Each element's
+/// refcount is bumped once for the new vector's storage.
+#[inline]
+pub fn vector(items: &[Value]) -> Value {
+    PersistentVector::from_slice(items)
 }
 
 /// Cons `x` onto the head of `coll`. If `coll` is nil or a non-list

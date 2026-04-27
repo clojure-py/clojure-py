@@ -10,3 +10,5 @@ pub mod keyword;
 pub mod list;
 pub mod string;
 pub mod symbol;
+pub mod vec_seq;
+pub mod vector;

@@ -11,13 +11,15 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use std::sync::OnceLock;
 
 use crate::hash::murmur3;
-use crate::protocols::coll::{ICollection, IEmptyableCollection, IStack};
+use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
+use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
 use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
+use crate::protocols::stack::IStack;
 use crate::value::Value;
 
 clojure_rt_macros::register_type! {
