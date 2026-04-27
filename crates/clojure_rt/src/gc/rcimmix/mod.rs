@@ -51,7 +51,7 @@ use core::sync::atomic::AtomicI32;
 
 use crate::header::Header;
 use crate::value::TypeId;
-use crate::gc::rcimmix::block::{Block, inc_line_counts};
+use crate::gc::rcimmix::block::{Block, inc_line_counts, find_next_hole};
 
 /// Round `x` up to a multiple of `align` (where `align` is a power of two).
 #[inline(always)]
@@ -101,5 +101,46 @@ unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
     header.bump_ptr.set(new_bump);
     // Update line counts.
     unsafe { inc_line_counts(header, aligned, new_bump); }
+    h
+}
+
+/// Owner-thread alloc slow path. Drains remote frees, finds next hole
+/// in the current block, and transitions to a new block if needed.
+#[cold]
+#[inline(never)]
+#[allow(dead_code)]
+unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
+    debug_assert!(body_layout.align() <= 16,
+        "body alignment > 16 not yet supported (large path needed)");
+
+    let header = unsafe { &block.as_ref().header };
+
+    // 1. Drain remote frees — may free up holes.
+    unsafe { crate::gc::rcimmix::drain::drain_remote_frees(block); }
+
+    // 2. Find next hole in this block.
+    let total = total_size(body_layout) as usize;
+    if let Some((start, end)) = find_next_hole(header, header.bump_end.get(), total) {
+        header.bump_ptr.set(start);
+        header.bump_end.set(end);
+        return unsafe { alloc_fast(block, body_layout, type_id) };
+    }
+
+    // 3. Block exhausted: get a new one.
+    let new_block = unsafe { crate::gc::rcimmix::pool::acquire_block() };
+    let new_header = unsafe { &new_block.as_ref().header };
+    let tid = crate::gc::rcimmix::tid::current_tid();
+    let prev = new_header.owner_tid.swap(tid, core::sync::atomic::Ordering::AcqRel);
+    debug_assert_eq!(prev, 0);
+    unsafe { crate::gc::rcimmix::tlab::replace_tlab(new_block); }
+
+    // 4. Retry alloc on the new block.
+    let h = unsafe { alloc_fast(new_block, body_layout, type_id) };
+    if h.is_null() {
+        // The fresh block doesn't have a hole big enough? Only possible
+        // if total > BLOCK_SIZE - BUMP_START. That's the >8 KB case
+        // (LARGE_THRESHOLD), which should have been routed to large.rs.
+        panic!("clojure_rt: RCImmix can't fit object of body_layout {:?} in a fresh block", body_layout);
+    }
     h
 }
