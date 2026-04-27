@@ -7,7 +7,7 @@ use std::thread;
 use clojure_rt::{init, register_type, share, Value};
 
 register_type! {
-    pub struct RCell { tag: Value }
+    pub struct RCell { payload: Value }
 }
 
 #[test]
@@ -41,4 +41,39 @@ fn remote_free_eventually_drains() {
     producer.join().unwrap();
     let received = consumer.join().unwrap();
     assert_eq!(received, 10_000);
+}
+
+#[test]
+fn remote_free_contention_8_threads() {
+    init();
+    // Pre-allocate 8K objects on the main thread, share them, then
+    // distribute to 8 worker threads to drop.
+    let mut all_values: Vec<Value> = (0..8_000)
+        .map(|i| {
+            let v = RCell::alloc(Value::int(i));
+            share(v);
+            v
+        })
+        .collect();
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let chunk: Vec<Value> = all_values.drain(..1_000).collect();
+        handles.push(thread::spawn(move || {
+            for v in chunk {
+                clojure_rt::drop_value(v);
+            }
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // Force the main thread (the original owner of the blocks
+    // containing those objects) to drain by allocating more.
+    for _ in 0..5_000 {
+        let v = RCell::alloc(Value::NIL);
+        clojure_rt::drop_value(v);
+    }
 }
