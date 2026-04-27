@@ -51,11 +51,11 @@ use core::sync::atomic::AtomicI32;
 
 use crate::header::Header;
 use crate::value::TypeId;
-use crate::gc::rcimmix::block::{Block, inc_line_counts, dec_line_counts, find_next_hole};
+use crate::gc::rcimmix::block::{Block, inc_line_counts, dec_line_counts, find_next_hole, block_of};
+use crate::gc::GcAllocator;
 
 /// Round `x` up to a multiple of `align` (where `align` is a power of two).
 #[inline(always)]
-#[allow(dead_code)]
 fn align_up(x: u32, align: u32) -> u32 {
     debug_assert!(align.is_power_of_two());
     (x + align - 1) & !(align - 1)
@@ -65,7 +65,6 @@ fn align_up(x: u32, align: u32) -> u32 {
 /// where body_size is rounded up to body_align (which must be ≤ 16, the
 /// Header alignment).
 #[inline(always)]
-#[allow(dead_code)]
 fn total_size(body_layout: Layout) -> u32 {
     let body = body_layout.size();
     (HEADER_SIZE + body) as u32
@@ -74,7 +73,6 @@ fn total_size(body_layout: Layout) -> u32 {
 /// Owner-thread alloc fast path. Returns null if the current hole is
 /// too small (caller falls through to slow path).
 #[inline]
-#[allow(dead_code)]
 unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
     let header = unsafe { &block.as_ref().header };
     let bump = header.bump_ptr.get();
@@ -108,7 +106,6 @@ unsafe fn alloc_fast(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
 /// in the current block, and transitions to a new block if needed.
 #[cold]
 #[inline(never)]
-#[allow(dead_code)]
 unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId) -> *mut Header {
     debug_assert!(body_layout.align() <= 16,
         "body alignment > 16 not yet supported (large path needed)");
@@ -148,7 +145,6 @@ unsafe fn alloc_slow(block: NonNull<Block>, body_layout: Layout, type_id: TypeId
 /// Owner-thread dealloc: decrement line counts for the spanned range.
 /// Caller has already verified that this thread is the owner.
 #[inline]
-#[allow(dead_code)]
 unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: Layout) {
     let header = unsafe { &block.as_ref().header };
     let block_addr = block.as_ptr() as usize;
@@ -163,7 +159,6 @@ unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: La
 /// *mut Header` pointer.
 #[cold]
 #[inline(never)]
-#[allow(dead_code)]
 unsafe fn dealloc_remote(block: NonNull<Block>, ptr: *mut Header) {
     let header = unsafe { &block.as_ref().header };
     // body starts at HEADER_SIZE bytes after the Header pointer
@@ -175,6 +170,52 @@ unsafe fn dealloc_remote(block: NonNull<Block>, ptr: *mut Header) {
             head, ptr, core::sync::atomic::Ordering::Release, core::sync::atomic::Ordering::Acquire) {
             Ok(_) => return,
             Err(_) => continue, // retry
+        }
+    }
+}
+
+/// The RCImmix allocator. Single global instance accessed via `RCIMMIX`.
+pub struct RCImmixAllocator;
+
+/// The single global RCImmix allocator instance, suitable for passing
+/// to `gc::install_allocator`.
+pub static RCIMMIX: RCImmixAllocator = RCImmixAllocator;
+
+unsafe impl GcAllocator for RCImmixAllocator {
+    unsafe fn alloc(&self, body_layout: Layout, type_id: TypeId) -> *mut Header {
+        // Large or over-aligned objects go through std::alloc.
+        // Any body alignment > 16 also takes this path; the line-and-block
+        // heap supports body alignment ≤ 16 (i.e. ≤ Header alignment).
+        if body_layout.size() > LARGE_THRESHOLD || body_layout.align() > 16 {
+            return unsafe { large::alloc_large(body_layout, type_id) };
+        }
+
+        // Owner alloc: ensure TLAB, fast path, fall through to slow path.
+        let block = unsafe { crate::gc::rcimmix::tlab::ensure_tlab() };
+        let h = unsafe { alloc_fast(block, body_layout, type_id) };
+        if !h.is_null() {
+            return h;
+        }
+        unsafe { alloc_slow(block, body_layout, type_id) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut Header, body_layout: Layout) {
+        // Large or over-aligned objects took the std::alloc path on alloc.
+        if body_layout.size() > LARGE_THRESHOLD || body_layout.align() > 16 {
+            let was_large = unsafe { large::try_dealloc_large(ptr) };
+            debug_assert!(was_large, "large body_layout but pointer not in LARGE_OBJECTS");
+            return;
+        }
+
+        // RCImmix path: identify owner via block.owner_tid.
+        let block = block_of(ptr);
+        let block_nn = NonNull::new(block).expect("dealloc on null pointer");
+        let header = unsafe { &block_nn.as_ref().header };
+        let owner = header.owner_tid.load(core::sync::atomic::Ordering::Acquire);
+        if owner == crate::gc::rcimmix::tid::current_tid() {
+            unsafe { dealloc_owner(block_nn, ptr, body_layout); }
+        } else {
+            unsafe { dealloc_remote(block_nn, ptr); }
         }
     }
 }
