@@ -3,7 +3,7 @@
 //! per method that init wires into the type's PerTypeTable.
 //!
 //! **Empty body → marker registration.** An impl block with no `fn`
-//! items (e.g. `implements! { impl ISequential for ConsObj {} }`)
+//! items (e.g. `implements! { impl ISequential for PersistentList {} }`)
 //! emits a single registration against the protocol's synthetic
 //! `MARKER` method (see `protocol!` for the generation), with a no-op
 //! fn pointer. This makes `clojure_rt::protocol::satisfies(&Proto::MARKER, v)`

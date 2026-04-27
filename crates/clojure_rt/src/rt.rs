@@ -16,7 +16,7 @@ use crate::protocols::named::INamed;
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
 use crate::types::keyword::KeywordObj;
-use crate::types::list::{empty_list, ConsObj};
+use crate::types::list::{empty_list, PersistentList};
 use crate::types::string::StringObj;
 use crate::types::symbol::SymbolObj;
 use crate::value::Value;
@@ -130,7 +130,7 @@ pub fn nth_default(coll: Value, n: Value, not_found: Value) -> Value {
 /// Build a `PersistentList` from a slice of `Value`s.
 #[inline]
 pub fn list(items: &[Value]) -> Value {
-    ConsObj::list(items)
+    PersistentList::list(items)
 }
 
 /// Cons `x` onto the head of `coll`. If `coll` is nil or a non-list
@@ -141,7 +141,7 @@ pub fn cons(x: Value, coll: Value) -> Value {
     let tail = if coll.is_nil() {
         empty_list()
     } else {
-        // For ConsObj/EmptyList, this is essentially identity (their
+        // For PersistentList/EmptyList, this is essentially identity (their
         // ISeqable::seq returns self/nil). For other seqables, this
         // coerces.
         let s = seq(coll);
@@ -151,7 +151,7 @@ pub fn cons(x: Value, coll: Value) -> Value {
             s
         }
     };
-    let result = ConsObj::cons(x, tail);
+    let result = PersistentList::cons(x, tail);
     crate::rc::drop_value(tail);
     result
 }

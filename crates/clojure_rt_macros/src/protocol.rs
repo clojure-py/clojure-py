@@ -32,7 +32,7 @@
 //! as a marker. The macro synthesizes a single `MARKER` method
 //! (`<ProtoName>/<marker>`) whose presence in a type's per-type
 //! table answers `clojure_rt::protocol::satisfies`. Implementers
-//! write `implements! { impl ISequential for ConsObj {} }` (empty
+//! write `implements! { impl ISequential for PersistentList {} }` (empty
 //! body); see `implements!` for the matching marker-impl emission.
 
 use proc_macro2::TokenStream;

@@ -1,5 +1,5 @@
 //! Integration tests for the seq abstraction + PersistentList
-//! (EmptyList + ConsObj). Exercises every protocol the type
+//! (EmptyList + PersistentList). Exercises every protocol the type
 //! implements.
 
 use clojure_rt::types::list::empty_list;

@@ -1,5 +1,5 @@
 //! Persistent list — `EmptyList` (singleton, with optional meta) plus
-//! `ConsObj` cons-cells. Eager only; `LazySeq` is its own design.
+//! `PersistentList` cons-cells. Eager only; `LazySeq` is its own design.
 //!
 //! The "empty list" is an actual heap-allocated value, not
 //! `Value::NIL`. Using nil for empty would force tag-case-analysis in
@@ -27,9 +27,9 @@ clojure_rt_macros::register_type! {
 }
 
 clojure_rt_macros::register_type! {
-    pub struct ConsObj {
+    pub struct PersistentList {
         first: Value,
-        rest:  Value,    // ConsObj or EmptyList — never NIL
+        rest:  Value,    // PersistentList or EmptyList — never NIL
         meta:  Value,
         count: i64,
         hash:  AtomicI32, // 0 = uncomputed
@@ -51,9 +51,9 @@ pub fn empty_list() -> Value {
     v
 }
 
-impl ConsObj {
+impl PersistentList {
     /// Wrap `first` onto the head of `rest`. `rest` must be a list-shaped
-    /// `Value` (ConsObj or EmptyList); to cons onto an arbitrary
+    /// `Value` (PersistentList or EmptyList); to cons onto an arbitrary
     /// seqable, callers should run it through `rt::seq` first or use
     /// `rt::cons` which does the coercion.
     pub fn cons(first: Value, rest: Value) -> Value {
@@ -64,7 +64,8 @@ impl ConsObj {
     }
 
     /// Build a list from a slice of `Value`s, right-to-left. Each
-    /// element's refcount is bumped (the new ConsObjs hold the refs).
+    /// element's refcount is bumped (the new PersistentList nodes
+    /// hold the refs).
     pub fn list(items: &[Value]) -> Value {
         let mut acc = empty_list();
         for &item in items.iter().rev() {
@@ -77,12 +78,12 @@ impl ConsObj {
 }
 
 /// O(1) count for a list-shaped Value. Internal helper; assumes `v`
-/// is either `EmptyList` or `ConsObj`.
+/// is either `EmptyList` or `PersistentList`.
 fn list_count(v: Value) -> i64 {
     if v.tag == empty_list_type_id() {
         0
     } else {
-        unsafe { ConsObj::body(v) }.count
+        unsafe { PersistentList::body(v) }.count
     }
 }
 
@@ -90,8 +91,8 @@ fn empty_list_type_id() -> crate::value::TypeId {
     *EMPTYLIST_TYPE_ID.get().expect("EmptyList: clojure_rt::init() not called")
 }
 
-fn cons_type_id() -> crate::value::TypeId {
-    *CONSOBJ_TYPE_ID.get().expect("ConsObj: clojure_rt::init() not called")
+fn persistent_list_type_id() -> crate::value::TypeId {
+    *PERSISTENTLIST_TYPE_ID.get().expect("PersistentList: clojure_rt::init() not called")
 }
 
 // ============================================================================
@@ -141,7 +142,7 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl ICollection for EmptyList {
         fn conj(this: Value, x: Value) -> Value {
-            ConsObj::cons(x, this)
+            PersistentList::cons(x, this)
         }
     }
 }
@@ -184,12 +185,12 @@ clojure_rt_macros::implements! {
     impl IEquiv for EmptyList {
         fn equiv(this: Value, other: Value) -> Value {
             // Equal to any other EmptyList (including with-meta variants)
-            // and to any zero-element ConsObj (none can exist by
+            // and to any zero-element PersistentList (none can exist by
             // construction, but the count-0 check is defensive).
             if other.tag == this.tag {
                 Value::TRUE
-            } else if other.tag == cons_type_id() {
-                // Defensive: a ConsObj is non-empty by construction.
+            } else if other.tag == persistent_list_type_id() {
+                // Defensive: a PersistentList is non-empty by construction.
                 Value::FALSE
             } else {
                 Value::FALSE
@@ -223,19 +224,19 @@ clojure_rt_macros::implements! {
 }
 
 // ============================================================================
-// ConsObj impls
+// PersistentList impls
 // ============================================================================
 
 clojure_rt_macros::implements! {
-    impl ICounted for ConsObj {
+    impl ICounted for PersistentList {
         fn count(this: Value) -> Value {
-            Value::int(unsafe { ConsObj::body(this) }.count)
+            Value::int(unsafe { PersistentList::body(this) }.count)
         }
     }
 }
 
 clojure_rt_macros::implements! {
-    impl ISeqable for ConsObj {
+    impl ISeqable for PersistentList {
         fn seq(this: Value) -> Value {
             crate::rc::dup(this);
             this
@@ -244,14 +245,14 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl ISeq for ConsObj {
+    impl ISeq for PersistentList {
         fn first(this: Value) -> Value {
-            let v = unsafe { ConsObj::body(this) }.first;
+            let v = unsafe { PersistentList::body(this) }.first;
             crate::rc::dup(v);
             v
         }
         fn rest(this: Value) -> Value {
-            let v = unsafe { ConsObj::body(this) }.rest;
+            let v = unsafe { PersistentList::body(this) }.rest;
             crate::rc::dup(v);
             v
         }
@@ -259,9 +260,9 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl INext for ConsObj {
+    impl INext for PersistentList {
         fn next(this: Value) -> Value {
-            let r = unsafe { ConsObj::body(this) }.rest;
+            let r = unsafe { PersistentList::body(this) }.rest;
             if r.tag == empty_list_type_id() {
                 Value::NIL
             } else {
@@ -273,16 +274,16 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl ICollection for ConsObj {
+    impl ICollection for PersistentList {
         fn conj(this: Value, x: Value) -> Value {
             // (conj '(2 3) 1) => (1 2 3) — prepend.
-            ConsObj::cons(x, this)
+            PersistentList::cons(x, this)
         }
     }
 }
 
 clojure_rt_macros::implements! {
-    impl IEmptyableCollection for ConsObj {
+    impl IEmptyableCollection for PersistentList {
         fn empty(this: Value) -> Value {
             let _ = this;
             empty_list()
@@ -291,14 +292,14 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IStack for ConsObj {
+    impl IStack for PersistentList {
         fn peek(this: Value) -> Value {
-            let v = unsafe { ConsObj::body(this) }.first;
+            let v = unsafe { PersistentList::body(this) }.first;
             crate::rc::dup(v);
             v
         }
         fn pop(this: Value) -> Value {
-            let v = unsafe { ConsObj::body(this) }.rest;
+            let v = unsafe { PersistentList::body(this) }.rest;
             crate::rc::dup(v);
             v
         }
@@ -306,9 +307,9 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IHash for ConsObj {
+    impl IHash for PersistentList {
         fn hash(this: Value) -> Value {
-            let body = unsafe { ConsObj::body(this) };
+            let body = unsafe { PersistentList::body(this) };
             let cached = body.hash.load(Ordering::Relaxed);
             if cached != 0 {
                 return Value::int(cached as i64);
@@ -321,7 +322,7 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IEquiv for ConsObj {
+    impl IEquiv for PersistentList {
         fn equiv(this: Value, other: Value) -> Value {
             if other.tag != this.tag {
                 // Cross-type sequential equiv (e.g. list vs vector)
@@ -339,9 +340,9 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IMeta for ConsObj {
+    impl IMeta for PersistentList {
         fn meta(this: Value) -> Value {
-            let m = unsafe { ConsObj::body(this) }.meta;
+            let m = unsafe { PersistentList::body(this) }.meta;
             crate::rc::dup(m);
             m
         }
@@ -349,19 +350,19 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! {
-    impl IWithMeta for ConsObj {
+    impl IWithMeta for PersistentList {
         fn with_meta(this: Value, meta: Value) -> Value {
-            let body = unsafe { ConsObj::body(this) };
+            let body = unsafe { PersistentList::body(this) };
             crate::rc::dup(body.first);
             crate::rc::dup(body.rest);
             crate::rc::dup(meta);
-            ConsObj::alloc(body.first, body.rest, meta, body.count, AtomicI32::new(0))
+            PersistentList::alloc(body.first, body.rest, meta, body.count, AtomicI32::new(0))
         }
     }
 }
 
 clojure_rt_macros::implements! {
-    impl ISequential for ConsObj {}
+    impl ISequential for PersistentList {}
 }
 
 // ============================================================================
@@ -374,7 +375,7 @@ fn compute_seq_hash(start: Value) -> i32 {
     let mut cur = start;
     let empty_id = empty_list_type_id();
     while cur.tag != empty_id {
-        let body = unsafe { ConsObj::body(cur) };
+        let body = unsafe { PersistentList::body(cur) };
         let elem_hash = clojure_rt_macros::dispatch!(IHash::hash, &[body.first])
             .as_int()
             .unwrap_or(0) as i32;
@@ -385,7 +386,7 @@ fn compute_seq_hash(start: Value) -> i32 {
 }
 
 fn seqs_equiv(a: Value, b: Value) -> bool {
-    // Both are ConsObjs (caller ensured). Walk both in lockstep.
+    // Both are PersistentList nodes (caller ensured). Walk both in lockstep.
     let mut x = a;
     let mut y = b;
     let empty_id = empty_list_type_id();
@@ -398,8 +399,8 @@ fn seqs_equiv(a: Value, b: Value) -> bool {
         if x_empty || y_empty {
             return false;
         }
-        let xb = unsafe { ConsObj::body(x) };
-        let yb = unsafe { ConsObj::body(y) };
+        let xb = unsafe { PersistentList::body(x) };
+        let yb = unsafe { PersistentList::body(y) };
         let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[xb.first, yb.first])
             .as_bool()
             .unwrap_or(false);
