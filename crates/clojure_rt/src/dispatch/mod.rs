@@ -1,6 +1,7 @@
 //! Polymorphic dispatch: tier-1 IC, tier-2 per-type perfect-hash table,
 //! tier-3 global stub cache, plus the slow-path resolver.
 
+pub mod foreign;
 pub mod ic;
 pub mod perfect_hash;
 pub mod stub_cache;
@@ -10,9 +11,9 @@ use core::sync::atomic::Ordering;
 use crate::error;
 use crate::protocol::ProtocolMethod;
 use crate::type_registry;
-use crate::value::Value;
+use crate::value::{TypeId, Value};
 
-use ic::{ICSlot, want_key};
+use ic::ICSlot;
 
 pub type MethodFn = unsafe extern "C" fn(args: *const Value, n: usize) -> Value;
 
@@ -24,12 +25,10 @@ pub type MethodFn = unsafe extern "C" fn(args: *const Value, n: usize) -> Value;
 #[inline(never)]
 pub fn slow_path(
     ic: &ICSlot,
-    value: Value,
+    type_id: TypeId,
     method: &ProtocolMethod,
     args: &[Value],
 ) -> Value {
-    let type_id = value.tag;
-
     if let Some(f) = stub_cache::lookup(type_id, method.method_id.load(Ordering::Relaxed)) {
         let key = ICSlot::make_key(type_id, method.version.load(Ordering::Relaxed));
         ic.publish(key, f as *const ());
@@ -65,9 +64,15 @@ pub fn dispatch_fn(
 ) -> Value {
     debug_assert!(!args.is_empty(), "dispatch_fn: empty args (no receiver)");
     let value = args[0];
-    let want = want_key(value, method);
+    // Foreign embeddings (clojure_py, future bindings) hook a per-tag
+    // resolver to map `(tag, payload)` to a finer-grained TypeId — e.g.
+    // every Python class gets its own TypeId via lazy interning. For
+    // Clojure-native tags this is a single AtomicPtr load + null-check,
+    // a near-zero predictable branch.
+    let type_id = foreign::resolve(value.tag, value.payload).unwrap_or(value.tag);
+    let want = ICSlot::make_key(type_id, method.version.load(Ordering::Relaxed));
     if let Some(f) = ic.read(want) {
         return unsafe { f(args.as_ptr(), args.len()) };
     }
-    slow_path(ic, value, method, args)
+    slow_path(ic, type_id, method, args)
 }

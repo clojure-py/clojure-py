@@ -43,3 +43,26 @@ fn count_of_unhandled_type_returns_exception_value() {
             "exception message should name protocol/method, got: {msg}");
     drop_value(v);
 }
+
+#[test]
+fn satisfies_counted_for_nil_is_true() {
+    init();
+    use clojure_rt::protocols::counted::Counted;
+    assert!(clojure_rt::protocol::satisfies(&Counted::COUNT, Value::NIL));
+}
+
+#[test]
+fn satisfies_counted_for_int_is_false() {
+    init();
+    use clojure_rt::protocols::counted::Counted;
+    assert!(!clojure_rt::protocol::satisfies(&Counted::COUNT, Value::int(7)));
+}
+
+#[test]
+fn satisfies_counted_for_bag_is_true() {
+    init();
+    use clojure_rt::protocols::counted::Counted;
+    let bag = Bag::alloc(Value::int(0));
+    assert!(clojure_rt::protocol::satisfies(&Counted::COUNT, bag));
+    drop_value(bag);
+}
