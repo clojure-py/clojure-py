@@ -12,6 +12,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error(),
     };
 
+    if !matches!(item.fields, Fields::Named(_)) {
+        return syn::Error::new_spanned(
+            &item.ident,
+            "register_type! requires a struct with named fields",
+        ).to_compile_error();
+    }
+
     let name = &item.ident;
     let vis  = &item.vis;
     let id_cell = format_ident!("{}_TYPE_ID", name.to_string().to_uppercase());
