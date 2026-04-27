@@ -90,6 +90,31 @@ pub fn expand(input: TokenStream) -> TokenStream {
                     ::clojure_rt::Value::from_heap(h)
                 }
             }
+
+            /// Borrow the body of a `Self`-tagged Value.
+            ///
+            /// # Safety
+            /// - `v` must be a live `Value` of this type.
+            /// - The returned reference must not outlive any copy of
+            ///   `v` reaching zero refcount.
+            ///
+            /// Debug builds tag-assert; release builds skip the check
+            /// for zero overhead on the dispatch fast path.
+            #[inline]
+            #[allow(dead_code)]
+            pub unsafe fn body<'a>(v: ::clojure_rt::Value) -> &'a Self {
+                debug_assert_eq!(
+                    v.tag,
+                    *#id_cell.get().expect(
+                        concat!(stringify!(#name), ": clojure_rt::init() not called")
+                    ),
+                    concat!(stringify!(#name), "::body: wrong tag"),
+                );
+                let h = v.as_heap().expect(
+                    concat!(stringify!(#name), "::body: not a heap Value"),
+                );
+                unsafe { &*(h.add(1) as *const Self) }
+            }
         }
     }
 }

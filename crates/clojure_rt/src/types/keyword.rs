@@ -60,20 +60,18 @@ impl KeywordObj {
 clojure_rt_macros::implements! {
     impl IHash for KeywordObj {
         fn hash(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const KeywordObj;
-                let cached = (*body).hash.load(Ordering::Relaxed);
-                if cached != 0 {
-                    return Value::int(cached as i64);
-                }
-                // hash = sym.hash() + 0x9e3779b9 (matches JVM Keyword).
-                let sym_h = clojure_rt_macros::dispatch!(
-                    IHash::hash, &[(*body).sym]
-                ).as_int().unwrap() as i32;
-                let h = sym_h.wrapping_add(0x9e3779b9_u32 as i32);
-                (*body).hash.store(h, Ordering::Relaxed);
-                Value::int(h as i64)
+            let body = unsafe { KeywordObj::body(this) };
+            let cached = body.hash.load(Ordering::Relaxed);
+            if cached != 0 {
+                return Value::int(cached as i64);
             }
+            // hash = sym.hash() + 0x9e3779b9 (matches JVM Keyword).
+            let sym_h = clojure_rt_macros::dispatch!(IHash::hash, &[body.sym])
+                .as_int()
+                .unwrap() as i32;
+            let h = sym_h.wrapping_add(0x9e3779b9_u32 as i32);
+            body.hash.store(h, Ordering::Relaxed);
+            Value::int(h as i64)
         }
     }
 }
@@ -98,16 +96,12 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl INamed for KeywordObj {
         fn namespace(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const KeywordObj;
-                clojure_rt_macros::dispatch!(INamed::namespace, &[(*body).sym])
-            }
+            let sym = unsafe { KeywordObj::body(this) }.sym;
+            clojure_rt_macros::dispatch!(INamed::namespace, &[sym])
         }
         fn name(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const KeywordObj;
-                clojure_rt_macros::dispatch!(INamed::name, &[(*body).sym])
-            }
+            let sym = unsafe { KeywordObj::body(this) }.sym;
+            clojure_rt_macros::dispatch!(INamed::name, &[sym])
         }
     }
 }

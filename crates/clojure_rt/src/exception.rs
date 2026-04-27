@@ -58,11 +58,7 @@ pub fn message(v: Value) -> Option<String> {
     if !v.is_exception() {
         return None;
     }
-    let h = v.as_heap()?;
-    unsafe {
-        let body = h.add(1) as *const ExceptionObject;
-        Some((*body).message.to_string())
-    }
+    Some(unsafe { ExceptionObject::body(v) }.message.to_string())
 }
 
 /// Borrow the kind of an exception Value. Returns `None` for non-exception
@@ -71,9 +67,5 @@ pub fn kind(v: Value) -> Option<ExceptionKind> {
     if !v.is_exception() {
         return None;
     }
-    let h = v.as_heap()?;
-    unsafe {
-        let body = h.add(1) as *const ExceptionObject;
-        Some((*body).kind)
-    }
+    Some(unsafe { ExceptionObject::body(v) }.kind)
 }

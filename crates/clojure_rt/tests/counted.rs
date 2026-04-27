@@ -16,10 +16,7 @@ register_type! { pub struct Bag { size: Value } }
 implements! {
     impl ICounted for Bag {
         fn count(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const Bag;
-                (*body).size
-            }
+            unsafe { Bag::body(this) }.size
         }
     }
 }

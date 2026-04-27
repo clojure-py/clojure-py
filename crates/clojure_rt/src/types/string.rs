@@ -40,15 +40,12 @@ impl StringObj {
     /// Borrow the underlying `&str` from a `Value(StringObj)`.
     ///
     /// # Safety
-    /// The caller must guarantee:
-    /// - `v` is a live `Value` whose tag is the `StringObj` TypeId.
-    /// - The returned reference is not used past the lifetime of any
-    ///   copy of `v` reaching zero refcount.
+    /// Same contract as `StringObj::body` — `v` must be a live
+    /// `StringObj` Value, and the borrow must not outlive a refcount-
+    /// zero drop.
     #[inline]
     pub unsafe fn as_str_unchecked<'a>(v: Value) -> &'a str {
-        let h = v.as_heap().expect("StringObj::as_str_unchecked: not a heap Value");
-        let body = unsafe { h.add(1) } as *const StringObj;
-        unsafe { &(*body).data }
+        &unsafe { Self::body(v) }.data
     }
 }
 
@@ -66,21 +63,19 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IHash for StringObj {
         fn hash(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const StringObj;
-                let cached = (*body).hash.load(Ordering::Relaxed);
-                if cached != 0 {
-                    return Value::int(cached as i64);
-                }
-                let h = murmur3::hash_unencoded_chars(&(*body).data);
-                // 0 is the "uncomputed" sentinel. If the algorithm
-                // produces 0 (only for the empty string under Murmur3
-                // mixed via hash_unencoded_chars's fmix(0,0)), we still
-                // store it; subsequent reads will recompute, which is
-                // idempotent.
-                (*body).hash.store(h, Ordering::Relaxed);
-                Value::int(h as i64)
+            let body = unsafe { StringObj::body(this) };
+            let cached = body.hash.load(Ordering::Relaxed);
+            if cached != 0 {
+                return Value::int(cached as i64);
             }
+            let h = murmur3::hash_unencoded_chars(&body.data);
+            // 0 is the "uncomputed" sentinel. If the algorithm
+            // produces 0 (only for the empty string under Murmur3
+            // mixed via hash_unencoded_chars's fmix(0,0)), we still
+            // store it; subsequent reads will recompute, which is
+            // idempotent.
+            body.hash.store(h, Ordering::Relaxed);
+            Value::int(h as i64)
         }
     }
 }
@@ -88,20 +83,14 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IEquiv for StringObj {
         fn equiv(this: Value, other: Value) -> Value {
-            unsafe {
-                let body_a = this.as_heap().unwrap().add(1) as *const StringObj;
-                // Other must be a StringObj for byte-equality to mean
-                // anything. Tag check first.
-                if other.tag != this.tag {
-                    return Value::FALSE;
-                }
-                let body_b = other.as_heap().unwrap().add(1) as *const StringObj;
-                if (*body_a).data == (*body_b).data {
-                    Value::TRUE
-                } else {
-                    Value::FALSE
-                }
+            // Other must be a StringObj for byte-equality to mean
+            // anything. Tag check first.
+            if other.tag != this.tag {
+                return Value::FALSE;
             }
+            let a = unsafe { StringObj::body(this) };
+            let b = unsafe { StringObj::body(other) };
+            if a.data == b.data { Value::TRUE } else { Value::FALSE }
         }
     }
 }

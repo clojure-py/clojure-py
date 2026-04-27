@@ -82,10 +82,7 @@ fn list_count(v: Value) -> i64 {
     if v.tag == empty_list_type_id() {
         0
     } else {
-        unsafe {
-            let body = v.as_heap().unwrap().add(1) as *const ConsObj;
-            (*body).count
-        }
+        unsafe { ConsObj::body(v) }.count
     }
 }
 
@@ -204,12 +201,9 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IMeta for EmptyList {
         fn meta(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const EmptyList;
-                let m = (*body).meta;
-                crate::rc::dup(m);
-                m
-            }
+            let m = unsafe { EmptyList::body(this) }.meta;
+            crate::rc::dup(m);
+            m
         }
     }
 }
@@ -235,10 +229,7 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl ICounted for ConsObj {
         fn count(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                Value::int((*body).count)
-            }
+            Value::int(unsafe { ConsObj::body(this) }.count)
         }
     }
 }
@@ -255,20 +246,14 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl ISeq for ConsObj {
         fn first(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let v = (*body).first;
-                crate::rc::dup(v);
-                v
-            }
+            let v = unsafe { ConsObj::body(this) }.first;
+            crate::rc::dup(v);
+            v
         }
         fn rest(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let v = (*body).rest;
-                crate::rc::dup(v);
-                v
-            }
+            let v = unsafe { ConsObj::body(this) }.rest;
+            crate::rc::dup(v);
+            v
         }
     }
 }
@@ -276,15 +261,12 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl INext for ConsObj {
         fn next(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let r = (*body).rest;
-                if r.tag == empty_list_type_id() {
-                    Value::NIL
-                } else {
-                    crate::rc::dup(r);
-                    r
-                }
+            let r = unsafe { ConsObj::body(this) }.rest;
+            if r.tag == empty_list_type_id() {
+                Value::NIL
+            } else {
+                crate::rc::dup(r);
+                r
             }
         }
     }
@@ -311,20 +293,14 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IStack for ConsObj {
         fn peek(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let v = (*body).first;
-                crate::rc::dup(v);
-                v
-            }
+            let v = unsafe { ConsObj::body(this) }.first;
+            crate::rc::dup(v);
+            v
         }
         fn pop(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let v = (*body).rest;
-                crate::rc::dup(v);
-                v
-            }
+            let v = unsafe { ConsObj::body(this) }.rest;
+            crate::rc::dup(v);
+            v
         }
     }
 }
@@ -332,16 +308,14 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IHash for ConsObj {
         fn hash(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let cached = (*body).hash.load(Ordering::Relaxed);
-                if cached != 0 {
-                    return Value::int(cached as i64);
-                }
-                let h = compute_seq_hash(this);
-                (*body).hash.store(h, Ordering::Relaxed);
-                Value::int(h as i64)
+            let body = unsafe { ConsObj::body(this) };
+            let cached = body.hash.load(Ordering::Relaxed);
+            if cached != 0 {
+                return Value::int(cached as i64);
             }
+            let h = compute_seq_hash(this);
+            body.hash.store(h, Ordering::Relaxed);
+            Value::int(h as i64)
         }
     }
 }
@@ -367,12 +341,9 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IMeta for ConsObj {
         fn meta(this: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let m = (*body).meta;
-                crate::rc::dup(m);
-                m
-            }
+            let m = unsafe { ConsObj::body(this) }.meta;
+            crate::rc::dup(m);
+            m
         }
     }
 }
@@ -380,16 +351,11 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IWithMeta for ConsObj {
         fn with_meta(this: Value, meta: Value) -> Value {
-            unsafe {
-                let body = this.as_heap().unwrap().add(1) as *const ConsObj;
-                let first = (*body).first;
-                let rest  = (*body).rest;
-                let count = (*body).count;
-                crate::rc::dup(first);
-                crate::rc::dup(rest);
-                crate::rc::dup(meta);
-                ConsObj::alloc(first, rest, meta, count, AtomicI32::new(0))
-            }
+            let body = unsafe { ConsObj::body(this) };
+            crate::rc::dup(body.first);
+            crate::rc::dup(body.rest);
+            crate::rc::dup(meta);
+            ConsObj::alloc(body.first, body.rest, meta, body.count, AtomicI32::new(0))
         }
     }
 }
@@ -407,19 +373,13 @@ fn compute_seq_hash(start: Value) -> i32 {
     let mut hashes: Vec<i32> = Vec::new();
     let mut cur = start;
     let empty_id = empty_list_type_id();
-    loop {
-        if cur.tag == empty_id {
-            break;
-        }
-        unsafe {
-            let body = cur.as_heap().unwrap().add(1) as *const ConsObj;
-            let elem = (*body).first;
-            let elem_hash = clojure_rt_macros::dispatch!(IHash::hash, &[elem])
-                .as_int()
-                .unwrap_or(0) as i32;
-            hashes.push(elem_hash);
-            cur = (*body).rest;
-        }
+    while cur.tag != empty_id {
+        let body = unsafe { ConsObj::body(cur) };
+        let elem_hash = clojure_rt_macros::dispatch!(IHash::hash, &[body.first])
+            .as_int()
+            .unwrap_or(0) as i32;
+        hashes.push(elem_hash);
+        cur = body.rest;
     }
     murmur3::hash_ordered(hashes)
 }
@@ -438,17 +398,15 @@ fn seqs_equiv(a: Value, b: Value) -> bool {
         if x_empty || y_empty {
             return false;
         }
-        unsafe {
-            let xb = x.as_heap().unwrap().add(1) as *const ConsObj;
-            let yb = y.as_heap().unwrap().add(1) as *const ConsObj;
-            let eq = clojure_rt_macros::dispatch!(
-                IEquiv::equiv, &[(*xb).first, (*yb).first]
-            ).as_bool().unwrap_or(false);
-            if !eq {
-                return false;
-            }
-            x = (*xb).rest;
-            y = (*yb).rest;
+        let xb = unsafe { ConsObj::body(x) };
+        let yb = unsafe { ConsObj::body(y) };
+        let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[xb.first, yb.first])
+            .as_bool()
+            .unwrap_or(false);
+        if !eq {
+            return false;
         }
+        x = xb.rest;
+        y = yb.rest;
     }
 }
