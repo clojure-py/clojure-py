@@ -10,6 +10,10 @@ use crate::gc::rcimmix::{BLOCK_ALIGN, BLOCK_SIZE, SLAB_BATCH};
 
 /// Allocate a slab of `SLAB_BATCH` consecutive 32 KB blocks. Returns
 /// pointers to each block. Panics on OOM.
+/// # Safety
+/// The returned blocks are zero-initialized with BlockHeader::init_empty
+/// called on each. The caller is responsible for managing ownership and
+/// eventual deallocation of these blocks via the pool APIs.
 pub unsafe fn alloc_slab() -> [NonNull<Block>; SLAB_BATCH] {
     let total_size = BLOCK_SIZE * SLAB_BATCH;
     let layout = Layout::from_size_align(total_size, BLOCK_ALIGN)
@@ -34,6 +38,10 @@ pub unsafe fn alloc_slab() -> [NonNull<Block>; SLAB_BATCH] {
 /// whole slab. v1 simply leaks blocks past the empty_pool cap until
 /// process exit. Future work: track slab origin and reference-count
 /// blocks within their slab; only `dealloc` when all 8 are recyclable.
+/// # Safety
+/// This function is currently a no-op and safe to call at any time.
+/// In the future, the caller must ensure the block is no longer in use
+/// before calling this function.
 pub unsafe fn release_block(_block: NonNull<Block>) {
     // Intentionally a no-op in v1. See SLAB-RELEASE-LIMITATION above.
 }

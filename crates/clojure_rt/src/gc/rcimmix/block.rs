@@ -57,6 +57,10 @@ pub struct Block {
 impl BlockHeader {
     /// Initialize a freshly-mmap'd block to the unowned-empty state.
     /// Caller must ensure the memory was zeroed (mmap MAP_ANONYMOUS does this).
+    /// # Safety
+    /// The caller must ensure that `_block` points to valid, zero-initialized
+    /// memory (typically from mmap). The block must not be accessed until
+    /// after this function returns.
     pub unsafe fn init_empty(_block: *mut Block) {
         // Zero-init from mmap suffices; all atomic/cell fields default
         // to 0/null which matches the unowned-empty state. Bump fields:
@@ -86,6 +90,10 @@ pub fn line_range(byte_start: u32, byte_end_exclusive: u32) -> (usize, usize) {
 /// to avoid overflow panic in release; debug-asserts no saturation
 /// occurs in well-formed programs (max counter value is bounded by
 /// objects-per-line, far below 255).
+/// # Safety
+/// The caller must ensure that `byte_start` and `byte_end_exclusive` are
+/// valid byte offsets within a block, and that `byte_end_exclusive > byte_start`.
+/// The owning thread may safely call this function (Cell access is owner-only).
 #[inline]
 pub unsafe fn inc_line_counts(header: &BlockHeader, byte_start: u32, byte_end_exclusive: u32) {
     let (l0, l1) = line_range(byte_start, byte_end_exclusive);
@@ -99,6 +107,10 @@ pub unsafe fn inc_line_counts(header: &BlockHeader, byte_start: u32, byte_end_ex
 
 /// Decrement line counts for the spanned range. Debug-asserts that no
 /// underflow occurs (would indicate a double-free or accounting bug).
+/// # Safety
+/// The caller must ensure that `byte_start` and `byte_end_exclusive` are
+/// valid byte offsets within a block, and that `byte_end_exclusive > byte_start`.
+/// The owning thread may safely call this function (Cell access is owner-only).
 #[inline]
 pub unsafe fn dec_line_counts(header: &BlockHeader, byte_start: u32, byte_end_exclusive: u32) {
     let (l0, l1) = line_range(byte_start, byte_end_exclusive);

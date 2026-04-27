@@ -30,6 +30,9 @@ impl Pool {
 
     /// Push a block onto the head. Caller must have already CAS'd
     /// `owner_tid` to 0 (unowned).
+    /// # Safety
+    /// Caller must ensure that the block is properly initialized and
+    /// has `owner_tid` equal to 0.
     pub unsafe fn push(&mut self, block: NonNull<Block>) {
         let header = unsafe { &block.as_ref().header };
         debug_assert_eq!(header.owner_tid.load(Ordering::Relaxed), 0);
@@ -39,6 +42,9 @@ impl Pool {
     }
 
     /// Pop the head block. Returns `None` if the pool is empty.
+    /// # Safety
+    /// Caller must ensure that the returned block will be properly
+    /// initialized before use.
     pub unsafe fn pop(&mut self) -> Option<NonNull<Block>> {
         let block = self.head?;
         let header = unsafe { &block.as_ref().header };
@@ -50,6 +56,16 @@ impl Pool {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Default for Pool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -67,6 +83,10 @@ pub fn empty_pool() -> &'static Mutex<Pool> {
 /// Acquire an unowned block: prefer partial_pool, then empty_pool, then
 /// alloc a fresh slab. The returned block has `owner_tid == 0`; the
 /// caller is responsible for CAS'ing it to its own tid.
+/// # Safety
+/// The caller is responsible for CAS'ing the returned block's `owner_tid`
+/// to its own tid before use, and for eventually releasing it via
+/// `release_partial` or `release_empty`.
 pub unsafe fn acquire_block() -> NonNull<Block> {
     if let Some(block) = unsafe { partial_pool().lock().pop() } {
         return block;
@@ -92,6 +112,10 @@ pub unsafe fn acquire_block() -> NonNull<Block> {
 /// unfittable; calling `acquire_block` again would re-pop the same block.
 /// The returned block has `owner_tid == 0`; the caller is responsible for
 /// CAS'ing it to its own tid.
+/// # Safety
+/// The caller is responsible for CAS'ing the returned block's `owner_tid`
+/// to its own tid before use, and for eventually releasing it via
+/// `release_partial` or `release_empty`.
 pub unsafe fn acquire_empty_or_fresh() -> NonNull<Block> {
     if let Some(block) = unsafe { empty_pool().lock().pop() } {
         return block;
@@ -111,6 +135,9 @@ pub unsafe fn acquire_empty_or_fresh() -> NonNull<Block> {
 
 /// Release a block back to the partial_pool (called when owner has live
 /// objects in it but is moving on).
+/// # Safety
+/// The caller must ensure that the block is currently owned and contains
+/// live objects. The block's `owner_tid` will be set to 0.
 pub unsafe fn release_partial(block: NonNull<Block>) {
     let header = unsafe { &block.as_ref().header };
     header.owner_tid.store(0, Ordering::Release);
@@ -118,6 +145,9 @@ pub unsafe fn release_partial(block: NonNull<Block>) {
 }
 
 /// Release a fully-empty block. If empty_pool is full, returns to OS.
+/// # Safety
+/// The caller must ensure that the block is empty (all cells deallocated).
+/// The block's `owner_tid` will be set to 0.
 pub unsafe fn release_empty(block: NonNull<Block>) {
     let header = unsafe { &block.as_ref().header };
     header.owner_tid.store(0, Ordering::Release);
@@ -151,13 +181,13 @@ mod tests {
         unsafe {
             let block_a = acquire_block();
             // Mark as owned, then release.
-            (&block_a.as_ref().header).owner_tid.store(42, Ordering::Relaxed);
+            block_a.as_ref().header.owner_tid.store(42, Ordering::Relaxed);
             release_partial(block_a);
 
             let block_b = acquire_block();
             // partial_pool returns LIFO, so we get block_a back first.
             assert_eq!(block_a.as_ptr(), block_b.as_ptr());
-            assert_eq!((&block_b.as_ref().header).owner_tid.load(Ordering::Relaxed), 0);
+            assert_eq!(block_b.as_ref().header.owner_tid.load(Ordering::Relaxed), 0);
         }
     }
 }

@@ -12,6 +12,11 @@ use crate::type_registry;
 
 /// Drain remote frees on this block. Called by the owner during slow
 /// path; safe to call repeatedly.
+/// # Safety
+/// Must be called only by the owning thread of the block. The block's
+/// remote_free_head will be atomically swapped to null and the chain
+/// walked to decrement line counts. Subsequent remote frees to this
+/// block will prepend to the new null head (safe concurrent operation).
 pub unsafe fn drain_remote_frees(block: NonNull<Block>) {
     let header = unsafe { &block.as_ref().header };
     let mut head = header.remote_free_head.swap(core::ptr::null_mut(), Ordering::AcqRel);

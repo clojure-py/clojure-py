@@ -21,6 +21,10 @@ fn large_objects() -> &'static Mutex<HashMap<usize, Layout>> {
 }
 
 /// Allocate a large object via std::alloc. Writes the Header.
+/// # Safety
+/// The returned pointer must not be dereferenced until it has been
+/// properly initialized. The caller is responsible for eventual deallocation
+/// via `try_dealloc_large`.
 pub unsafe fn alloc_large(body_layout: Layout, type_id: TypeId) -> *mut Header {
     let layout = full_layout(body_layout);
     let raw = unsafe { std::alloc::alloc(layout) };
@@ -43,6 +47,10 @@ pub unsafe fn alloc_large(body_layout: Layout, type_id: TypeId) -> *mut Header {
 /// Deallocate a large object. Returns true if the pointer was a large
 /// object (and was deallocated); false otherwise (caller should take
 /// the RCImmix dealloc path).
+/// # Safety
+/// The caller must not use `ptr` after calling this function. The pointer
+/// must not be double-freed. If this function returns true, the pointer
+/// has been deallocated.
 pub unsafe fn try_dealloc_large(ptr: *mut Header) -> bool {
     let mut map = large_objects().lock();
     if let Some(body_layout) = map.remove(&(ptr as usize)) {

@@ -22,6 +22,12 @@ impl Tlab {
     }
 }
 
+impl Default for Tlab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for Tlab {
     fn drop(&mut self) {
         if let Some(block) = self.current.get() {
@@ -40,6 +46,9 @@ thread_local! {
 /// Ensure this thread has a current TLAB block. Acquires one from the
 /// pools (or fresh slab) if needed, and CAS's `owner_tid` to this
 /// thread's id.
+/// # Safety
+/// Must be called only from the thread's context (thread-local access
+/// is safe). The returned block is owned by the calling thread.
 #[inline]
 pub unsafe fn ensure_tlab() -> NonNull<Block> {
     TLAB.with(|tlab| {
@@ -60,6 +69,10 @@ pub unsafe fn ensure_tlab() -> NonNull<Block> {
 /// Replace the current TLAB block. The old block (if any) is released
 /// to the partial pool. The caller passes the new block (already
 /// owner-CAS'd).
+/// # Safety
+/// Must be called only from the thread's context (thread-local access
+/// is safe). The `new_block` must already have been CAS'd to the calling
+/// thread's owner_tid.
 pub unsafe fn replace_tlab(new_block: NonNull<Block>) {
     TLAB.with(|tlab| {
         if let Some(old) = tlab.current.get() {
@@ -79,7 +92,7 @@ mod tests {
         unsafe {
             let block = ensure_tlab();
             let tid = current_tid();
-            assert_eq!((&block.as_ref().header).owner_tid.load(Ordering::Relaxed), tid);
+            assert_eq!(block.as_ref().header.owner_tid.load(Ordering::Relaxed), tid);
         }
     }
 
