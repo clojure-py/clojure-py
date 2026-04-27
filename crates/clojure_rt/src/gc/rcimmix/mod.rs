@@ -156,3 +156,25 @@ unsafe fn dealloc_owner(block: NonNull<Block>, ptr: *mut Header, body_layout: La
     let total = total_size(body_layout);
     unsafe { dec_line_counts(header, offset, offset + total); }
 }
+
+/// Non-owner thread dealloc: CAS-prepend onto block.remote_free_head.
+/// The destructor has already run (in `rc::destruct_and_dealloc`), so
+/// the body bytes are garbage. Repurpose body bytes 0..8 as a `next:
+/// *mut Header` pointer.
+#[cold]
+#[inline(never)]
+#[allow(dead_code)]
+unsafe fn dealloc_remote(block: NonNull<Block>, ptr: *mut Header) {
+    let header = unsafe { &block.as_ref().header };
+    // body starts at HEADER_SIZE bytes after the Header pointer
+    let body = (ptr as *mut u8).wrapping_add(HEADER_SIZE) as *mut *mut Header;
+    loop {
+        let head = header.remote_free_head.load(core::sync::atomic::Ordering::Acquire);
+        unsafe { body.write(head); }
+        match header.remote_free_head.compare_exchange(
+            head, ptr, core::sync::atomic::Ordering::Release, core::sync::atomic::Ordering::Acquire) {
+            Ok(_) => return,
+            Err(_) => continue, // retry
+        }
+    }
+}
