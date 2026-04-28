@@ -42,22 +42,27 @@ use crate::value::Value;
 const HASHMAP_THRESHOLD: usize = 16;
 
 /// Build a `PersistentHashMap` from an ArrayMap's existing kvs plus
-/// one new (k, v). Borrow semantics on all inputs.
+/// one new (k, v). Borrow semantics on all inputs. Uses a
+/// `TransientHashMap` for the build so we get in-place mutation
+/// across the existing kvs + the new pair.
 fn promote_to_hash_map(am: Value, k: Value, v: Value) -> Value {
     let body = unsafe { PersistentArrayMap::body(am) };
-    let mut hm = crate::types::hash_map::empty_hash_map();
+    let empty = crate::types::hash_map::empty_hash_map();
+    let mut t = crate::rt::transient(empty);
+    crate::rc::drop_value(empty);
     let mut i = 0;
     while i < body.kvs.len() {
-        let nm = crate::types::hash_map::PersistentHashMap::assoc_kv(
-            hm, body.kvs[i], body.kvs[i + 1],
-        );
-        crate::rc::drop_value(hm);
-        hm = nm;
+        let nt = crate::rt::assoc_bang(t, body.kvs[i], body.kvs[i + 1]);
+        crate::rc::drop_value(t);
+        t = nt;
         i += 2;
     }
-    let nm = crate::types::hash_map::PersistentHashMap::assoc_kv(hm, k, v);
-    crate::rc::drop_value(hm);
-    nm
+    let nt = crate::rt::assoc_bang(t, k, v);
+    crate::rc::drop_value(t);
+    t = nt;
+    let result = crate::rt::persistent_(t);
+    crate::rc::drop_value(t);
+    result
 }
 
 clojure_rt_macros::register_type! {

@@ -32,6 +32,7 @@ use crate::hash::murmur3;
 use crate::protocols::associative::IAssociative;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
+use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
@@ -467,6 +468,197 @@ pub(crate) fn lookup_in_node(
 }
 
 // ============================================================================
+// In-place HAMT mutators for `TransientHashMap`. Mirror the perf
+// shape of `Arc::make_mut`-based vector mutation: when the node Arc
+// is uniquely owned, mutate `slots` (Vec) / `kvs` (Vec) directly;
+// when shared, `make_mut` clones the inner once. Variant changes
+// (entry-split, collision-wrap) construct a fresh node and replace
+// the Arc.
+//
+// Borrow semantics on caller's k/v throughout. Returns the
+// "added"/"removed" flag so the transient can update its count.
+// ============================================================================
+
+pub(crate) fn assoc_in_place(
+    arc: &mut Arc<HAMTNode>, level: i32, hash: i32, k: Value, v: Value,
+) -> bool {
+    // Variant-change detection on the existing node: if it's a
+    // HashCollision whose hash differs from `hash`, we must replace
+    // the whole Arc with a BitmapIndexed wrapping the collision.
+    let needs_collision_wrap = matches!(
+        arc.as_ref(),
+        HAMTNode::HashCollision { hash: stored_hash, .. } if hash != *stored_hash,
+    );
+    if needs_collision_wrap {
+        let stored_hash = match arc.as_ref() {
+            HAMTNode::HashCollision { hash, .. } => *hash,
+            _ => unreachable!(),
+        };
+        let bit_collision = bit_for(stored_hash, level);
+        let bit_new = bit_for(hash, level);
+        if bit_collision == bit_new {
+            // Same level-bits, different overall hash — wrap and recurse.
+            let bumped = Arc::new(HAMTNode::BitmapIndexed {
+                bitmap: bit_collision,
+                slots: vec![HAMTSlot::Inner(arc.clone())],
+            });
+            *arc = bumped;
+            return assoc_in_place(arc, level, hash, k, v);
+        }
+        crate::rc::dup(k); crate::rc::dup(v);
+        let new_node = Arc::new(HAMTNode::BitmapIndexed {
+            bitmap: bit_collision | bit_new,
+            slots: if bit_collision < bit_new {
+                vec![HAMTSlot::Inner(arc.clone()), HAMTSlot::Entry(k, v)]
+            } else {
+                vec![HAMTSlot::Entry(k, v), HAMTSlot::Inner(arc.clone())]
+            },
+        });
+        *arc = new_node;
+        return true;
+    }
+
+    let node = Arc::make_mut(arc);
+    match node {
+        HAMTNode::BitmapIndexed { bitmap, slots } => {
+            let bit = bit_for(hash, level);
+            if (*bitmap & bit) == 0 {
+                let idx = index_for(*bitmap, bit);
+                crate::rc::dup(k); crate::rc::dup(v);
+                slots.insert(idx, HAMTSlot::Entry(k, v));
+                *bitmap |= bit;
+                return true;
+            }
+            let idx = index_for(*bitmap, bit);
+            // Decide based on the slot's variant whether we can
+            // mutate in place or must replace the slot. We split
+            // these into two arms so the borrow checker doesn't
+            // complain about reborrowing `slots[idx]` after the
+            // recursive call.
+            let needs_split = match &slots[idx] {
+                HAMTSlot::Entry(stored_k, _) => {
+                    !crate::rt::equiv(*stored_k, k).as_bool().unwrap_or(false)
+                }
+                HAMTSlot::Inner(_) => false,
+            };
+            if needs_split {
+                // Entry → Inner split.
+                let HAMTSlot::Entry(sk, sv) = &slots[idx] else { unreachable!() };
+                let stored_hash = crate::rt::hash(*sk).as_int().unwrap_or(0) as i32;
+                let inner = merge_entries(level + 1, stored_hash, *sk, *sv, hash, k, v);
+                // The old Entry slot's Drop fires when we overwrite
+                // — decref'ing sk/sv. merge_entries dup'd them, so
+                // refcounts balance.
+                slots[idx] = HAMTSlot::Inner(inner);
+                return true;
+            }
+            match &mut slots[idx] {
+                HAMTSlot::Entry(_, sv) => {
+                    // Same key (we already checked equiv above) → replace value.
+                    let old_v = *sv;
+                    crate::rc::dup(v);
+                    *sv = v;
+                    crate::rc::drop_value(old_v);
+                    false
+                }
+                HAMTSlot::Inner(child) => {
+                    assoc_in_place(child, level + 1, hash, k, v)
+                }
+            }
+        }
+        HAMTNode::HashCollision { kvs, .. } => {
+            // Same hash (we'd have wrapped above otherwise). Scan + replace or append.
+            let mut i = 0;
+            while i < kvs.len() {
+                if crate::rt::equiv(kvs[i], k).as_bool().unwrap_or(false) {
+                    let old_v = kvs[i + 1];
+                    crate::rc::dup(v);
+                    kvs[i + 1] = v;
+                    crate::rc::drop_value(old_v);
+                    return false;
+                }
+                i += 2;
+            }
+            crate::rc::dup(k); crate::rc::dup(v);
+            kvs.push(k);
+            kvs.push(v);
+            true
+        }
+    }
+}
+
+pub(crate) fn dissoc_in_place(
+    arc: &mut Arc<HAMTNode>, level: i32, hash: i32, k: Value,
+) -> bool {
+    let node = Arc::make_mut(arc);
+    match node {
+        HAMTNode::BitmapIndexed { bitmap, slots } => {
+            let bit = bit_for(hash, level);
+            if (*bitmap & bit) == 0 {
+                return false;
+            }
+            let idx = index_for(*bitmap, bit);
+            let action = match &slots[idx] {
+                HAMTSlot::Entry(stored_k, _) => {
+                    if crate::rt::equiv(*stored_k, k).as_bool().unwrap_or(false) {
+                        DissocAction::RemoveSlot
+                    } else {
+                        DissocAction::Nothing
+                    }
+                }
+                HAMTSlot::Inner(_) => DissocAction::RecurseChild,
+            };
+            match action {
+                DissocAction::Nothing => false,
+                DissocAction::RemoveSlot => {
+                    slots.remove(idx); // HAMTSlot::Drop runs, decrefs Entry's k/v.
+                    *bitmap &= !bit;
+                    true
+                }
+                DissocAction::RecurseChild => {
+                    let HAMTSlot::Inner(child) = &mut slots[idx] else { unreachable!() };
+                    let removed = dissoc_in_place(child, level + 1, hash, k);
+                    if removed {
+                        // Optionally collapse: if the child became
+                        // empty, remove its slot and clear the bit.
+                        let child_empty = match child.as_ref() {
+                            HAMTNode::BitmapIndexed { bitmap, .. } => *bitmap == 0,
+                            HAMTNode::HashCollision { kvs, .. } => kvs.is_empty(),
+                        };
+                        if child_empty {
+                            slots.remove(idx);
+                            *bitmap &= !bit;
+                        }
+                    }
+                    removed
+                }
+            }
+        }
+        HAMTNode::HashCollision { hash: stored_hash, kvs } => {
+            if hash != *stored_hash { return false; }
+            let mut found_at: Option<usize> = None;
+            let mut i = 0;
+            while i < kvs.len() {
+                if crate::rt::equiv(kvs[i], k).as_bool().unwrap_or(false) {
+                    found_at = Some(i);
+                    break;
+                }
+                i += 2;
+            }
+            let Some(idx) = found_at else { return false; };
+            // Drop the (k, v) pair manually since Vec::remove on
+            // Value (Copy) doesn't decref, but we own the refs.
+            crate::rc::drop_value(kvs[idx]);
+            crate::rc::drop_value(kvs[idx + 1]);
+            kvs.drain(idx..idx + 2);
+            true
+        }
+    }
+}
+
+enum DissocAction { Nothing, RemoveSlot, RecurseChild }
+
+// ============================================================================
 // PersistentHashMap Value type
 // ============================================================================
 
@@ -551,17 +743,30 @@ impl PersistentHashMap {
     }
 
     /// Build from a flat `[k0, v0, …]` slice. Borrow semantics.
+    /// Internally uses a `TransientHashMap` so the bulk-build is a
+    /// sequence of in-place mutations capped by one `persistent!`.
     pub fn from_kvs(items: &[Value]) -> Value {
         debug_assert!(items.len() % 2 == 0);
-        let mut m = empty_hash_map();
+        let empty = empty_hash_map();
+        let mut t = crate::rt::transient(empty);
+        crate::rc::drop_value(empty);
         let mut i = 0;
         while i < items.len() {
-            let nm = PersistentHashMap::assoc_kv(m, items[i], items[i + 1]);
-            crate::rc::drop_value(m);
-            m = nm;
+            let nt = crate::rt::assoc_bang(t, items[i], items[i + 1]);
+            crate::rc::drop_value(t);
+            t = nt;
             i += 2;
         }
-        m
+        let result = crate::rt::persistent_(t);
+        crate::rc::drop_value(t);
+        result
+    }
+
+    /// Construct a `PersistentHashMap` directly from owned (count, root)
+    /// — caller transfers an Arc and the count. Used by
+    /// `TransientHashMap::persistent_bang`.
+    pub(crate) fn from_owned_parts(count: i64, root: Arc<HAMTNode>) -> Value {
+        PersistentHashMap::alloc(count, root, Value::NIL, AtomicI32::new(0))
     }
 }
 
@@ -764,6 +969,14 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! { impl IPersistentMap for PersistentHashMap {} }
+
+clojure_rt_macros::implements! {
+    impl IEditableCollection for PersistentHashMap {
+        fn as_transient(this: Value) -> Value {
+            crate::types::transient_hash_map::TransientHashMap::from_persistent(this)
+        }
+    }
+}
 
 // ============================================================================
 // Internal: depth-first walk yielding (k, v) pairs by Value-borrow
