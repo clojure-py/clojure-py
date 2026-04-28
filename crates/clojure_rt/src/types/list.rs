@@ -384,8 +384,11 @@ clojure_rt_macros::implements! {
 // ============================================================================
 
 fn compute_seq_hash(start: Value) -> i32 {
-    // Walk the seq, collect element hashes, feed into hash_ordered.
-    let mut hashes: Vec<i32> = Vec::new();
+    // Stream: mix each element's hash into a running accumulator;
+    // finalize via `mix_coll_hash` at the end. Mirrors JVM Clojure's
+    // `Murmur3.hashOrdered` shape — no intermediate `Vec<i32>`.
+    let mut hash: i32 = 1;
+    let mut n: i32 = 0;
     let mut cur = start;
     let empty_id = empty_list_type_id();
     while cur.tag != empty_id {
@@ -393,10 +396,11 @@ fn compute_seq_hash(start: Value) -> i32 {
         let elem_hash = clojure_rt_macros::dispatch!(IHash::hash, &[body.first])
             .as_int()
             .unwrap_or(0) as i32;
-        hashes.push(elem_hash);
+        hash = hash.wrapping_mul(31).wrapping_add(elem_hash);
+        n = n.wrapping_add(1);
         cur = body.rest;
     }
-    murmur3::hash_ordered(hashes)
+    murmur3::mix_coll_hash(hash, n)
 }
 
 fn seqs_equiv(a: Value, b: Value) -> bool {

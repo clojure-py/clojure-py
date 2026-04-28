@@ -945,13 +945,17 @@ fn leaf_block_at<'a>(root: &'a Arc<PVNode>, shift: i32, i: i64) -> &'a [Value; B
 // shape as `IReduce::reduce_*`: each element is read from the leaf
 // node's `[Value; 32]` directly, passed through dispatch with no
 // dup/drop pair. The trie descent itself is zero-atomic.
+//
+// The hash is mixed in-place — running `hash` accumulator + count,
+// finalized via `mix_coll_hash` at the end. Mirrors JVM Clojure's
+// `Murmur3.hashOrdered` shape; no intermediate `Vec<i32>` allocation.
 
 fn compute_vector_hash(this: Value) -> i32 {
     let body = unsafe { PersistentVector::body(this) };
     let count = body.count;
     let tail_off = tail_offset(body.count, body.tail.len());
-    let mut hashes: Vec<i32> = Vec::with_capacity(count as usize);
 
+    let mut hash: i32 = 1;
     let mut i: i64 = 0;
     while i < tail_off {
         let leaf = leaf_block_at(&body.root, body.shift, i);
@@ -960,17 +964,17 @@ fn compute_vector_hash(this: Value) -> i32 {
         for j in (i - block_start) as usize..(block_end - block_start) as usize {
             let h = clojure_rt_macros::dispatch!(IHash::hash, &[leaf[j]])
                 .as_int().unwrap_or(0) as i32;
-            hashes.push(h);
+            hash = hash.wrapping_mul(31).wrapping_add(h);
         }
         i = block_end;
     }
     while i < count {
         let v = body.tail[(i - tail_off) as usize];
         let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
-        hashes.push(h);
+        hash = hash.wrapping_mul(31).wrapping_add(h);
         i += 1;
     }
-    murmur3::hash_ordered(hashes)
+    murmur3::mix_coll_hash(hash, count as i32)
 }
 
 fn vectors_equiv(a: Value, b: Value) -> bool {

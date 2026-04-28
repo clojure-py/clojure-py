@@ -341,32 +341,38 @@ clojure_rt_macros::implements! { impl ISequential for VecRSeq {} }
 
 // Per-element walks use `nth_borrowed` so each element is read from
 // the leaf block / tail without dup/drop. The trie descent is
-// zero-atomic.
+// zero-atomic. The hash is mixed in-place (running accumulator + n,
+// finalize via `mix_coll_hash`) — mirrors JVM Clojure's
+// `Murmur3.hashOrdered`, no intermediate `Vec<i32>` allocation.
 
 fn compute_seq_hash_forward(vec: Value, start: i64) -> i32 {
     let count = PersistentVector::count_of(vec);
-    let mut hashes: Vec<i32> = Vec::with_capacity((count - start) as usize);
+    let mut hash: i32 = 1;
+    let mut n: i32 = 0;
     let mut i = start;
     while i < count {
         let v = PersistentVector::nth_borrowed(vec, i).expect("range");
         let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
-        hashes.push(h);
+        hash = hash.wrapping_mul(31).wrapping_add(h);
+        n = n.wrapping_add(1);
         i += 1;
     }
-    murmur3::hash_ordered(hashes)
+    murmur3::mix_coll_hash(hash, n)
 }
 
 fn compute_seq_hash_reverse(vec: Value, start: i64) -> i32 {
-    let mut hashes: Vec<i32> = Vec::with_capacity((start + 1) as usize);
+    let mut hash: i32 = 1;
+    let mut n: i32 = 0;
     let mut i = start;
     loop {
         let v = PersistentVector::nth_borrowed(vec, i).expect("range");
         let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
-        hashes.push(h);
+        hash = hash.wrapping_mul(31).wrapping_add(h);
+        n = n.wrapping_add(1);
         if i == 0 { break; }
         i -= 1;
     }
-    murmur3::hash_ordered(hashes)
+    murmur3::mix_coll_hash(hash, n)
 }
 
 fn seqs_forward_equiv(a: Value, b: Value) -> bool {
