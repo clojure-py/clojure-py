@@ -36,6 +36,30 @@ use crate::protocols::seq::ISeqable;
 use crate::types::map_entry::MapEntry;
 use crate::value::Value;
 
+/// Threshold (in *kvs slots*, so 16 == 8 entries) past which a new-key
+/// `assoc` on an ArrayMap promotes to a `PersistentHashMap`. Mirrors
+/// JVM `PersistentArrayMap.HASHTABLE_THRESHOLD`.
+const HASHMAP_THRESHOLD: usize = 16;
+
+/// Build a `PersistentHashMap` from an ArrayMap's existing kvs plus
+/// one new (k, v). Borrow semantics on all inputs.
+fn promote_to_hash_map(am: Value, k: Value, v: Value) -> Value {
+    let body = unsafe { PersistentArrayMap::body(am) };
+    let mut hm = crate::types::hash_map::empty_hash_map();
+    let mut i = 0;
+    while i < body.kvs.len() {
+        let nm = crate::types::hash_map::PersistentHashMap::assoc_kv(
+            hm, body.kvs[i], body.kvs[i + 1],
+        );
+        crate::rc::drop_value(hm);
+        hm = nm;
+        i += 2;
+    }
+    let nm = crate::types::hash_map::PersistentHashMap::assoc_kv(hm, k, v);
+    crate::rc::drop_value(hm);
+    nm
+}
+
 clojure_rt_macros::register_type! {
     pub struct PersistentArrayMap {
         kvs:  Box<[Value]>,   // interleaved [k0, v0, k1, v1, …]
@@ -123,6 +147,10 @@ impl PersistentArrayMap {
 
     /// Path-copy assoc. **Borrow semantics**: caller's refs to `k`
     /// and `v` are unchanged; the new map dups what it stores.
+    ///
+    /// At the JVM-Clojure threshold (8 entries), an *insert* (new key)
+    /// promotes the result to a `PersistentHashMap`. Replaces (same
+    /// key) stay as ArrayMap regardless of size.
     pub fn assoc_kv(this: Value, k: Value, v: Value) -> Value {
         let body = unsafe { PersistentArrayMap::body(this) };
         if let Some(idx) = Self::index_of(this, k) {
@@ -146,6 +174,10 @@ impl PersistentArrayMap {
                 body.meta,
                 AtomicI32::new(0),
             );
+        }
+        // New key. Promote to HashMap if we'd cross the threshold.
+        if body.kvs.len() >= HASHMAP_THRESHOLD {
+            return promote_to_hash_map(this, k, v);
         }
         // Append [k, v] at the end.
         let mut new_kvs: Vec<Value> = Vec::with_capacity(body.kvs.len() + 2);
@@ -370,12 +402,36 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IEquiv for PersistentArrayMap {
         fn equiv(this: Value, other: Value) -> Value {
-            if other.tag != array_map_type_id() {
-                // Cross-type map equiv (e.g. ArrayMap vs HashMap)
-                // lands when HashMap arrives; for now reject.
+            if other.tag == array_map_type_id() {
+                return if maps_equiv(this, other) { Value::TRUE } else { Value::FALSE };
+            }
+            // Cross-type equiv (ArrayMap vs HashMap): same count + same
+            // value-by-key for every key. Implemented via lookup
+            // through `other`, agnostic of its internal layout.
+            let hm_id = crate::types::hash_map::PERSISTENTHASHMAP_TYPE_ID
+                .get().copied().unwrap_or(0);
+            if other.tag != hm_id {
                 return Value::FALSE;
             }
-            if maps_equiv(this, other) { Value::TRUE } else { Value::FALSE }
+            let body = unsafe { PersistentArrayMap::body(this) };
+            let other_count = crate::rt::count(other).as_int().unwrap_or(-1);
+            if (body.kvs.len() as i64 / 2) != other_count {
+                return Value::FALSE;
+            }
+            let mut i = 0;
+            while i < body.kvs.len() {
+                let k = body.kvs[i];
+                let av = body.kvs[i + 1];
+                if !crate::rt::contains_key(other, k).as_bool().unwrap_or(false) {
+                    return Value::FALSE;
+                }
+                let bv = crate::rt::get(other, k);
+                let eq = crate::rt::equiv(av, bv).as_bool().unwrap_or(false);
+                crate::rc::drop_value(bv);
+                if !eq { return Value::FALSE; }
+                i += 2;
+            }
+            Value::TRUE
         }
     }
 }
