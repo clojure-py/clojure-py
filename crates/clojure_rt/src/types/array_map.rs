@@ -69,20 +69,16 @@ fn array_map_type_id() -> crate::value::TypeId {
 }
 
 impl PersistentArrayMap {
-    /// Build a map from a flat `[k0, v0, k1, v1, …]` slice. Each
-    /// element's refcount is bumped once for the new map's storage.
-    /// Duplicate keys: later occurrence wins (reflects how the JVM
-    /// `PersistentArrayMap.create` collapses repeats).
+    /// Build a map from a flat `[k0, v0, k1, v1, …]` slice. **Borrow
+    /// semantics**: caller's refs are unchanged; the map dups each
+    /// element for its own storage. Duplicate keys: later occurrence
+    /// wins (mirrors JVM `PersistentArrayMap.create`).
     pub fn from_kvs(items: &[Value]) -> Value {
         debug_assert!(items.len() % 2 == 0, "from_kvs: odd-length kv slice");
         let mut m = empty_array_map();
         let mut i = 0;
         while i < items.len() {
-            let k = items[i];
-            let v = items[i + 1];
-            crate::rc::dup(k);
-            crate::rc::dup(v);
-            let nm = PersistentArrayMap::assoc_kv(m, k, v);
+            let nm = PersistentArrayMap::assoc_kv(m, items[i], items[i + 1]);
             crate::rc::drop_value(m);
             m = nm;
             i += 2;
@@ -114,25 +110,25 @@ impl PersistentArrayMap {
         None
     }
 
-    /// Path-copy assoc. Caller transfers one ref each of `k` and `v`
-    /// to the new map.
+    /// Path-copy assoc. **Borrow semantics**: caller's refs to `k`
+    /// and `v` are unchanged; the new map dups what it stores.
     pub fn assoc_kv(this: Value, k: Value, v: Value) -> Value {
         let body = unsafe { PersistentArrayMap::body(this) };
         if let Some(idx) = Self::index_of(this, k) {
-            // Replace value in place; key stays (we drop the caller's k).
+            // Replace value in place; key stays.
             let mut new_kvs: Vec<Value> = Vec::with_capacity(body.kvs.len());
             for (i, &x) in body.kvs.iter().enumerate() {
                 if i == idx {
                     crate::rc::dup(x); // existing key — survives
                     new_kvs.push(x);
                 } else if i == idx + 1 {
-                    new_kvs.push(v);   // new value (caller-owned)
+                    crate::rc::dup(v); // borrow v → dup for storage
+                    new_kvs.push(v);
                 } else {
                     crate::rc::dup(x);
                     new_kvs.push(x);
                 }
             }
-            crate::rc::drop_value(k); // we kept the existing key
             crate::rc::dup(body.meta);
             return PersistentArrayMap::alloc(
                 new_kvs.into_boxed_slice(),
@@ -146,7 +142,9 @@ impl PersistentArrayMap {
             crate::rc::dup(x);
             new_kvs.push(x);
         }
+        crate::rc::dup(k);
         new_kvs.push(k);
+        crate::rc::dup(v);
         new_kvs.push(v);
         crate::rc::dup(body.meta);
         PersistentArrayMap::alloc(
@@ -231,8 +229,7 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl IAssociative for PersistentArrayMap {
         fn assoc(this: Value, k: Value, v: Value) -> Value {
-            crate::rc::dup(k);
-            crate::rc::dup(v);
+            // assoc_kv borrows; no pre-dup needed.
             PersistentArrayMap::assoc_kv(this, k, v)
         }
         fn contains_key(this: Value, k: Value) -> Value {
@@ -269,16 +266,14 @@ clojure_rt_macros::implements! {
     impl ICollection for PersistentArrayMap {
         fn conj(this: Value, x: Value) -> Value {
             // `(conj m e)` for a map: e must be MapEntry-shaped — i.e.
-            // either a real MapEntry or a 2-element vector. We reach
-            // into MapEntry's `key`/`val` borrows when possible, else
-            // route through IIndexed::nth on the foreign 2-vector.
+            // either a real MapEntry or a 2-element vector. We borrow
+            // k/v out of MapEntry when possible (zero-cost) or pull
+            // them via IIndexed::nth (which dups; we drop after).
             if x.tag == crate::types::map_entry::MAPENTRY_TYPE_ID
                 .get().copied().unwrap_or(0)
             {
                 let k = MapEntry::key_borrowed(x);
                 let v = MapEntry::val_borrowed(x);
-                crate::rc::dup(k);
-                crate::rc::dup(v);
                 return PersistentArrayMap::assoc_kv(this, k, v);
             }
             // Fallback: assume IIndexed of count 2.
@@ -290,7 +285,10 @@ clojure_rt_macros::implements! {
             }
             let k = clojure_rt_macros::dispatch!(IIndexed::nth, &[x, Value::int(0)]);
             let v = clojure_rt_macros::dispatch!(IIndexed::nth, &[x, Value::int(1)]);
-            PersistentArrayMap::assoc_kv(this, k, v)
+            let r = PersistentArrayMap::assoc_kv(this, k, v);
+            crate::rc::drop_value(k);
+            crate::rc::drop_value(v);
+            r
         }
     }
 }

@@ -144,12 +144,12 @@ fn vector_type_id() -> crate::value::TypeId {
 // ============================================================================
 
 impl PersistentVector {
-    /// Build a vector from a slice. Each element's refcount is bumped
-    /// once for the new vector's storage.
+    /// Build a vector from a slice. **Borrow semantics**: caller's
+    /// refs are unchanged; the new vector dups each element for its
+    /// own storage.
     pub fn from_slice(items: &[Value]) -> Value {
         let mut v = empty_vector();
         for &x in items {
-            crate::rc::dup(x);
             let nv = PersistentVector::cons(v, x);
             crate::rc::drop_value(v);
             v = nv;
@@ -157,8 +157,8 @@ impl PersistentVector {
         v
     }
 
-    /// Cons `x` onto the tail. Caller transfers one ref of `x` to the
-    /// new vector.
+    /// Cons `x` onto the tail. **Borrow semantics**: caller's ref to
+    /// `x` is unchanged; the new vector dups `x` for its own storage.
     pub fn cons(this: Value, x: Value) -> Value {
         let body = unsafe { PersistentVector::body(this) };
         let tail_len = body.tail.len();
@@ -170,6 +170,7 @@ impl PersistentVector {
                 crate::rc::dup(t);
                 new_tail.push(t);
             }
+            crate::rc::dup(x);
             new_tail.push(x);
             crate::rc::dup(body.meta);
             return PersistentVector::alloc(
@@ -208,6 +209,7 @@ impl PersistentVector {
 
         crate::rc::dup(body.meta);
         let mut new_tail = Vec::with_capacity(1);
+        crate::rc::dup(x);
         new_tail.push(x);
         PersistentVector::alloc(
             body.count + 1,
@@ -253,7 +255,7 @@ impl PersistentVector {
 
     /// Path-copy assoc at an existing index. `n == count` extends via
     /// `cons`; `n` outside `[0, count]` returns an exception Value.
-    /// Caller transfers one ref of `x` to the new vector.
+    /// **Borrow semantics**: caller's ref to `x` is unchanged.
     pub fn assoc(this: Value, n: i64, x: Value) -> Value {
         let body = unsafe { PersistentVector::body(this) };
         if n < 0 || n > body.count {
@@ -262,18 +264,18 @@ impl PersistentVector {
             ));
         }
         if n == body.count {
+            // cons borrows; we forward x as borrowed.
             return PersistentVector::cons(this, x);
         }
 
         let tail_off = tail_offset(body.count, body.tail.len());
         if n >= tail_off {
-            // Replace within the tail. Old vector still owns its tail
-            // elements; the new vector dup-s the survivors and takes
-            // ownership of the caller-provided `x` for the replaced
-            // slot.
+            // Replace within the tail. Dup x for the new slot; dup
+            // the surviving siblings.
             let mut new_tail: Vec<Value> = Vec::with_capacity(body.tail.len());
             for (i, &t) in body.tail.iter().enumerate() {
                 if i as i64 == n - tail_off {
+                    crate::rc::dup(x);
                     new_tail.push(x);
                 } else {
                     crate::rc::dup(t);
@@ -292,6 +294,9 @@ impl PersistentVector {
         }
 
         // Path-copy down the trie to a leaf, replacing one slot.
+        // `do_assoc` is a private internal helper; it transfers `x`
+        // into the new leaf, so we dup once here for the placement.
+        crate::rc::dup(x);
         let new_root = do_assoc(body.shift, &body.root, n, x);
         crate::rc::dup(body.meta);
         let mut tail_owned: Vec<Value> = Vec::with_capacity(body.tail.len());
@@ -634,7 +639,7 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! {
     impl ICollection for PersistentVector {
         fn conj(this: Value, x: Value) -> Value {
-            crate::rc::dup(x);
+            // PersistentVector::cons borrows x; no pre-dup needed.
             PersistentVector::cons(this, x)
         }
     }
@@ -675,7 +680,7 @@ clojure_rt_macros::implements! {
                     "Vector key must be an integer".to_string(),
                 );
             };
-            crate::rc::dup(v);
+            // PersistentVector::assoc borrows v; no pre-dup needed.
             PersistentVector::assoc(this, i, v)
         }
         fn contains_key(this: Value, k: Value) -> Value {
