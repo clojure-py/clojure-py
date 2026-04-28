@@ -9,6 +9,7 @@
 
 use crate::protocols::associative::IAssociative;
 use crate::protocols::chunked_seq::IChunkedSeq;
+use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
 use crate::protocols::deref::IDeref;
@@ -27,6 +28,10 @@ use crate::protocols::reversible::IReversible;
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
 use crate::protocols::stack::IStack;
+use crate::protocols::transient_associative::ITransientAssociative;
+use crate::protocols::transient_collection::ITransientCollection;
+use crate::protocols::transient_map::ITransientMap;
+use crate::protocols::transient_vector::ITransientVector;
 use crate::types::reduced::Reduced;
 use crate::types::array_map::PersistentArrayMap;
 use crate::types::keyword::KeywordObj;
@@ -174,6 +179,47 @@ pub fn find(coll: Value, k: Value) -> Value {
 #[inline]
 pub fn rseq(coll: Value) -> Value {
     clojure_rt_macros::dispatch!(IReversible::rseq, &[coll])
+}
+
+// --- Transients -------------------------------------------------------------
+
+/// `(transient coll)` — produce a single-thread mutable view of `coll`.
+#[inline]
+pub fn transient(coll: Value) -> Value {
+    clojure_rt_macros::dispatch!(IEditableCollection::as_transient, &[coll])
+}
+
+/// `(persistent! t)` — freeze a transient back into a persistent
+/// collection. The transient becomes invalid for further mutation.
+#[inline]
+pub fn persistent_(t: Value) -> Value {
+    clojure_rt_macros::dispatch!(ITransientCollection::persistent_bang, &[t])
+}
+
+/// `(conj! t x)` — mutate-add `x` to a transient.
+#[inline]
+pub fn conj_bang(t: Value, x: Value) -> Value {
+    clojure_rt_macros::dispatch!(ITransientCollection::conj_bang, &[t, x])
+}
+
+/// `(assoc! t k v)` — mutate-set `k` to `v` on a transient (vector
+/// or map).
+#[inline]
+pub fn assoc_bang(t: Value, k: Value, v: Value) -> Value {
+    clojure_rt_macros::dispatch!(ITransientAssociative::assoc_bang, &[t, k, v])
+}
+
+/// `(dissoc! t k)` — mutate-remove `k` from a transient map.
+#[inline]
+pub fn dissoc_bang(t: Value, k: Value) -> Value {
+    clojure_rt_macros::dispatch!(ITransientMap::dissoc_bang, &[t, k])
+}
+
+/// `(pop! t)` — mutate-pop the rightmost element from a transient
+/// vector.
+#[inline]
+pub fn pop_bang(t: Value) -> Value {
+    clojure_rt_macros::dispatch!(ITransientVector::pop_bang, &[t])
 }
 
 // --- Map ops ----------------------------------------------------------------

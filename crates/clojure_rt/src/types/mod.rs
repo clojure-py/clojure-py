@@ -15,5 +15,7 @@ pub mod map_entry;
 pub mod reduced;
 pub mod string;
 pub mod symbol;
+pub mod transient_array_map;
+pub mod transient_vector;
 pub mod vec_seq;
 pub mod vector;

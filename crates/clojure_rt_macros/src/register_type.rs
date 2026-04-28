@@ -31,9 +31,11 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // `ptr::drop_in_place(body)` runs the type's natural destructor:
     //
     //   - `Value`            — single decref.
-    //   - `[Value; N]`       — loop over the array.
     //   - `Box<[Value]>`     — loop over the slice (Box::drop afterwards
     //                          frees the slice memory).
+    //   - `Vec<Value>`       — loop over the elements (Vec::drop frees
+    //                          the buffer afterwards). Used by transients
+    //                          for mutable in-place storage.
     //
     // Any other field type (i32, AtomicI32, OnceLock<...>, etc.) is left
     // for `drop_in_place` alone.
@@ -125,6 +127,32 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 );
                 unsafe { &*(h.add(1) as *const Self) }
             }
+
+            /// Mutably borrow the body of a `Self`-tagged Value. Used
+            /// by transients for in-place mutation.
+            ///
+            /// # Safety
+            /// In addition to the contract of `body`, the caller must
+            /// guarantee that no other `&Self` / `&mut Self` borrow is
+            /// outstanding for `v`'s body at the same time. Transient
+            /// types enforce this by document-level "single-thread
+            /// single-owner" contract; persistent types should not use
+            /// `body_mut`.
+            #[inline]
+            #[allow(dead_code)]
+            pub unsafe fn body_mut<'a>(v: ::clojure_rt::Value) -> &'a mut Self {
+                debug_assert_eq!(
+                    v.tag,
+                    *#id_cell.get().expect(
+                        concat!(stringify!(#name), ": clojure_rt::init() not called")
+                    ),
+                    concat!(stringify!(#name), "::body_mut: wrong tag"),
+                );
+                let h = v.as_heap().expect(
+                    concat!(stringify!(#name), "::body_mut: not a heap Value"),
+                );
+                unsafe { &mut *(h.add(1) as *mut Self) }
+            }
         }
     }
 }
@@ -136,7 +164,7 @@ fn field_drop_snippet(f: &Field) -> Option<TokenStream> {
             ::clojure_rt::drop_value((*body).#id);
         });
     }
-    if is_value_box_slice(&f.ty) {
+    if is_value_box_slice(&f.ty) || is_value_vec(&f.ty) {
         return Some(quote! {
             for v in (*body).#id.iter() {
                 ::clojure_rt::drop_value(*v);
@@ -168,4 +196,17 @@ fn is_value_box_slice(ty: &Type) -> bool {
         return false;
     };
     is_value_type(&slice.elem)
+}
+
+/// Recognize `Vec<Value>`. Used by transients for mutable Value-bearing
+/// storage that grows in place.
+fn is_value_vec(ty: &Type) -> bool {
+    let Type::Path(TypePath { path, .. }) = ty else { return false };
+    let Some(seg) = path.segments.last() else { return false };
+    if seg.ident != "Vec" {
+        return false;
+    }
+    let PathArguments::AngleBracketed(args) = &seg.arguments else { return false };
+    let Some(GenericArgument::Type(inner_ty)) = args.args.first() else { return false };
+    is_value_type(inner_ty)
 }

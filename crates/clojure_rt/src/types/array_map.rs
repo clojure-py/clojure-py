@@ -23,6 +23,7 @@ use crate::hash::murmur3;
 use crate::protocols::associative::IAssociative;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
+use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
@@ -183,6 +184,23 @@ impl PersistentArrayMap {
     pub(crate) fn kv_at(this: Value, slot: usize) -> (Value, Value) {
         let body = unsafe { PersistentArrayMap::body(this) };
         (body.kvs[slot], body.kvs[slot + 1])
+    }
+
+    /// Construct a `PersistentArrayMap` from an already-owned
+    /// `Box<[Value]>`. Caller transfers one ref of each element to the
+    /// new map; the boxed slice itself is moved in. Used by
+    /// `TransientArrayMap::persistent_bang` to freeze without re-
+    /// dup'ing every element.
+    pub(crate) fn from_owned_kvs(kvs: Box<[Value]>) -> Value {
+        debug_assert!(kvs.len() % 2 == 0, "from_owned_kvs: odd-length kv slice");
+        PersistentArrayMap::alloc(kvs, Value::NIL, AtomicI32::new(0))
+    }
+
+    /// Borrowed view of the kvs slice. Crate-private; used by the
+    /// transient builder so it doesn't reach into private fields.
+    pub(crate) fn kvs_borrowed<'a>(this: Value) -> &'a [Value] {
+        let body = unsafe { PersistentArrayMap::body(this) };
+        &body.kvs
     }
 }
 
@@ -384,6 +402,14 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! { impl IPersistentMap for PersistentArrayMap {} }
+
+clojure_rt_macros::implements! {
+    impl IEditableCollection for PersistentArrayMap {
+        fn as_transient(this: Value) -> Value {
+            crate::types::transient_array_map::TransientArrayMap::from_persistent(this)
+        }
+    }
+}
 
 // ============================================================================
 // Internal helpers

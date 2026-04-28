@@ -33,6 +33,7 @@ use crate::hash::murmur3;
 use crate::protocols::associative::IAssociative;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
+use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
@@ -385,6 +386,31 @@ impl PersistentVector {
 
     pub fn count_of(this: Value) -> i64 {
         unsafe { PersistentVector::body(this) }.count
+    }
+
+    /// Construct a `PersistentVector` directly from already-owned
+    /// parts. Caller transfers one ref of every element in `tail`
+    /// and the Arc to `root`. Used by `TransientVector::persistent_
+    /// bang` to freeze without re-dup'ing the tail elements.
+    pub(crate) fn from_owned_parts(
+        count: i64,
+        shift: i32,
+        root: Arc<PVNode>,
+        tail: Box<[Value]>,
+    ) -> Value {
+        PersistentVector::alloc(
+            count, shift, root, tail, Value::NIL, AtomicI32::new(0),
+        )
+    }
+
+    /// Crate-private accessor for the four data fields a transient
+    /// snapshot needs. Borrows are tied to the body's lifetime; the
+    /// caller must not let them outlive the underlying Value.
+    pub(crate) fn parts<'a>(this: Value)
+        -> (i64, i32, &'a Arc<PVNode>, &'a [Value])
+    {
+        let body = unsafe { PersistentVector::body(this) };
+        (body.count, body.shift, &body.root, &body.tail)
     }
 
     /// Length of the tail block (0..=32). Exposed for chunked seqs
@@ -814,6 +840,14 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! { impl ISequential       for PersistentVector {} }
 clojure_rt_macros::implements! { impl IPersistentVector for PersistentVector {} }
 
+clojure_rt_macros::implements! {
+    impl IEditableCollection for PersistentVector {
+        fn as_transient(this: Value) -> Value {
+            crate::types::transient_vector::TransientVector::from_persistent(this)
+        }
+    }
+}
+
 // `IReduce` walks the trie one *leaf-block at a time* and iterates the
 // resulting `&[Value; 32]` directly. Each element is **borrowed** for
 // the duration of its `IFn::invoke` — the surrounding leaf node's Arc
@@ -915,6 +949,17 @@ fn reduce_walk(body: &PersistentVector, f: Value, start_idx: i64, mut acc: Value
     }
 
     acc
+}
+
+/// Public-from-crate alias for `leaf_block_at`. Used by
+/// `TransientVector::nth_borrowed` so it doesn't have to duplicate
+/// the trie-walk logic. Same borrow-only semantics.
+pub(crate) fn leaf_block_at_pub<'a>(
+    root: &'a Arc<PVNode>,
+    shift: i32,
+    i: i64,
+) -> &'a [Value; BRANCHING] {
+    leaf_block_at(root, shift, i)
 }
 
 /// Borrow-traversal of the trie to the leaf-block containing element
