@@ -47,6 +47,7 @@ use crate::types::delay::Delay;
 use crate::types::hash_set::PersistentHashSet;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::PersistentList;
+use crate::types::var::Var;
 use crate::types::volatile::Volatile;
 use crate::types::string::StringObj;
 use crate::types::symbol::SymbolObj;
@@ -479,6 +480,51 @@ pub fn force(d: Value) -> Value {
 #[inline]
 pub fn is_realized(x: Value) -> Value {
     clojure_rt_macros::dispatch!(IPending::is_realized, &[x])
+}
+
+// --- Vars -------------------------------------------------------------------
+
+/// `(intern ns sym root)` — build a fresh `Var`. Borrow semantics
+/// on all three args; `ns` and/or `sym` may be `Value::NIL` for an
+/// anonymous var.
+#[inline]
+pub fn intern_var(ns: Value, sym: Value, root: Value) -> Value {
+    Var::intern(ns, sym, root)
+}
+
+/// `(.setDynamic v)` — flip `v`'s dynamic flag so thread bindings
+/// are honored on `deref`. Returns `v`.
+#[inline]
+pub fn set_dynamic(v: Value) -> Value {
+    Var::set_dynamic(v)
+}
+
+/// `(.bindRoot v new)` — install a new root, firing watches.
+/// Returns nil on success, an exception value on validator failure.
+#[inline]
+pub fn bind_root(v: Value, new_root: Value) -> Value {
+    Var::bind_root(v, new_root)
+}
+
+/// `(alter-var-root v f args…)` — atomically apply `f` to the
+/// current root + args, install the result, return the new root.
+/// CAS retry under contention. Caps at 3 user args.
+#[inline]
+pub fn alter_var_root(v: Value, f: Value, args: &[Value]) -> Value {
+    Var::alter_root(v, f, args)
+}
+
+/// `(push-thread-bindings m)` — push a new thread-binding frame
+/// merging `m` (a map of `Var → value`) onto the previous frame.
+#[inline]
+pub fn push_thread_bindings(m: Value) {
+    crate::types::var::push_thread_bindings(m)
+}
+
+/// `(pop-thread-bindings)` — restore the previous frame.
+#[inline]
+pub fn pop_thread_bindings() {
+    crate::types::var::pop_thread_bindings()
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or

@@ -26,6 +26,7 @@ pub mod symbol;
 pub mod transient_array_map;
 pub mod transient_hash_map;
 pub mod transient_vector;
+pub mod var;
 pub mod vec_seq;
 pub mod vector;
 pub mod volatile;
