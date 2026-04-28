@@ -87,9 +87,7 @@ clojure_rt_macros::implements! {
                 return Value::int(cached as i64);
             }
             // hash = sym.hash() + 0x9e3779b9 (matches JVM Keyword).
-            let sym_h = clojure_rt_macros::dispatch!(IHash::hash, &[body.sym])
-                .as_int()
-                .unwrap() as i32;
+            let sym_h = crate::rt::hash(body.sym).as_int().unwrap() as i32;
             let h = sym_h.wrapping_add(0x9e3779b9_u32 as i32);
             body.hash.store(h, Ordering::Relaxed);
             Value::int(h as i64)
@@ -118,11 +116,11 @@ clojure_rt_macros::implements! {
     impl INamed for KeywordObj {
         fn namespace(this: Value) -> Value {
             let sym = unsafe { KeywordObj::body(this) }.sym;
-            clojure_rt_macros::dispatch!(INamed::namespace, &[sym])
+            crate::rt::namespace(sym)
         }
         fn name(this: Value) -> Value {
             let sym = unsafe { KeywordObj::body(this) }.sym;
-            clojure_rt_macros::dispatch!(INamed::name, &[sym])
+            crate::rt::name(sym)
         }
     }
 }

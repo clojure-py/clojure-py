@@ -81,25 +81,19 @@ impl PersistentArrayMap {
     /// persistent `assoc` calls (each scans the existing kvs and
     /// reallocates the storage Box).
     pub fn from_kvs(items: &[Value]) -> Value {
-        use crate::protocols::transient_associative::ITransientAssociative;
-        use crate::protocols::transient_collection::ITransientCollection;
         debug_assert!(items.len() % 2 == 0, "from_kvs: odd-length kv slice");
 
         let empty = empty_array_map();
-        let mut t = crate::types::transient_array_map::TransientArrayMap::from_persistent(empty);
+        let mut t = crate::rt::transient(empty);
         crate::rc::drop_value(empty);
         let mut i = 0;
         while i < items.len() {
-            let nt = clojure_rt_macros::dispatch!(
-                ITransientAssociative::assoc_bang, &[t, items[i], items[i + 1]]
-            );
+            let nt = crate::rt::assoc_bang(t, items[i], items[i + 1]);
             crate::rc::drop_value(t);
             t = nt;
             i += 2;
         }
-        let result = clojure_rt_macros::dispatch!(
-            ITransientCollection::persistent_bang, &[t]
-        );
+        let result = crate::rt::persistent_(t);
         crate::rc::drop_value(t);
         result
     }
@@ -118,8 +112,7 @@ impl PersistentArrayMap {
         let mut i = 0;
         while i < body.kvs.len() {
             let stored_k = body.kvs[i];
-            let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[stored_k, k])
-                .as_bool().unwrap_or(false);
+            let eq = crate::rt::equiv(stored_k, k).as_bool().unwrap_or(false);
             if eq {
                 return Some(i);
             }
@@ -318,8 +311,8 @@ clojure_rt_macros::implements! {
                     if x.is_heap() { "<heap>" } else { "<primitive>" }
                 ));
             }
-            let k = clojure_rt_macros::dispatch!(IIndexed::nth, &[x, Value::int(0)]);
-            let v = clojure_rt_macros::dispatch!(IIndexed::nth, &[x, Value::int(1)]);
+            let k = crate::rt::nth(x, Value::int(0));
+            let v = crate::rt::nth(x, Value::int(1));
             let r = PersistentArrayMap::assoc_kv(this, k, v);
             crate::rc::drop_value(k);
             crate::rc::drop_value(v);
@@ -362,10 +355,8 @@ clojure_rt_macros::implements! {
             let mut acc: i32 = 0;
             let mut i = 0;
             while i < body.kvs.len() {
-                let kh = clojure_rt_macros::dispatch!(IHash::hash, &[body.kvs[i]])
-                    .as_int().unwrap_or(0) as i32;
-                let vh = clojure_rt_macros::dispatch!(IHash::hash, &[body.kvs[i + 1]])
-                    .as_int().unwrap_or(0) as i32;
+                let kh = crate::rt::hash(body.kvs[i]).as_int().unwrap_or(0) as i32;
+                let vh = crate::rt::hash(body.kvs[i + 1]).as_int().unwrap_or(0) as i32;
                 acc = acc.wrapping_add(kh ^ vh);
                 i += 2;
             }
@@ -448,8 +439,7 @@ fn maps_equiv(a: Value, b: Value) -> bool {
             return false;
         };
         let bv = bb.kvs[bidx + 1];
-        let v_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[av, bv])
-            .as_bool().unwrap_or(false);
+        let v_eq = crate::rt::equiv(av, bv).as_bool().unwrap_or(false);
         if !v_eq {
             return false;
         }

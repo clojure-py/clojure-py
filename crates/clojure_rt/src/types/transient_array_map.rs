@@ -22,7 +22,6 @@ use core::sync::atomic::Ordering;
 
 use crate::protocols::associative::IAssociative;
 use crate::protocols::counted::ICounted;
-use crate::protocols::equiv::IEquiv;
 use crate::protocols::lookup::ILookup;
 use crate::protocols::transient_associative::ITransientAssociative;
 use crate::protocols::transient_collection::ITransientCollection;
@@ -69,8 +68,7 @@ impl TransientArrayMap {
         let mut i = 0;
         while i < body.kvs.len() {
             let stored_k = body.kvs[i];
-            let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[stored_k, k])
-                .as_bool().unwrap_or(false);
+            let eq = crate::rt::equiv(stored_k, k).as_bool().unwrap_or(false);
             if eq {
                 return Some(i);
             }
@@ -90,9 +88,7 @@ clojure_rt_macros::implements! {
             if x.tag == me_id {
                 let k = MapEntry::key_borrowed(x);
                 let v = MapEntry::val_borrowed(x);
-                clojure_rt_macros::dispatch!(
-                    ITransientAssociative::assoc_bang, &[this, k, v]
-                )
+                crate::rt::assoc_bang(this, k, v)
             } else {
                 crate::exception::make_foreign(format!(
                     "conj! on transient map requires a MapEntry, got tag {}",
@@ -206,9 +202,7 @@ clojure_rt_macros::implements! {
             // Mirrors `assoc!` — same in-place behavior; persistent
             // `IAssociative::assoc` semantics on a transient collapse
             // to assoc!.
-            clojure_rt_macros::dispatch!(
-                ITransientAssociative::assoc_bang, &[this, k, v]
-            )
+            crate::rt::assoc_bang(this, k, v)
         }
         fn contains_key(this: Value, k: Value) -> Value {
             if TransientArrayMap::index_of(this, k).is_some() {

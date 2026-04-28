@@ -185,21 +185,15 @@ impl PersistentVector {
     /// `Arc::make_mut` fast path on the freshly-allocated nodes the
     /// transient just created.
     pub fn from_slice(items: &[Value]) -> Value {
-        use crate::protocols::transient_collection::ITransientCollection;
-
         let empty = empty_vector();
-        let mut t = crate::types::transient_vector::TransientVector::from_persistent(empty);
+        let mut t = crate::rt::transient(empty);
         crate::rc::drop_value(empty);
         for &x in items {
-            let nt = clojure_rt_macros::dispatch!(
-                ITransientCollection::conj_bang, &[t, x]
-            );
+            let nt = crate::rt::conj_bang(t, x);
             crate::rc::drop_value(t);
             t = nt;
         }
-        let result = clojure_rt_macros::dispatch!(
-            ITransientCollection::persistent_bang, &[t]
-        );
+        let result = crate::rt::persistent_(t);
         crate::rc::drop_value(t);
         result
     }
@@ -910,9 +904,7 @@ clojure_rt_macros::implements! {
             let body = unsafe { PersistentVector::body(this) };
             if body.count == 0 {
                 // (reduce f []) => (f)
-                return clojure_rt_macros::dispatch!(
-                    crate::protocols::ifn::IFn::invoke, &[f]
-                );
+                return crate::rt::invoke(f, &[]);
             }
             // Seed = first element. We *own* the seed, so dup once.
             let seed = first_element(body);
@@ -961,9 +953,7 @@ fn reduce_walk(body: &PersistentVector, f: Value, start_idx: i64, mut acc: Value
         let last = (block_end - block_start) as usize;
         while j < last {
             let x = leaf[j]; // borrowed
-            let new_acc = clojure_rt_macros::dispatch!(
-                crate::protocols::ifn::IFn::invoke, &[f, acc, x]
-            );
+            let new_acc = crate::rt::invoke(f, &[acc, x]);
             crate::rc::drop_value(acc);
             acc = new_acc;
             if acc.tag == reduced_tag {
@@ -980,9 +970,7 @@ fn reduce_walk(body: &PersistentVector, f: Value, start_idx: i64, mut acc: Value
     // Tail block: same shape, source is `body.tail`.
     while i < count {
         let x = body.tail[(i - tail_off) as usize]; // borrowed
-        let new_acc = clojure_rt_macros::dispatch!(
-            crate::protocols::ifn::IFn::invoke, &[f, acc, x]
-        );
+        let new_acc = crate::rt::invoke(f, &[acc, x]);
         crate::rc::drop_value(acc);
         acc = new_acc;
         if acc.tag == reduced_tag {
@@ -1179,15 +1167,14 @@ fn compute_vector_hash(this: Value) -> i32 {
         let block_start = i & !MASK;
         let block_end = (block_start + BRANCHING as i64).min(tail_off);
         for j in (i - block_start) as usize..(block_end - block_start) as usize {
-            let h = clojure_rt_macros::dispatch!(IHash::hash, &[leaf[j]])
-                .as_int().unwrap_or(0) as i32;
+            let h = crate::rt::hash(leaf[j]).as_int().unwrap_or(0) as i32;
             hash = hash.wrapping_mul(31).wrapping_add(h);
         }
         i = block_end;
     }
     while i < count {
         let v = body.tail[(i - tail_off) as usize];
-        let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
+        let h = crate::rt::hash(v).as_int().unwrap_or(0) as i32;
         hash = hash.wrapping_mul(31).wrapping_add(h);
         i += 1;
     }
@@ -1208,9 +1195,7 @@ fn vectors_equiv(a: Value, b: Value) -> bool {
     while i < ab.count {
         let x = PersistentVector::nth_borrowed(a, i).expect("range");
         let y = PersistentVector::nth_borrowed(b, i).expect("range");
-        let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[x, y])
-            .as_bool()
-            .unwrap_or(false);
+        let eq = crate::rt::equiv(x, y).as_bool().unwrap_or(false);
         if !eq {
             return false;
         }

@@ -169,9 +169,7 @@ clojure_rt_macros::implements! {
                 ));
             }
             if i == body.count {
-                return clojure_rt_macros::dispatch!(
-                    ITransientCollection::conj_bang, &[this, v]
-                );
+                return crate::rt::conj_bang(this, v);
             }
             let tail_off = body.count - body.tail.len() as i64;
             if i >= tail_off {

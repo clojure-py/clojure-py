@@ -127,8 +127,8 @@ clojure_rt_macros::implements! {
             let mut slot = body.slot;
             while slot < total_kvs {
                 let (k, v) = PersistentArrayMap::kv_at(body.map, slot as usize);
-                let kh = clojure_rt_macros::dispatch!(IHash::hash, &[k]).as_int().unwrap_or(0) as i32;
-                let vh = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
+                let kh = crate::rt::hash(k).as_int().unwrap_or(0) as i32;
+                let vh = crate::rt::hash(v).as_int().unwrap_or(0) as i32;
                 let mut entry_acc: i32 = 1;
                 entry_acc = entry_acc.wrapping_mul(31).wrapping_add(kh);
                 entry_acc = entry_acc.wrapping_mul(31).wrapping_add(vh);
@@ -168,11 +168,9 @@ clojure_rt_macros::implements! {
             while sa < a_total {
                 let (ak, av) = PersistentArrayMap::kv_at(ab.map, sa as usize);
                 let (bk, bv) = PersistentArrayMap::kv_at(bb.map, sb as usize);
-                let k_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[ak, bk])
-                    .as_bool().unwrap_or(false);
+                let k_eq = crate::rt::equiv(ak, bk).as_bool().unwrap_or(false);
                 if !k_eq { return Value::FALSE; }
-                let v_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[av, bv])
-                    .as_bool().unwrap_or(false);
+                let v_eq = crate::rt::equiv(av, bv).as_bool().unwrap_or(false);
                 if !v_eq { return Value::FALSE; }
                 sa += 2;
                 sb += 2;

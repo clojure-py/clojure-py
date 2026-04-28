@@ -393,9 +393,7 @@ fn compute_seq_hash(start: Value) -> i32 {
     let empty_id = empty_list_type_id();
     while cur.tag != empty_id {
         let body = unsafe { PersistentList::body(cur) };
-        let elem_hash = clojure_rt_macros::dispatch!(IHash::hash, &[body.first])
-            .as_int()
-            .unwrap_or(0) as i32;
+        let elem_hash = crate::rt::hash(body.first).as_int().unwrap_or(0) as i32;
         hash = hash.wrapping_mul(31).wrapping_add(elem_hash);
         n = n.wrapping_add(1);
         cur = body.rest;
@@ -419,9 +417,7 @@ fn seqs_equiv(a: Value, b: Value) -> bool {
         }
         let xb = unsafe { PersistentList::body(x) };
         let yb = unsafe { PersistentList::body(y) };
-        let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[xb.first, yb.first])
-            .as_bool()
-            .unwrap_or(false);
+        let eq = crate::rt::equiv(xb.first, yb.first).as_bool().unwrap_or(false);
         if !eq {
             return false;
         }

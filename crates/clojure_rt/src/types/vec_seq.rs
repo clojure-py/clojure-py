@@ -352,7 +352,7 @@ fn compute_seq_hash_forward(vec: Value, start: i64) -> i32 {
     let mut i = start;
     while i < count {
         let v = PersistentVector::nth_borrowed(vec, i).expect("range");
-        let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
+        let h = crate::rt::hash(v).as_int().unwrap_or(0) as i32;
         hash = hash.wrapping_mul(31).wrapping_add(h);
         n = n.wrapping_add(1);
         i += 1;
@@ -366,7 +366,7 @@ fn compute_seq_hash_reverse(vec: Value, start: i64) -> i32 {
     let mut i = start;
     loop {
         let v = PersistentVector::nth_borrowed(vec, i).expect("range");
-        let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
+        let h = crate::rt::hash(v).as_int().unwrap_or(0) as i32;
         hash = hash.wrapping_mul(31).wrapping_add(h);
         n = n.wrapping_add(1);
         if i == 0 { break; }
@@ -387,8 +387,7 @@ fn seqs_forward_equiv(a: Value, b: Value) -> bool {
     while i < ac {
         let x = PersistentVector::nth_borrowed(ab.vec, ab.index + i).expect("range");
         let y = PersistentVector::nth_borrowed(bb.vec, bb.index + i).expect("range");
-        let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[x, y])
-            .as_bool().unwrap_or(false);
+        let eq = crate::rt::equiv(x, y).as_bool().unwrap_or(false);
         if !eq { return false; }
         i += 1;
     }
@@ -405,8 +404,7 @@ fn seqs_reverse_equiv(a: Value, b: Value) -> bool {
     loop {
         let x = PersistentVector::nth_borrowed(ab.vec, i).expect("range");
         let y = PersistentVector::nth_borrowed(bb.vec, i).expect("range");
-        let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[x, y])
-            .as_bool().unwrap_or(false);
+        let eq = crate::rt::equiv(x, y).as_bool().unwrap_or(false);
         if !eq { return false; }
         if i == 0 { break; }
         i -= 1;

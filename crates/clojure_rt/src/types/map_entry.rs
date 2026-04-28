@@ -112,10 +112,8 @@ clojure_rt_macros::implements! {
             }
             // Same shape as `(hash [k v])` — `hash_ordered` of two
             // element hashes mixed via mix_coll_hash with count=2.
-            let kh = clojure_rt_macros::dispatch!(IHash::hash, &[body.key])
-                .as_int().unwrap_or(0) as i32;
-            let vh = clojure_rt_macros::dispatch!(IHash::hash, &[body.val])
-                .as_int().unwrap_or(0) as i32;
+            let kh = crate::rt::hash(body.key).as_int().unwrap_or(0) as i32;
+            let vh = crate::rt::hash(body.val).as_int().unwrap_or(0) as i32;
             let mut acc: i32 = 1;
             acc = acc.wrapping_mul(31).wrapping_add(kh);
             acc = acc.wrapping_mul(31).wrapping_add(vh);
@@ -136,11 +134,9 @@ clojure_rt_macros::implements! {
             let body = unsafe { MapEntry::body(this) };
             if other.tag == this.tag {
                 let ob = unsafe { MapEntry::body(other) };
-                let k_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[body.key, ob.key])
-                    .as_bool().unwrap_or(false);
+                let k_eq = crate::rt::equiv(body.key, ob.key).as_bool().unwrap_or(false);
                 if !k_eq { return Value::FALSE; }
-                let v_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[body.val, ob.val])
-                    .as_bool().unwrap_or(false);
+                let v_eq = crate::rt::equiv(body.val, ob.val).as_bool().unwrap_or(false);
                 return if v_eq { Value::TRUE } else { Value::FALSE };
             }
             // Compare to a 2-element vector via the IIndexed protocol —
@@ -148,18 +144,15 @@ clojure_rt_macros::implements! {
             if !crate::protocol::satisfies(&ICounted::COUNT_1, other) {
                 return Value::FALSE;
             }
-            let cnt = clojure_rt_macros::dispatch!(ICounted::count, &[other])
-                .as_int().unwrap_or(-1);
+            let cnt = crate::rt::count(other).as_int().unwrap_or(-1);
             if cnt != 2 { return Value::FALSE; }
             if !crate::protocol::satisfies(&IIndexed::NTH_2, other) {
                 return Value::FALSE;
             }
-            let ok = clojure_rt_macros::dispatch!(IIndexed::nth, &[other, Value::int(0)]);
-            let ov = clojure_rt_macros::dispatch!(IIndexed::nth, &[other, Value::int(1)]);
-            let k_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[body.key, ok])
-                .as_bool().unwrap_or(false);
-            let v_eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[body.val, ov])
-                .as_bool().unwrap_or(false);
+            let ok = crate::rt::nth(other, Value::int(0));
+            let ov = crate::rt::nth(other, Value::int(1));
+            let k_eq = crate::rt::equiv(body.key, ok).as_bool().unwrap_or(false);
+            let v_eq = crate::rt::equiv(body.val, ov).as_bool().unwrap_or(false);
             crate::rc::drop_value(ok);
             crate::rc::drop_value(ov);
             if k_eq && v_eq { Value::TRUE } else { Value::FALSE }

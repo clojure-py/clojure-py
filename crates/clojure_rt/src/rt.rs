@@ -181,6 +181,30 @@ pub fn rseq(coll: Value) -> Value {
     clojure_rt_macros::dispatch!(IReversible::rseq, &[coll])
 }
 
+// --- Chunked seqs -----------------------------------------------------------
+
+#[inline]
+pub fn chunked_first(s: Value) -> Value {
+    clojure_rt_macros::dispatch!(IChunkedSeq::chunked_first, &[s])
+}
+
+#[inline]
+pub fn chunked_rest(s: Value) -> Value {
+    clojure_rt_macros::dispatch!(IChunkedSeq::chunked_rest, &[s])
+}
+
+#[inline]
+pub fn chunked_next(s: Value) -> Value {
+    clojure_rt_macros::dispatch!(IChunkedSeq::chunked_next, &[s])
+}
+
+// --- IChunk -----------------------------------------------------------------
+
+#[inline]
+pub fn drop_first(chunk: Value) -> Value {
+    clojure_rt_macros::dispatch!(crate::protocols::chunk::IChunk::drop_first, &[chunk])
+}
+
 // --- Transients -------------------------------------------------------------
 
 /// `(transient coll)` — produce a single-thread mutable view of `coll`.
@@ -335,13 +359,12 @@ pub fn reduce_init(coll: Value, f: Value, init: Value) -> Value {
 fn reduce_seq_impl(mut s: Value, f: Value, mut acc: Value) -> Value {
     while !s.is_nil() {
         if crate::protocol::satisfies(&IChunkedSeq::CHUNKED_FIRST_1, s) {
-            let chunk = clojure_rt_macros::dispatch!(IChunkedSeq::chunked_first, &[s]);
-            let cnt = clojure_rt_macros::dispatch!(ICounted::count, &[chunk])
-                .as_int().expect("ICounted on chunk returns int");
+            let chunk = chunked_first(s);
+            let cnt = count(chunk).as_int().expect("ICounted on chunk returns int");
             let mut i: i64 = 0;
             while i < cnt {
-                let x = clojure_rt_macros::dispatch!(IIndexed::nth, &[chunk, Value::int(i)]);
-                let new_acc = clojure_rt_macros::dispatch!(IFn::invoke, &[f, acc, x]);
+                let x = nth(chunk, Value::int(i));
+                let new_acc = invoke(f, &[acc, x]);
                 crate::rc::drop_value(acc);
                 crate::rc::drop_value(x);
                 acc = new_acc;
@@ -358,14 +381,14 @@ fn reduce_seq_impl(mut s: Value, f: Value, mut acc: Value) -> Value {
                 i += 1;
             }
             crate::rc::drop_value(chunk);
-            let next_s = clojure_rt_macros::dispatch!(IChunkedSeq::chunked_next, &[s]);
+            let next_s = chunked_next(s);
             crate::rc::drop_value(s);
             s = next_s;
             continue;
         }
         // Element-by-element fallback.
         let x = first(s);
-        let new_acc = clojure_rt_macros::dispatch!(IFn::invoke, &[f, acc, x]);
+        let new_acc = invoke(f, &[acc, x]);
         crate::rc::drop_value(acc);
         crate::rc::drop_value(x);
         acc = new_acc;
@@ -409,7 +432,7 @@ pub fn is_reduced(x: Value) -> bool {
 #[inline]
 pub fn unreduced(x: Value) -> Value {
     if is_reduced(x) {
-        let inner = clojure_rt_macros::dispatch!(IDeref::deref, &[x]);
+        let inner = deref(x);
         crate::rc::drop_value(x);
         inner
     } else {
