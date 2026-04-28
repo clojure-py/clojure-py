@@ -687,12 +687,11 @@ clojure_rt_macros::implements! {
             let Some(i) = k.as_int() else { return Value::NIL };
             match PersistentVector::nth(this, i) {
                 Some(v) => {
-                    // No MapEntry yet — return a 2-element vector for
-                    // now (matches vanilla `find`'s structural shape on
-                    // vectors well enough; tightens to MapEntry when
-                    // the maps slice lands).
-                    let kv = [k, v];
-                    PersistentVector::from_slice(&kv)
+                    // MapEntry::new borrows; we're holding `v` from
+                    // nth so drop our owned copy after construction.
+                    let me = crate::types::map_entry::MapEntry::new(k, v);
+                    crate::rc::drop_value(v);
+                    me
                 }
                 None => Value::NIL,
             }

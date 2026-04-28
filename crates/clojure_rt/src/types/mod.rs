@@ -7,8 +7,11 @@
 //! `clojure_rt::drop_value` manage it.
 
 pub mod array_chunk;
+pub mod array_map;
+pub mod array_map_seq;
 pub mod keyword;
 pub mod list;
+pub mod map_entry;
 pub mod reduced;
 pub mod string;
 pub mod symbol;

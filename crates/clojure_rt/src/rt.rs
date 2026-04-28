@@ -18,6 +18,8 @@ use crate::protocols::hash::IHash;
 use crate::protocols::ifn::IFn;
 use crate::protocols::indexed::IIndexed;
 use crate::protocols::lookup::ILookup;
+use crate::protocols::map::IMap;
+use crate::protocols::map_entry::IMapEntry;
 use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::named::INamed;
 use crate::protocols::reduce::IReduce;
@@ -26,6 +28,7 @@ use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
 use crate::protocols::stack::IStack;
 use crate::types::reduced::Reduced;
+use crate::types::array_map::PersistentArrayMap;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::{empty_list, PersistentList};
 use crate::types::string::StringObj;
@@ -173,6 +176,26 @@ pub fn rseq(coll: Value) -> Value {
     clojure_rt_macros::dispatch!(IReversible::rseq, &[coll])
 }
 
+// --- Map ops ----------------------------------------------------------------
+
+/// `(dissoc m k)` — return `m` without the entry for `k`.
+#[inline]
+pub fn dissoc(coll: Value, k: Value) -> Value {
+    clojure_rt_macros::dispatch!(IMap::dissoc, &[coll, k])
+}
+
+/// `(key e)` — first half of a map entry.
+#[inline]
+pub fn key(e: Value) -> Value {
+    clojure_rt_macros::dispatch!(IMapEntry::key, &[e])
+}
+
+/// `(val e)` — second half of a map entry.
+#[inline]
+pub fn val(e: Value) -> Value {
+    clojure_rt_macros::dispatch!(IMapEntry::val, &[e])
+}
+
 // --- List + vector constructors --------------------------------------------
 
 /// Build a `PersistentList` from a slice of `Value`s.
@@ -186,6 +209,13 @@ pub fn list(items: &[Value]) -> Value {
 #[inline]
 pub fn vector(items: &[Value]) -> Value {
     PersistentVector::from_slice(items)
+}
+
+/// Build a `PersistentArrayMap` from a flat `[k0, v0, k1, v1, …]`
+/// slice. Caller's elements are dup'd into the new map's storage.
+#[inline]
+pub fn array_map(kvs: &[Value]) -> Value {
+    PersistentArrayMap::from_kvs(kvs)
 }
 
 /// Cons `x` onto the head of `coll`. If `coll` is nil or a non-list
