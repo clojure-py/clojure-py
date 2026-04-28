@@ -25,8 +25,10 @@ use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::named::INamed;
 use crate::protocols::reduce::IReduce;
 use crate::protocols::reversible::IReversible;
+use crate::protocols::persistent_set::IPersistentSet;
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
+use crate::protocols::set::ISet;
 use crate::protocols::stack::IStack;
 use crate::protocols::transient_associative::ITransientAssociative;
 use crate::protocols::transient_collection::ITransientCollection;
@@ -34,6 +36,7 @@ use crate::protocols::transient_map::ITransientMap;
 use crate::protocols::transient_vector::ITransientVector;
 use crate::types::reduced::Reduced;
 use crate::types::array_map::PersistentArrayMap;
+use crate::types::hash_set::PersistentHashSet;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::PersistentList;
 use crate::types::string::StringObj;
@@ -164,8 +167,17 @@ pub fn assoc(coll: Value, k: Value, v: Value) -> Value {
     clojure_rt_macros::dispatch!(IAssociative::assoc, &[coll, k, v])
 }
 
+/// `(contains? coll k)` — JVM `RT.contains` analog: nil → false; sets
+/// route through `ISet::contains`; everything else through
+/// `IAssociative::contains_key`.
 #[inline]
 pub fn contains_key(coll: Value, k: Value) -> Value {
+    if coll.is_nil() {
+        return Value::FALSE;
+    }
+    if crate::protocol::satisfies(&IPersistentSet::MARKER, coll) {
+        return clojure_rt_macros::dispatch!(ISet::contains, &[coll, k]);
+    }
     clojure_rt_macros::dispatch!(IAssociative::contains_key, &[coll, k])
 }
 
@@ -286,6 +298,20 @@ pub fn vector(items: &[Value]) -> Value {
 #[inline]
 pub fn array_map(kvs: &[Value]) -> Value {
     PersistentArrayMap::from_kvs(kvs)
+}
+
+/// Build a `PersistentHashSet` from a slice of items. Borrow semantics:
+/// caller's elements are dup'd into the set's storage. Duplicate items
+/// (under `IEquiv`) collapse.
+#[inline]
+pub fn hash_set(items: &[Value]) -> Value {
+    PersistentHashSet::from_items(items)
+}
+
+/// `(disj s k)` — return `s` without the element `k`.
+#[inline]
+pub fn disj(s: Value, k: Value) -> Value {
+    clojure_rt_macros::dispatch!(ISet::disjoin, &[s, k])
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or

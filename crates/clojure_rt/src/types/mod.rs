@@ -12,6 +12,8 @@ pub mod array_map_seq;
 pub mod cons;
 pub mod hash_map;
 pub mod hash_map_seq;
+pub mod hash_set;
+pub mod hash_set_seq;
 pub mod keyword;
 pub mod lazy_seq;
 pub mod list;
