@@ -339,15 +339,18 @@ clojure_rt_macros::implements! { impl ISequential for VecRSeq {} }
 // Internal helpers
 // ============================================================================
 
+// Per-element walks use `nth_borrowed` so each element is read from
+// the leaf block / tail without dup/drop. The trie descent is
+// zero-atomic.
+
 fn compute_seq_hash_forward(vec: Value, start: i64) -> i32 {
     let count = PersistentVector::count_of(vec);
     let mut hashes: Vec<i32> = Vec::with_capacity((count - start) as usize);
     let mut i = start;
     while i < count {
-        let v = PersistentVector::nth(vec, i).expect("range");
+        let v = PersistentVector::nth_borrowed(vec, i).expect("range");
         let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
         hashes.push(h);
-        crate::rc::drop_value(v);
         i += 1;
     }
     murmur3::hash_ordered(hashes)
@@ -357,10 +360,9 @@ fn compute_seq_hash_reverse(vec: Value, start: i64) -> i32 {
     let mut hashes: Vec<i32> = Vec::with_capacity((start + 1) as usize);
     let mut i = start;
     loop {
-        let v = PersistentVector::nth(vec, i).expect("range");
+        let v = PersistentVector::nth_borrowed(vec, i).expect("range");
         let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
         hashes.push(h);
-        crate::rc::drop_value(v);
         if i == 0 { break; }
         i -= 1;
     }
@@ -377,12 +379,10 @@ fn seqs_forward_equiv(a: Value, b: Value) -> bool {
     }
     let mut i = 0i64;
     while i < ac {
-        let x = PersistentVector::nth(ab.vec, ab.index + i).expect("range");
-        let y = PersistentVector::nth(bb.vec, bb.index + i).expect("range");
+        let x = PersistentVector::nth_borrowed(ab.vec, ab.index + i).expect("range");
+        let y = PersistentVector::nth_borrowed(bb.vec, bb.index + i).expect("range");
         let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[x, y])
             .as_bool().unwrap_or(false);
-        crate::rc::drop_value(x);
-        crate::rc::drop_value(y);
         if !eq { return false; }
         i += 1;
     }
@@ -397,12 +397,10 @@ fn seqs_reverse_equiv(a: Value, b: Value) -> bool {
     }
     let mut i = ab.index;
     loop {
-        let x = PersistentVector::nth(ab.vec, i).expect("range");
-        let y = PersistentVector::nth(bb.vec, i).expect("range");
+        let x = PersistentVector::nth_borrowed(ab.vec, i).expect("range");
+        let y = PersistentVector::nth_borrowed(bb.vec, i).expect("range");
         let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[x, y])
             .as_bool().unwrap_or(false);
-        crate::rc::drop_value(x);
-        crate::rc::drop_value(y);
         if !eq { return false; }
         if i == 0 { break; }
         i -= 1;

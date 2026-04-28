@@ -220,42 +220,35 @@ impl PersistentVector {
     }
 
     /// Out-of-bounds returns `None`. Caller decides between
-    /// throw-on-OOB and not-found semantics.
+    /// throw-on-OOB and not-found semantics. The returned Value owns
+    /// one ref — caller is responsible for `drop_value` when done.
     pub fn nth(this: Value, n: i64) -> Option<Value> {
+        let v = Self::nth_borrowed(this, n)?;
+        crate::rc::dup(v);
+        Some(v)
+    }
+
+    /// Like `nth` but the returned Value's ref is **borrowed** from
+    /// the underlying leaf block (or tail). Caller must NOT
+    /// `drop_value` it. Used by per-element read loops (hash, equiv,
+    /// reduce) that don't need a separate owned ref to pass through
+    /// dispatch — the surrounding leaf node's Arc keeps the element
+    /// alive for the duration of the call.
+    ///
+    /// The trie descent is done entirely with borrows
+    /// (`Arc::as_ref()` + `Option::as_ref()`); zero atomic operations
+    /// on the walk.
+    pub(crate) fn nth_borrowed(this: Value, n: i64) -> Option<Value> {
         let body = unsafe { PersistentVector::body(this) };
         if n < 0 || n >= body.count {
             return None;
         }
         let tail_off = tail_offset(body.count, body.tail.len());
         if n >= tail_off {
-            let v = body.tail[(n - tail_off) as usize];
-            crate::rc::dup(v);
-            return Some(v);
+            return Some(body.tail[(n - tail_off) as usize]);
         }
-        // Walk the trie down to a leaf. We don't actually need to
-        // clone Arcs; we just need a reference that outlives one hop
-        // and is then replaced. Using a local `Arc<PVNode>` cursor
-        // (cloned once per hop) keeps the borrow checker happy.
-        let mut node: Arc<PVNode> = body.root.clone();
-        let mut s = body.shift;
-        while s > 0 {
-            let idx = ((n >> s) & MASK) as usize;
-            let next = match node.as_ref() {
-                PVNode::Internal { children } => children[idx]
-                    .as_ref()
-                    .expect("trie invariant: child present")
-                    .clone(),
-                PVNode::Leaf { .. } => panic!("trie invariant: leaf above level 0"),
-            };
-            node = next;
-            s -= SHIFT_STEP;
-        }
-        let v = match node.as_ref() {
-            PVNode::Leaf { children } => children[(n & MASK) as usize],
-            PVNode::Internal { .. } => panic!("trie invariant: internal at level 0"),
-        };
-        crate::rc::dup(v);
-        Some(v)
+        let leaf = leaf_block_at(&body.root, body.shift, n);
+        Some(leaf[(n & MASK) as usize])
     }
 
     /// Path-copy assoc at an existing index. `n == count` extends via
@@ -948,15 +941,33 @@ fn leaf_block_at<'a>(root: &'a Arc<PVNode>, shift: i32, i: i64) -> &'a [Value; B
 // Internal helpers — hash + equiv
 // ============================================================================
 
+// Per-element hash and equiv walks use the same borrow-by-leaf-block
+// shape as `IReduce::reduce_*`: each element is read from the leaf
+// node's `[Value; 32]` directly, passed through dispatch with no
+// dup/drop pair. The trie descent itself is zero-atomic.
+
 fn compute_vector_hash(this: Value) -> i32 {
     let body = unsafe { PersistentVector::body(this) };
-    let mut hashes: Vec<i32> = Vec::with_capacity(body.count as usize);
+    let count = body.count;
+    let tail_off = tail_offset(body.count, body.tail.len());
+    let mut hashes: Vec<i32> = Vec::with_capacity(count as usize);
+
     let mut i: i64 = 0;
-    while i < body.count {
-        let v = PersistentVector::nth(this, i).expect("internal: index in range");
+    while i < tail_off {
+        let leaf = leaf_block_at(&body.root, body.shift, i);
+        let block_start = i & !MASK;
+        let block_end = (block_start + BRANCHING as i64).min(tail_off);
+        for j in (i - block_start) as usize..(block_end - block_start) as usize {
+            let h = clojure_rt_macros::dispatch!(IHash::hash, &[leaf[j]])
+                .as_int().unwrap_or(0) as i32;
+            hashes.push(h);
+        }
+        i = block_end;
+    }
+    while i < count {
+        let v = body.tail[(i - tail_off) as usize];
         let h = clojure_rt_macros::dispatch!(IHash::hash, &[v]).as_int().unwrap_or(0) as i32;
         hashes.push(h);
-        crate::rc::drop_value(v);
         i += 1;
     }
     murmur3::hash_ordered(hashes)
@@ -968,15 +979,17 @@ fn vectors_equiv(a: Value, b: Value) -> bool {
     if ab.count != bb.count {
         return false;
     }
+    // Lockstep walk: pull each element via `nth_borrowed` (zero-
+    // atomic) and pass straight to IEquiv. The two vectors may have
+    // different shift / tail-len, so we walk by index and let
+    // `nth_borrowed` route each access to its own leaf or tail.
     let mut i: i64 = 0;
     while i < ab.count {
-        let x = PersistentVector::nth(a, i).expect("range");
-        let y = PersistentVector::nth(b, i).expect("range");
+        let x = PersistentVector::nth_borrowed(a, i).expect("range");
+        let y = PersistentVector::nth_borrowed(b, i).expect("range");
         let eq = clojure_rt_macros::dispatch!(IEquiv::equiv, &[x, y])
             .as_bool()
             .unwrap_or(false);
-        crate::rc::drop_value(x);
-        crate::rc::drop_value(y);
         if !eq {
             return false;
         }
