@@ -54,10 +54,25 @@ fn compare_and_set_fails_on_mismatch() {
 
 // --- swap! ----------------------------------------------------------------
 
-/// Helper IFn: identity on the first arg. Used to test swap! arity 2
-/// (no extra args) without dragging in a heavyweight test fixture.
+/// Helper IFn bodies. Pure fns are stateless `extern "C"` slots; the
+/// test fns that need closure-style state (`constantly`,
+/// `watch_recorder`) read from a thread-local set up by the test
+/// before the call.
 mod fns {
     use clojure_rt::value::Value;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Last `(old, new)` int pair observed by `watch_recorder_5`.
+        /// Reset to `None` by tests before installing the watch.
+        pub static LAST_WATCH: Cell<Option<(i64, i64)>> = const { Cell::new(None) };
+
+        /// Return value for `constantly_invoke_2`. The Value bytes
+        /// are stored uninterpreted; the caller is responsible for
+        /// keeping the underlying heap object alive while the fn is
+        /// in scope.
+        pub static CONSTANT_RETURN: Cell<Value> = const { Cell::new(Value::NIL) };
+    }
 
     /// `(fn [x] x)` — pure copy-out for swap_2 sanity.
     pub unsafe extern "C" fn id_invoke_2(args: *const Value, _n: usize) -> Value {
@@ -90,6 +105,47 @@ mod fns {
                 + z.as_int().unwrap_or(0),
         )
     }
+
+    /// `(fn [x] (even? x))`.
+    pub unsafe extern "C" fn even_q_invoke_2(args: *const Value, _n: usize) -> Value {
+        let x = unsafe { *args.add(1) };
+        if x.as_int().unwrap_or(0) % 2 == 0 { Value::TRUE } else { Value::FALSE }
+    }
+
+    /// `(fn [x] (pos? x))`.
+    pub unsafe extern "C" fn positive_q_invoke_2(args: *const Value, _n: usize) -> Value {
+        let x = unsafe { *args.add(1) };
+        if x.as_int().unwrap_or(0) > 0 { Value::TRUE } else { Value::FALSE }
+    }
+
+    /// `(fn [x] (neg? x))`.
+    pub unsafe extern "C" fn negative_q_invoke_2(args: *const Value, _n: usize) -> Value {
+        let x = unsafe { *args.add(1) };
+        if x.as_int().unwrap_or(0) < 0 { Value::TRUE } else { Value::FALSE }
+    }
+
+    /// `(fn [_] CONSTANT_RETURN)` — returns whatever the test stashed
+    /// in the `CONSTANT_RETURN` thread-local, dup'd for the caller.
+    pub unsafe extern "C" fn constantly_invoke_2(_args: *const Value, _n: usize) -> Value {
+        let v = CONSTANT_RETURN.with(|c| c.get());
+        clojure_rt::rc::dup(v);
+        v
+    }
+
+    /// `(fn [k r old new])` — records `(old.as_int(), new.as_int())`
+    /// into `LAST_WATCH` and returns nil. Watch arity is 5 (receiver
+    /// + 4 args), so the slot is `invoke_5`.
+    pub unsafe extern "C" fn watch_recorder_invoke_5(args: *const Value, _n: usize) -> Value {
+        let old = unsafe { *args.add(3) };
+        let new_v = unsafe { *args.add(4) };
+        LAST_WATCH.with(|c| {
+            c.set(Some((
+                old.as_int().unwrap_or(0),
+                new_v.as_int().unwrap_or(0),
+            )));
+        });
+        Value::NIL
+    }
 }
 
 /// Synthetic foreign type tagged with one of the test fns above.
@@ -114,20 +170,27 @@ mod test_fn_type {
         let id_seed = COUNTER.fetch_add(1, Ordering::Relaxed);
         let name: &'static str = Box::leak(format!("test_fn_{id_seed}").into_boxed_str());
         unsafe fn destruct(_h: *mut clojure_rt::Header) {}
-        type_registry::register_dynamic_type(name, Layout::new::<()>(), destruct)
+        // Zero-byte body — the test fn carries no per-instance state.
+        let layout = Layout::from_size_align(0, 1).unwrap();
+        type_registry::register_dynamic_type(name, layout, destruct)
     }
 
     /// Returns a `Value` whose tag is a fresh dynamic TypeId, bound
-    /// to `invoke_fn` as the implementation of `IFn::invoke_<arity>`.
-    /// The returned Value carries no payload (foreign-tag, no heap).
+    /// to `fn_ptr` as the implementation of `invoke_method`. Backed
+    /// by a real heap allocation (zero-byte body) so `rc::share` /
+    /// `dup` / `drop` work the same as on any other heap Value —
+    /// matters when the synthetic fn is published into an atom's
+    /// validator/watches slot, which forces a `share` call.
     pub fn make(invoke_method: &clojure_rt::protocol::ProtocolMethod, fn_ptr: MethodFn) -> Value {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| { clojure_rt::init(); });
         let tid = fresh_tid();
         extend_type(tid, invoke_method, fn_ptr);
-        // Construct a non-heap Value with this tag. We use the
-        // pseudo-foreign shape: tag = tid, payload = 0.
-        Value { tag: tid, _pad: 0, payload: 0 }
+        let layout = Layout::from_size_align(0, 1).unwrap();
+        unsafe {
+            let h = clojure_rt::gc::rcimmix::RCIMMIX.alloc_inline(layout, tid);
+            Value::from_heap(h)
+        }
     }
 
     pub fn id() -> Value {
@@ -141,6 +204,24 @@ mod test_fn_type {
     }
     pub fn add3() -> Value {
         make(&IFn::INVOKE_4, super::fns::add3_invoke_4)
+    }
+    pub fn even_q() -> Value {
+        make(&IFn::INVOKE_2, super::fns::even_q_invoke_2)
+    }
+    pub fn positive_q() -> Value {
+        make(&IFn::INVOKE_2, super::fns::positive_q_invoke_2)
+    }
+    pub fn negative_q() -> Value {
+        make(&IFn::INVOKE_2, super::fns::negative_q_invoke_2)
+    }
+    /// Caller pre-stashes the desired return value into the
+    /// `CONSTANT_RETURN` thread-local; this fn pulls it back out.
+    pub fn constantly() -> Value {
+        make(&IFn::INVOKE_2, super::fns::constantly_invoke_2)
+    }
+    /// Watch fn — its receiver-plus-four-arg arity is 5.
+    pub fn watch_recorder() -> Value {
+        make(&IFn::INVOKE_5, super::fns::watch_recorder_invoke_5)
     }
 }
 
@@ -200,20 +281,163 @@ fn deref_via_protocol() {
     drop_all(&[v, a]);
 }
 
+// --- Mutable meta ---------------------------------------------------------
+
 #[test]
-fn with_meta_returns_distinct_atom_with_same_value() {
+fn meta_starts_nil_and_reset_meta_installs_in_place() {
     init();
-    let a = rt::atom(Value::int(123));
-    let meta = rt::array_map(&[rt::keyword(None, "tag"), Value::int(7)]);
-    let a2 = rt::with_meta(a, meta);
-    // Same value snapshot.
-    let v = rt::deref(a2);
-    assert_eq!(v.as_int(), Some(123));
-    // Mutating one doesn't affect the other.
-    let _ = rt::reset_bang(a2, Value::int(0));
-    let v_orig = rt::deref(a);
-    assert_eq!(v_orig.as_int(), Some(123));
-    drop_all(&[v, v_orig, a, a2, meta]);
+    let a = rt::atom(Value::int(0));
+    assert!(rt::meta(a).is_nil());
+    let m = rt::array_map(&[rt::keyword(None, "tag"), Value::int(7)]);
+    let returned = rt::reset_meta_bang(a, m);
+    // reset-meta! returns the new meta.
+    assert!(rt::equiv(returned, m).as_bool().unwrap_or(false));
+    // (meta a) now reflects the install — no new atom created.
+    let read = rt::meta(a);
+    assert!(rt::equiv(read, m).as_bool().unwrap_or(false));
+    drop_all(&[returned, read, m, a]);
+}
+
+#[test]
+fn alter_meta_arity_2_applies_fn_to_current() {
+    // (alter-meta! a (constantly {:k 1})) — the no-extra-args path.
+    init();
+    let a = rt::atom(Value::int(0));
+    let new_m = rt::array_map(&[rt::keyword(None, "k"), Value::int(1)]);
+    fns::CONSTANT_RETURN.with(|c| c.set(new_m));
+    let constantly = test_fn_type::constantly();
+    let r = rt::alter_meta_bang(a, constantly, &[]);
+    assert!(rt::equiv(r, new_m).as_bool().unwrap_or(false));
+    let read = rt::meta(a);
+    assert!(rt::equiv(read, new_m).as_bool().unwrap_or(false));
+    drop_all(&[r, read, new_m, a]);
+}
+
+// --- Validators -----------------------------------------------------------
+
+#[test]
+fn set_validator_rejects_install_when_current_value_fails() {
+    init();
+    let a = rt::atom(Value::int(0));
+    // Validator: even? — current value 0 is even, install OK.
+    let even_q = test_fn_type::even_q();
+    let _ = rt::set_validator_bang(a, even_q);
+    // Now make the current value odd via reset (skipping validator
+    // briefly is impossible; reset! goes through validator). Set
+    // first, then change the value through the validator.
+    let r1 = rt::reset_bang(a, Value::int(2));
+    assert_eq!(r1.as_int(), Some(2));
+    drop_value(r1);
+    // Try to install a validator that the current value (2) would
+    // pass — should succeed.
+    let positive = test_fn_type::positive_q();
+    let r = rt::set_validator_bang(a, positive);
+    assert!(r.is_nil());
+    // Now install one that the current value would FAIL.
+    let neg_q = test_fn_type::negative_q();
+    let r = rt::set_validator_bang(a, neg_q);
+    assert!(r.is_exception(), "set-validator! should reject");
+    drop_value(r);
+    drop_value(a);
+}
+
+#[test]
+fn validator_rejects_reset_when_predicate_fails() {
+    init();
+    let a = rt::atom(Value::int(2));
+    let even_q = test_fn_type::even_q();
+    let _ = rt::set_validator_bang(a, even_q);
+    // Try to reset to an odd value — should error, value unchanged.
+    let r = rt::reset_bang(a, Value::int(3));
+    assert!(r.is_exception(), "validator should reject odd reset");
+    drop_value(r);
+    let v = rt::deref(a);
+    assert_eq!(v.as_int(), Some(2));
+    drop_all(&[v, a]);
+}
+
+#[test]
+fn validator_rejects_swap_without_advancing_value() {
+    init();
+    let a = rt::atom(Value::int(2));
+    let even_q = test_fn_type::even_q();
+    let _ = rt::set_validator_bang(a, even_q);
+    // swap! by inc — current 2 → 3 fails the validator.
+    let inc = test_fn_type::inc();
+    let r = rt::swap_bang(a, inc, &[]);
+    assert!(r.is_exception(), "validator should reject odd swap result");
+    drop_value(r);
+    let v = rt::deref(a);
+    assert_eq!(v.as_int(), Some(2));
+    drop_all(&[v, a]);
+}
+
+#[test]
+fn get_validator_returns_installed_or_nil() {
+    init();
+    let a = rt::atom(Value::int(0));
+    assert!(rt::get_validator(a).is_nil());
+    let even_q = test_fn_type::even_q();
+    let _ = rt::set_validator_bang(a, even_q);
+    let v = rt::get_validator(a);
+    assert!(!v.is_nil());
+    drop_value(v);
+    // Clear it.
+    let _ = rt::set_validator_bang(a, Value::NIL);
+    assert!(rt::get_validator(a).is_nil());
+    drop_value(a);
+}
+
+// --- Watches --------------------------------------------------------------
+
+#[test]
+fn add_watch_fires_on_reset_with_old_and_new() {
+    init();
+    let a = rt::atom(Value::int(10));
+    let key = rt::keyword(None, "w1");
+    fns::LAST_WATCH.with(|c| c.set(None));
+    let watch_fn = test_fn_type::watch_recorder();
+    let _ = rt::add_watch(a, key, watch_fn);
+    let r = rt::reset_bang(a, Value::int(20));
+    drop_value(r);
+    let pair = fns::LAST_WATCH.with(|c| c.get());
+    assert_eq!(pair, Some((10, 20)));
+    drop_all(&[key, a]);
+}
+
+#[test]
+fn remove_watch_stops_firing() {
+    init();
+    let a = rt::atom(Value::int(0));
+    let key = rt::keyword(None, "w1");
+    fns::LAST_WATCH.with(|c| c.set(None));
+    let watch_fn = test_fn_type::watch_recorder();
+    let _ = rt::add_watch(a, key, watch_fn);
+    let _ = rt::reset_bang(a, Value::int(1));
+    let _ = rt::remove_watch(a, key);
+    let _ = rt::reset_bang(a, Value::int(99));
+    // Last-fired pair must reflect the pre-removal transition only.
+    let pair = fns::LAST_WATCH.with(|c| c.get());
+    assert_eq!(pair, Some((0, 1)));
+    drop_all(&[key, a]);
+}
+
+#[test]
+fn watches_fire_on_swap_and_compare_and_set() {
+    init();
+    let a = rt::atom(Value::int(0));
+    let key = rt::keyword(None, "w1");
+    fns::LAST_WATCH.with(|c| c.set(None));
+    let watch_fn = test_fn_type::watch_recorder();
+    let _ = rt::add_watch(a, key, watch_fn);
+    // swap! +5 → from 0 to 5.
+    let f = test_fn_type::add();
+    let _ = rt::swap_bang(a, f, &[Value::int(5)]);
+    assert_eq!(fns::LAST_WATCH.with(|c| c.get()), Some((0, 5)));
+    // compare-and-set! 5 → 7.
+    let _ = rt::compare_and_set(a, Value::int(5), Value::int(7));
+    assert_eq!(fns::LAST_WATCH.with(|c| c.get()), Some((5, 7)));
+    drop_all(&[key, a]);
 }
 
 // --- Concurrent stress ----------------------------------------------------

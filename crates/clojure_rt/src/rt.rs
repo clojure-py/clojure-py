@@ -10,6 +10,9 @@
 use crate::protocols::associative::IAssociative;
 use crate::protocols::atom::IAtom;
 use crate::protocols::chunked_seq::IChunkedSeq;
+use crate::protocols::r#ref::IRef;
+use crate::protocols::reference::IReference;
+use crate::protocols::watchable::IWatchable;
 use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
@@ -349,6 +352,70 @@ pub fn swap_bang(a: Value, f: Value, args: &[Value]) -> Value {
         3 => clojure_rt_macros::dispatch!(IAtom::swap, &[a, f, args[0], args[1], args[2]]),
         n => panic!(
             "rt::swap_bang: arity {} exceeds current IAtom::swap cap of 3 user args — extend protocols/atom.rs",
+            n
+        ),
+    }
+}
+
+// --- IRef (validators) ------------------------------------------------------
+
+/// `(set-validator! a f)` — install `f` as `a`'s validator (or `nil`
+/// to clear). Throws if the current value would fail the new fn.
+#[inline]
+pub fn set_validator_bang(a: Value, f: Value) -> Value {
+    clojure_rt_macros::dispatch!(IRef::set_validator, &[a, f])
+}
+
+/// `(get-validator a)` — return the current validator (or `nil`).
+#[inline]
+pub fn get_validator(a: Value) -> Value {
+    clojure_rt_macros::dispatch!(IRef::get_validator, &[a])
+}
+
+// --- IWatchable -------------------------------------------------------------
+
+/// `(add-watch a key f)` — install `f` as the watch under `key`.
+/// `f` is called with `(key a old new)` after every successful
+/// value transition.
+#[inline]
+pub fn add_watch(a: Value, key: Value, f: Value) -> Value {
+    clojure_rt_macros::dispatch!(IWatchable::add_watch, &[a, key, f])
+}
+
+/// `(remove-watch a key)` — uninstall the watch for `key`.
+#[inline]
+pub fn remove_watch(a: Value, key: Value) -> Value {
+    clojure_rt_macros::dispatch!(IWatchable::remove_watch, &[a, key])
+}
+
+/// Fire watches for the `(old, new)` transition. Internal helper for
+/// custom reference-type implementors; built-in `Atom` calls this
+/// from its commit paths automatically.
+#[inline]
+pub fn notify_watches(a: Value, old: Value, new: Value) -> Value {
+    clojure_rt_macros::dispatch!(IWatchable::notify_watches, &[a, old, new])
+}
+
+// --- IReference (mutable meta) ---------------------------------------------
+
+/// `(reset-meta! a m)` — overwrite `a`'s meta with `m`. Returns `m`.
+#[inline]
+pub fn reset_meta_bang(a: Value, m: Value) -> Value {
+    clojure_rt_macros::dispatch!(IReference::reset_meta, &[a, m])
+}
+
+/// `(alter-meta! a f args…)` — atomically apply `f` to the current
+/// meta plus `args`, install the result, return the new meta. Caps
+/// at 3 user args mirroring `swap_bang`.
+#[inline]
+pub fn alter_meta_bang(a: Value, f: Value, args: &[Value]) -> Value {
+    match args.len() {
+        0 => clojure_rt_macros::dispatch!(IReference::alter_meta, &[a, f]),
+        1 => clojure_rt_macros::dispatch!(IReference::alter_meta, &[a, f, args[0]]),
+        2 => clojure_rt_macros::dispatch!(IReference::alter_meta, &[a, f, args[0], args[1]]),
+        3 => clojure_rt_macros::dispatch!(IReference::alter_meta, &[a, f, args[0], args[1], args[2]]),
+        n => panic!(
+            "rt::alter_meta_bang: arity {} exceeds current IReference::alter_meta cap of 3 user args — extend protocols/reference.rs",
             n
         ),
     }
