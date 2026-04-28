@@ -144,3 +144,43 @@ fn does_not_mutate_source_persistent() {
     assert_eq!(rt::count(v).as_int(), Some(3));
     drop_all(&[t, v, _v2]);
 }
+
+#[test]
+fn many_assoc_bang_in_trie_share_no_extra_allocations() {
+    // Build a 200-element vector. The first assoc! at a trie position
+    // will path-copy that leaf-block via Arc::make_mut (the trie was
+    // shared with the source persistent). Subsequent assoc!s at
+    // *different* leaf-blocks each path-copy *that* leaf-block but
+    // not the rest. Assoc!s at the *same* leaf-block reuse it
+    // in-place. This test just verifies correctness over many
+    // mutations across all trie regions; the in-place perf shape is
+    // observed indirectly via no use-after-free / no dup-drop bugs
+    // showing up under stress.
+    init();
+    let xs = ints(&(0..200).collect::<Vec<_>>());
+    let v = rt::vector(&xs);
+    let mut t = rt::transient(v);
+
+    // Touch every index, replacing with i*10.
+    for i in 0..200i64 {
+        let nt = rt::assoc_bang(t, Value::int(i), Value::int(i * 10));
+        drop_value(t);
+        t = nt;
+    }
+    let v2 = rt::persistent_(t);
+    drop_value(t);
+
+    assert_eq!(rt::count(v2).as_int(), Some(200));
+    for i in 0..200i64 {
+        let r = rt::nth(v2, Value::int(i));
+        assert_eq!(r.as_int(), Some(i * 10), "nth({i}) after batch assoc!");
+        drop_value(r);
+    }
+    // Source untouched.
+    for i in 0..200i64 {
+        let r = rt::nth(v, Value::int(i));
+        assert_eq!(r.as_int(), Some(i));
+        drop_value(r);
+    }
+    drop_all(&[v, v2]);
+}

@@ -4,12 +4,22 @@
 //!
 //! Storage layout matches the persistent shape: count, shift,
 //! root (Arc<PVNode>), tail (Vec<Value>), plus an `alive` flag.
-//! `tail` is a `Vec<Value>` — mutable in place — so the hot
-//! batch-`conj!` case never path-copies. Trie-side operations
-//! (`assoc!` of a trie-position index, `pop!` past a tail boundary)
-//! currently fall back to persistent-style path-copy; switching to
-//! `Arc::get_mut`-based in-place editing of uniquely-owned trie
-//! nodes is a follow-up perf step.
+//!
+//! All mutations operate in place where ownership permits:
+//! - **Tail**: `Vec<Value>` is mutable, push/pop/replace happen
+//!   without any path-copy.
+//! - **Trie**: nodes are accessed via `Arc::make_mut`. The first
+//!   touch on a shared node clones it (path-copy at that level
+//!   only); subsequent mutations along the same path hit the
+//!   uniquely-owned node directly with zero allocations and zero
+//!   atomic refcount ops on the trie structure.
+//!
+//! For batch-conj! workflows where the underlying trie nodes are
+//! mostly fresh allocations, this collapses to in-place pushes
+//! through the trie. For assoc!-heavy workflows on a transient that
+//! still shares its trie with the persistent source, the first hit
+//! at each level pays a clone (same as a persistent path-copy);
+//! subsequent hits are free.
 //!
 //! `persistent!` flips `alive` to false and converts the body back
 //! to a `PersistentVector`. Subsequent mutation calls throw.
@@ -22,7 +32,10 @@ use crate::protocols::indexed::IIndexed;
 use crate::protocols::transient_associative::ITransientAssociative;
 use crate::protocols::transient_collection::ITransientCollection;
 use crate::protocols::transient_vector::ITransientVector;
-use crate::types::vector::PersistentVector;
+use crate::types::vector::{
+    self, PersistentVector,
+    BRANCHING_PUB, MASK_PUB, SHIFT_STEP_PUB,
+};
 use crate::value::Value;
 
 clojure_rt_macros::register_type! {
@@ -42,7 +55,7 @@ impl TransientVector {
     /// unchanged.
     pub fn from_persistent(p: Value) -> Value {
         let (count, shift, root, p_tail) = PersistentVector::parts(p);
-        let mut tail: Vec<Value> = Vec::with_capacity(32);
+        let mut tail: Vec<Value> = Vec::with_capacity(BRANCHING_PUB);
         for &t in p_tail.iter() {
             crate::rc::dup(t);
             tail.push(t);
@@ -73,7 +86,7 @@ clojure_rt_macros::implements! {
             if let Err(e) = TransientVector::ensure_alive(this) { return e; }
             let body = unsafe { TransientVector::body_mut(this) };
 
-            if body.tail.len() < 32 {
+            if body.tail.len() < BRANCHING_PUB {
                 crate::rc::dup(x);
                 body.tail.push(x);
                 body.count += 1;
@@ -81,19 +94,43 @@ clojure_rt_macros::implements! {
                 return this;
             }
 
-            // Tail full — promote it into the trie. We rebuild a
-            // PersistentVector from the transient's current state,
-            // call its `cons` (which path-copies), then re-extract
-            // the new state into the transient. This is the
-            // path-copy fallback for the trie side; the tail-
-            // append fast path above is what makes batch conj! a
-            // win even with this implementation.
-            let snapshot = TransientVector::snapshot_as_persistent(this);
-            let next = PersistentVector::cons(snapshot, x);
-            crate::rc::drop_value(snapshot);
-            // Update transient's state from the new persistent.
-            TransientVector::overwrite_from_persistent(this, next);
-            crate::rc::drop_value(next);
+            // Tail full → promote it to a leaf node and push into
+            // the trie. The Vec drains into a [Value; 32]; refs move
+            // through (no per-element dup or drop).
+            let mut leaf_block = [Value::NIL; BRANCHING_PUB];
+            let drained = std::mem::replace(&mut body.tail, Vec::with_capacity(1));
+            for (i, v) in drained.into_iter().enumerate() {
+                leaf_block[i] = v;
+            }
+            let leaf_arc: Arc<crate::types::vector::PVNode> = Arc::new(
+                crate::types::vector::PVNode::Leaf { children: leaf_block }
+            );
+
+            let trie_count = body.count - BRANCHING_PUB as i64;
+            if (trie_count >> SHIFT_STEP_PUB) > (1i64 << body.shift) - 1 {
+                // Root is full at this depth — grow up by one level.
+                // The new root has the old root in slot 0 and a fresh
+                // path for the just-promoted leaf in slot 1.
+                let path = vector::new_path_pub(body.shift, leaf_arc);
+                let mut children = empty_children();
+                let placeholder = vector::empty_internal_pub();
+                let old_root = std::mem::replace(&mut body.root, placeholder);
+                children[0] = Some(old_root);
+                children[1] = Some(path);
+                body.root = Arc::new(
+                    crate::types::vector::PVNode::Internal { children }
+                );
+                body.shift += SHIFT_STEP_PUB;
+            } else {
+                vector::push_tail_in_place_pub(
+                    &mut body.root, body.shift, body.count, leaf_arc,
+                );
+            }
+
+            // New tail = [x].
+            crate::rc::dup(x);
+            body.tail.push(x);
+            body.count += 1;
             crate::rc::dup(this);
             this
         }
@@ -105,9 +142,6 @@ clojure_rt_macros::implements! {
             let count = body.count;
             let shift = body.shift;
             let root = body.root.clone();
-            // Drain the transient's tail into a fresh Box<[Value]>.
-            // The Vec gives up ownership of every element ref; the
-            // new persistent's body takes those refs without re-dup.
             let tail = std::mem::take(&mut body.tail).into_boxed_slice();
 
             crate::types::vector::PersistentVector::from_owned_parts(
@@ -147,17 +181,11 @@ clojure_rt_macros::implements! {
                 crate::rc::dup(v);
                 body.tail[slot] = v;
                 crate::rc::drop_value(old);
-                crate::rc::dup(this);
-                return this;
+            } else {
+                // Trie position: in-place mutation via Arc::make_mut
+                // (clones nodes lazily on first touch, in-place after).
+                vector::assoc_in_place_pub(&mut body.root, body.shift, i, v);
             }
-            // Trie-position: path-copy via the persistent assoc, then
-            // overwrite transient state. (Future: in-place via
-            // Arc::get_mut on uniquely-owned subtrees.)
-            let snapshot = TransientVector::snapshot_as_persistent(this);
-            let next = PersistentVector::assoc(snapshot, i, v);
-            crate::rc::drop_value(snapshot);
-            TransientVector::overwrite_from_persistent(this, next);
-            crate::rc::drop_value(next);
             crate::rc::dup(this);
             this
         }
@@ -182,20 +210,72 @@ clojure_rt_macros::implements! {
                 return this;
             }
             if body.count == 1 {
-                // Only one elem total — in the tail.
                 let last = body.tail.pop().unwrap();
                 crate::rc::drop_value(last);
                 body.count = 0;
                 crate::rc::dup(this);
                 return this;
             }
-            // Tail has 1 elem; trie has more. Path-copy via the
-            // persistent pop, then overwrite transient state.
-            let snapshot = TransientVector::snapshot_as_persistent(this);
-            let next = PersistentVector::pop(snapshot);
-            crate::rc::drop_value(snapshot);
-            TransientVector::overwrite_from_persistent(this, next);
-            crate::rc::drop_value(next);
+            // Tail has 1 elem; trie has more. In-place: drop the
+            // tail elem, pop the rightmost trie leaf into the new
+            // tail, possibly shrink shift.
+            let last = body.tail.pop().unwrap();
+            crate::rc::drop_value(last);
+
+            let leaf_arc = vector::pop_tail_in_place_pub(
+                &mut body.root, body.shift, body.count,
+            );
+
+            // Materialize the new tail by dup-ing each child of the
+            // returned leaf. We deliberately don't try to mutate
+            // through the Arc — `pop_tail_in_place_pub` may return a
+            // leaf that's still shared with the persistent source
+            // (when `make_mut` cloned a parent without affecting the
+            // leaf), so unique-ownership isn't guaranteed. Dup-and-
+            // drop is correct regardless of refcount: if the leaf
+            // hits zero on the `drop`, `PVNode::Drop` decrefs each
+            // child exactly once, balancing our N dups; if the leaf
+            // stays alive (still shared), our dups are the new tail's
+            // owned refs and the leaf's children are unaffected.
+            let mut new_tail: Vec<Value> = Vec::with_capacity(BRANCHING_PUB);
+            match leaf_arc.as_ref() {
+                crate::types::vector::PVNode::Leaf { children } => {
+                    for &v in children.iter() {
+                        crate::rc::dup(v);
+                        new_tail.push(v);
+                    }
+                }
+                crate::types::vector::PVNode::Internal { .. } => {
+                    unreachable!("pop_tail returned an Internal node");
+                }
+            }
+            drop(leaf_arc);
+            body.tail = new_tail;
+
+            // Shrink shift if the root is now an Internal with a
+            // single populated child.
+            if body.shift > SHIFT_STEP_PUB {
+                let collapsible = match body.root.as_ref() {
+                    crate::types::vector::PVNode::Internal { children } => {
+                        let count = children.iter().filter(|c| c.is_some()).count();
+                        count == 1
+                    }
+                    _ => false,
+                };
+                if collapsible {
+                    let root_node = Arc::make_mut(&mut body.root);
+                    if let crate::types::vector::PVNode::Internal { children } = root_node {
+                        let idx = (0..BRANCHING_PUB)
+                            .find(|&i| children[i].is_some())
+                            .unwrap();
+                        let only = children[idx].take().unwrap();
+                        body.root = only;
+                        body.shift -= SHIFT_STEP_PUB;
+                    }
+                }
+            }
+
+            body.count -= 1;
             crate::rc::dup(this);
             this
         }
@@ -227,9 +307,6 @@ clojure_rt_macros::implements! {
                     i, body.count,
                 ));
             }
-            // Borrow into tail or trie via a transient snapshot.
-            // (TransientVector currently uses the same trie storage
-            // as persistent, so we can read directly.)
             transient_nth_borrowed(body, i)
         }
         fn nth_3(this: Value, n: Value, not_found: Value) -> Value {
@@ -248,7 +325,7 @@ clojure_rt_macros::implements! {
 }
 
 // ============================================================================
-// Internal helpers — borrow nth + persistent snapshot for fallback paths
+// Internal helpers
 // ============================================================================
 
 fn transient_nth_borrowed(body: &TransientVector, i: i64) -> Value {
@@ -258,61 +335,18 @@ fn transient_nth_borrowed(body: &TransientVector, i: i64) -> Value {
         crate::rc::dup(v);
         return v;
     }
-    let v = crate::types::vector::leaf_block_at_pub(&body.root, body.shift, i)
-        [(i & 0x1f) as usize];
+    let v = vector::leaf_block_at_pub(&body.root, body.shift, i)
+        [(i & MASK_PUB) as usize];
     crate::rc::dup(v);
     v
 }
 
-impl TransientVector {
-    /// Materialize the transient's current state as a fresh
-    /// PersistentVector for the path-copy fallback paths in
-    /// `conj_bang` / `assoc_bang` / `pop_bang`. The persistent shares
-    /// the trie root Arc (cheap) and copies the tail (one dup per
-    /// element). Caller owns one ref; must drop_value.
-    fn snapshot_as_persistent(this: Value) -> Value {
-        let body = unsafe { TransientVector::body(this) };
-        let root = body.root.clone();
-        let mut tail_box: Vec<Value> = Vec::with_capacity(body.tail.len());
-        for &t in body.tail.iter() {
-            crate::rc::dup(t);
-            tail_box.push(t);
-        }
-        crate::types::vector::PersistentVector::from_owned_parts(
-            body.count,
-            body.shift,
-            root,
-            tail_box.into_boxed_slice(),
-        )
-    }
-
-    /// Replace the transient's count/shift/root/tail from a
-    /// just-computed persistent. Drops the old transient state's
-    /// element refs. Used by the path-copy fallback paths to lift
-    /// the persistent result back into the transient's body.
-    fn overwrite_from_persistent(this: Value, p: Value) {
-        let (p_count, p_shift, p_root, p_tail) =
-            crate::types::vector::PersistentVector::parts(p);
-        let body = unsafe { TransientVector::body_mut(this) };
-        // Drop old tail element refs.
-        for &v in body.tail.iter() {
-            crate::rc::drop_value(v);
-        }
-        body.tail.clear();
-        body.tail.reserve(p_tail.len());
-        for &t in p_tail.iter() {
-            crate::rc::dup(t);
-            body.tail.push(t);
-        }
-        body.root = p_root.clone();
-        body.shift = p_shift;
-        body.count = p_count;
-    }
+/// `[None; 32]` for `Option<Arc<PVNode>>` — Option<Arc<T>> isn't
+/// `Copy`, so we use `from_fn` instead of array-repeat syntax.
+fn empty_children() -> [Option<Arc<crate::types::vector::PVNode>>; BRANCHING_PUB] {
+    std::array::from_fn(|_| None)
 }
 
-// hush unused-import warning when the `AtomicI32` is in
-// register_type! generated alloc but not visibly used in this file.
+// silence unused-import for AtomicI32 (used by register_type! generated alloc)
 #[allow(dead_code)]
-fn _atomic_i32_holder() -> AtomicI32 {
-    AtomicI32::new(0)
-}
+fn _atomic_i32_holder() -> AtomicI32 { AtomicI32::new(0) }

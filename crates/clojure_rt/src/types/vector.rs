@@ -74,6 +74,35 @@ impl Drop for PVNode {
     }
 }
 
+/// Manual `Clone` for path-copy. Used by `Arc::make_mut` when a
+/// transient mutation hits a node it doesn't uniquely own.
+///
+/// - `Internal`: clone the children array. Each `Option<Arc<PVNode>>::
+///   clone` is an atomic Arc-refcount bump on its inner.
+/// - `Leaf`: dup each `Value` into a fresh `[Value; 32]`. The clone
+///   owns one ref per element; the original is unchanged.
+impl Clone for PVNode {
+    fn clone(&self) -> Self {
+        match self {
+            PVNode::Internal { children } => {
+                let mut new_children = empty_internal_children();
+                for (i, c) in children.iter().enumerate() {
+                    new_children[i] = c.clone();
+                }
+                PVNode::Internal { children: new_children }
+            }
+            PVNode::Leaf { children } => {
+                let mut new_children = [Value::NIL; BRANCHING];
+                for (i, &v) in children.iter().enumerate() {
+                    crate::rc::dup(v);
+                    new_children[i] = v;
+                }
+                PVNode::Leaf { children: new_children }
+            }
+        }
+    }
+}
+
 impl PVNode {
     fn empty_internal() -> Arc<PVNode> {
         EMPTY_INTERNAL.get_or_init(|| {
@@ -961,6 +990,128 @@ pub(crate) fn leaf_block_at_pub<'a>(
 ) -> &'a [Value; BRANCHING] {
     leaf_block_at(root, shift, i)
 }
+
+// ============================================================================
+// In-place trie mutators for `TransientVector`. Each uses
+// `Arc::make_mut` to either acquire a unique mutable reference or
+// clone the node when shared. Subsequent mutations on the same path
+// hit the unique reference directly — zero allocations, zero
+// refcount touches on the trie structure.
+// ============================================================================
+
+/// In-place trie assoc. The leaf node containing index `i` gets its
+/// `children[i & 31]` slot replaced with a *dup'd* copy of `x`; the
+/// old element is dropped. Caller's ref to `x` is unchanged.
+pub(crate) fn assoc_in_place_pub(arc: &mut Arc<PVNode>, level: i32, i: i64, x: Value) {
+    let node = Arc::make_mut(arc);
+    if level == 0 {
+        match node {
+            PVNode::Leaf { children } => {
+                let idx = (i & MASK) as usize;
+                let old = children[idx];
+                crate::rc::dup(x);
+                children[idx] = x;
+                crate::rc::drop_value(old);
+            }
+            PVNode::Internal { .. } => unreachable!("assoc_in_place at level 0 on Internal"),
+        }
+    } else {
+        match node {
+            PVNode::Internal { children } => {
+                let idx = ((i >> level) & MASK) as usize;
+                let child = children[idx]
+                    .as_mut()
+                    .expect("trie invariant: assoc path exists");
+                assoc_in_place_pub(child, level - SHIFT_STEP, i, x);
+            }
+            PVNode::Leaf { .. } => unreachable!("assoc_in_place at level>0 on Leaf"),
+        }
+    }
+}
+
+/// In-place push-tail. Insert `leaf` (a fully-populated `PVNode::
+/// Leaf`) into the trie at the next available slot for an `count`-
+/// element vector (where `count` is the size *before* the leaf was
+/// promoted from the tail). Caller transfers ownership of `leaf`.
+pub(crate) fn push_tail_in_place_pub(
+    arc: &mut Arc<PVNode>,
+    level: i32,
+    count: i64,
+    leaf: Arc<PVNode>,
+) {
+    let node = Arc::make_mut(arc);
+    let sub_idx = (((count - 1) >> level) & MASK) as usize;
+    match node {
+        PVNode::Internal { children } => {
+            if level == SHIFT_STEP {
+                debug_assert!(
+                    children[sub_idx].is_none(),
+                    "push_tail_in_place: leaf slot already occupied"
+                );
+                children[sub_idx] = Some(leaf);
+            } else if children[sub_idx].is_none() {
+                children[sub_idx] = Some(new_path(level - SHIFT_STEP, leaf));
+            } else {
+                let child = children[sub_idx].as_mut().unwrap();
+                push_tail_in_place_pub(child, level - SHIFT_STEP, count, leaf);
+            }
+        }
+        PVNode::Leaf { .. } => unreachable!("push_tail above leaf level on Leaf"),
+    }
+}
+
+/// In-place pop-tail. Removes and returns the rightmost leaf-block.
+/// `count` is the total element count *before* the pop. The trie may
+/// have empty intermediate nodes after the pop; the caller handles
+/// any height-shrink decision.
+pub(crate) fn pop_tail_in_place_pub(
+    arc: &mut Arc<PVNode>,
+    level: i32,
+    count: i64,
+) -> Arc<PVNode> {
+    let node = Arc::make_mut(arc);
+    let sub_idx = (((count - 2) >> level) & MASK) as usize;
+    match node {
+        PVNode::Internal { children } => {
+            if level == SHIFT_STEP {
+                children[sub_idx]
+                    .take()
+                    .expect("trie invariant: pop path exists")
+            } else {
+                let child = children[sub_idx]
+                    .as_mut()
+                    .expect("trie invariant: pop path exists");
+                let popped = pop_tail_in_place_pub(child, level - SHIFT_STEP, count);
+                let child_empty = match child.as_ref() {
+                    PVNode::Internal { children } => children.iter().all(|c| c.is_none()),
+                    PVNode::Leaf { children } => children.iter().all(|v| v.is_nil()),
+                };
+                if child_empty {
+                    children[sub_idx] = None;
+                }
+                popped
+            }
+        }
+        PVNode::Leaf { .. } => unreachable!("pop_tail above leaf level on Leaf"),
+    }
+}
+
+/// Build the empty-internal singleton used by transient pop when the
+/// trie shrinks back to having no populated children.
+pub(crate) fn empty_internal_pub() -> Arc<PVNode> {
+    PVNode::empty_internal()
+}
+
+/// `new_path` exposed crate-private for transient root-growth path.
+pub(crate) fn new_path_pub(level: i32, tail_node: Arc<PVNode>) -> Arc<PVNode> {
+    new_path(level, tail_node)
+}
+
+/// `MASK` exposed crate-private (= 0x1f) so transient_vector.rs can
+/// share the same per-level index extraction without redeclaring.
+pub(crate) const MASK_PUB: i64 = MASK;
+pub(crate) const SHIFT_STEP_PUB: i32 = SHIFT_STEP;
+pub(crate) const BRANCHING_PUB: usize = BRANCHING;
 
 /// Borrow-traversal of the trie to the leaf-block containing element
 /// index `i`. Returns a reference to the underlying `[Value; 32]`,
