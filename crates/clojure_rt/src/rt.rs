@@ -13,6 +13,7 @@ use crate::protocols::counted::ICounted;
 use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
+use crate::protocols::ifn::IFn;
 use crate::protocols::indexed::IIndexed;
 use crate::protocols::lookup::ILookup;
 use crate::protocols::meta::{IMeta, IWithMeta};
@@ -210,4 +211,28 @@ pub fn cons(x: Value, coll: Value) -> Value {
 #[inline]
 pub fn sequential(v: Value) -> bool {
     crate::protocol::satisfies(&ISequential::MARKER, v)
+}
+
+// --- IFn invocation ---------------------------------------------------------
+
+/// `(f a₁ … aₙ)` — invoke `f` with `args.len()` user-visible
+/// arguments. Routes through `IFn::invoke_<args.len()+1>` (the +1 is
+/// the receiver `f` prepended to the slice). Currently caps at 5
+/// user args; longer arities will land via `apply_to` once we have
+/// it. Panics for now if the arity exceeds the cap so the gap is
+/// loud rather than silent.
+#[inline]
+pub fn invoke(f: Value, args: &[Value]) -> Value {
+    match args.len() {
+        0 => clojure_rt_macros::dispatch!(IFn::invoke, &[f]),
+        1 => clojure_rt_macros::dispatch!(IFn::invoke, &[f, args[0]]),
+        2 => clojure_rt_macros::dispatch!(IFn::invoke, &[f, args[0], args[1]]),
+        3 => clojure_rt_macros::dispatch!(IFn::invoke, &[f, args[0], args[1], args[2]]),
+        4 => clojure_rt_macros::dispatch!(IFn::invoke, &[f, args[0], args[1], args[2], args[3]]),
+        5 => clojure_rt_macros::dispatch!(IFn::invoke, &[f, args[0], args[1], args[2], args[3], args[4]]),
+        n => panic!(
+            "rt::invoke: arity {} exceeds current IFn cap of 5 — extend protocols/ifn.rs",
+            n
+        ),
+    }
 }

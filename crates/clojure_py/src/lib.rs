@@ -11,6 +11,7 @@ pub mod abcs;
 pub mod api;
 pub mod counted;
 pub mod exception;
+pub mod ifn;
 pub mod intern;
 
 use std::sync::Once;

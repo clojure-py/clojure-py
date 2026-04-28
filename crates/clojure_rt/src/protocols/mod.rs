@@ -12,6 +12,7 @@ pub mod counted;
 pub mod emptyable_collection;
 pub mod equiv;
 pub mod hash;
+pub mod ifn;
 pub mod indexed;
 pub mod lookup;
 pub mod meta;

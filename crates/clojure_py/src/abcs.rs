@@ -10,7 +10,8 @@ use pyo3::Python;
 
 use crate::intern::register_abc;
 
-pub static SIZED_TYPE_ID: OnceCell<TypeId> = OnceCell::new();
+pub static SIZED_TYPE_ID:    OnceCell<TypeId> = OnceCell::new();
+pub static CALLABLE_TYPE_ID: OnceCell<TypeId> = OnceCell::new();
 
 /// Intern the ABCs we map to clojure_rt protocols, then install the
 /// protocol impls against those ABC TypeIds. GIL-required.
@@ -24,6 +25,12 @@ pub fn init(py: Python<'_>) {
         .expect("collections.abc.Sized missing");
     let sized_tid = register_abc(py, &sized);
     SIZED_TYPE_ID.set(sized_tid).ok();
-
     crate::counted::install(sized_tid);
+
+    let callable = abc_module
+        .getattr("Callable")
+        .expect("collections.abc.Callable missing");
+    let callable_tid = register_abc(py, &callable);
+    CALLABLE_TYPE_ID.set(callable_tid).ok();
+    crate::ifn::install(callable_tid);
 }
