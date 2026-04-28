@@ -9,9 +9,11 @@
 pub mod array_chunk;
 pub mod array_map;
 pub mod array_map_seq;
+pub mod cons;
 pub mod hash_map;
 pub mod hash_map_seq;
 pub mod keyword;
+pub mod lazy_seq;
 pub mod list;
 pub mod map_entry;
 pub mod reduced;

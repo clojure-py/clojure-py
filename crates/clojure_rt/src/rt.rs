@@ -35,7 +35,7 @@ use crate::protocols::transient_vector::ITransientVector;
 use crate::types::reduced::Reduced;
 use crate::types::array_map::PersistentArrayMap;
 use crate::types::keyword::KeywordObj;
-use crate::types::list::{empty_list, PersistentList};
+use crate::types::list::PersistentList;
 use crate::types::string::StringObj;
 use crate::types::symbol::SymbolObj;
 use crate::types::vector::PersistentVector;
@@ -288,27 +288,35 @@ pub fn array_map(kvs: &[Value]) -> Value {
     PersistentArrayMap::from_kvs(kvs)
 }
 
-/// Cons `x` onto the head of `coll`. If `coll` is nil or a non-list
-/// seqable, it's first run through `seq` so the result is always
-/// list-shaped.
+/// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or
+/// already a list (preserves count tracking); otherwise returns a
+/// `Cons` cell wrapping `(seq coll)` (works for lazy/infinite seqs).
+/// Borrow semantics on both arguments.
 #[inline]
 pub fn cons(x: Value, coll: Value) -> Value {
-    let tail = if coll.is_nil() {
-        empty_list()
-    } else {
-        // For PersistentList/EmptyList, this is essentially identity (their
-        // ISeqable::seq returns self/nil). For other seqables, this
-        // coerces.
-        let s = seq(coll);
-        if s.is_nil() {
-            empty_list()
-        } else {
-            s
-        }
-    };
-    let result = PersistentList::cons(x, tail);
-    crate::rc::drop_value(tail);
+    if coll.is_nil() {
+        return crate::types::list::PersistentList::list(&[x]);
+    }
+    let list_id = *crate::types::list::PERSISTENTLIST_TYPE_ID.get().unwrap_or(&0);
+    let empty_list_id = *crate::types::list::EMPTYLIST_TYPE_ID.get().unwrap_or(&0);
+    if coll.tag == list_id || coll.tag == empty_list_id {
+        return PersistentList::cons(x, coll);
+    }
+    // General seqable: build a Cons cell over (seq coll).
+    let s = seq(coll);
+    if s.is_nil() {
+        return crate::types::list::PersistentList::list(&[x]);
+    }
+    let result = crate::types::cons::Cons::new(x, s);
+    crate::rc::drop_value(s);
     result
+}
+
+/// Build a `LazySeq` from a Rust closure. The closure runs at most
+/// once per `LazySeq`; subsequent accesses use the cached result.
+#[inline]
+pub fn lazy_seq(thunk: Box<dyn Fn() -> Value + Send + Sync>) -> Value {
+    crate::types::lazy_seq::LazySeq::from_fn(thunk)
 }
 
 /// `(sequential? x)` — does `x`'s type marker-implement `ISequential`?
