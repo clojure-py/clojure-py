@@ -22,6 +22,7 @@ pub mod keyword;
 pub mod lazy_seq;
 pub mod list;
 pub mod map_entry;
+pub mod namespace;
 pub mod pattern;
 pub mod ratio;
 pub mod reduced;

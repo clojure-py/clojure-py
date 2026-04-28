@@ -33,6 +33,7 @@ pub mod primitives;
 pub mod protocols;
 pub mod rt;
 pub mod types;
+pub mod bootstrap;
 
 #[doc(hidden)]
 pub use inventory;
