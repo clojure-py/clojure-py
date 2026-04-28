@@ -19,6 +19,7 @@ pub mod equiv;
 pub mod hash;
 pub mod ifn;
 pub mod indexed;
+pub mod indexing_reader;
 pub mod lookup;
 pub mod map;
 pub mod map_entry;

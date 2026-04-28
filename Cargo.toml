@@ -28,3 +28,5 @@ num-rational = { version = "0.4", default-features = false, features = ["num-big
 num-traits = "0.2"
 bigdecimal = "0.4"
 regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+uuid = "1"

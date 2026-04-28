@@ -10,6 +10,7 @@
 use crate::protocols::associative::IAssociative;
 use crate::protocols::atom::IAtom;
 use crate::protocols::chunked_seq::IChunkedSeq;
+use crate::protocols::indexing_reader::IIndexingReader;
 use crate::protocols::pending::IPending;
 use crate::protocols::pushback_reader::IPushbackReader;
 use crate::protocols::reader::IReader;
@@ -626,6 +627,41 @@ pub fn string_writer() -> Value {
 #[inline]
 pub fn string_writer_to_string(w: Value) -> Value {
     crate::types::string_writer::StringWriter::to_string(w)
+}
+
+/// `(line-number r)` — 1-based line of the next char to be read.
+#[inline]
+pub fn current_line(r: Value) -> Value {
+    clojure_rt_macros::dispatch!(IIndexingReader::current_line, &[r])
+}
+
+/// `(column-number r)` — 1-based column of the next char to be
+/// read.
+#[inline]
+pub fn current_column(r: Value) -> Value {
+    clojure_rt_macros::dispatch!(IIndexingReader::current_column, &[r])
+}
+
+// --- Inst + UUID -----------------------------------------------------------
+
+/// Build an `Inst` from Unix-epoch milliseconds.
+#[inline]
+pub fn inst_from_millis(millis: i64) -> Value {
+    crate::types::inst::InstObj::from_millis(millis)
+}
+
+/// Parse an RFC-3339 timestamp into an `Inst` (the `#inst "..."`
+/// reader literal path). Exception value on parse failure.
+#[inline]
+pub fn inst_from_rfc3339(s: &str) -> Value {
+    crate::types::inst::InstObj::from_rfc3339(s)
+}
+
+/// Parse a UUID string into a `UUID` (the `#uuid "..."` reader
+/// literal path). Exception value on parse failure.
+#[inline]
+pub fn uuid_from_str(s: &str) -> Value {
+    crate::types::uuid::UUIDObj::from_str(s)
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or
