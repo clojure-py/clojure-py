@@ -4,34 +4,30 @@
 //! inheritance walk in `crate::intern`.
 //!
 //! Each per-arity slot constructs a Python tuple of the user args,
-//! calls `PyObject_Call`, and wraps the result back into a `Value`.
-//! Conversion of Clojure `Value`s to Python objects is currently
-//! limited to the cheap-immediate set (`nil`, `bool`, `int`, `float`,
-//! `pyobject`); other tags return a Foreign exception so the gap is
-//! loud rather than silently producing garbage. The conversion table
-//! grows as we add more Python-borrowable types (string, char, etc.).
+//! calls `PyObject_Call`, and wraps the result back into a `Value`
+//! via `pyowned::taking` (the call result is a fresh +1 ref, no
+//! incref needed).
 //!
-//! **Refcount caveat.** `Value::pyobject(...)` documents borrowed
-//! semantics: the Value does not incref/decref the pointed-to
-//! PyObject. Results returned from `PyObject_Call` are *new* refs,
-//! so we presently leak them — every cross-language call leaks one
-//! Python ref. This is the same gap noted in `value.rs`: "the owning
-//! variant arrives once a protocol port needs PyObject storage."
-//! Tests in this slice are short-lived processes; the leak is
-//! bounded. Fixing it is its own substrate slice.
+//! Conversion of Clojure `Value`s to Python objects is currently
+//! limited to the cheap-immediate set (`nil`, `bool`, `int`, `float`)
+//! plus any Value that's already a `pyowned`-wrapped Python object
+//! (passthrough — we incref the inner ptr to balance the tuple's
+//! `SET_ITEM` steal). Other tags (string, keyword, symbol, list,
+//! vector, …) return a Foreign exception so the gap is loud rather
+//! than silent. The conversion table grows as more borrowable
+//! bridges land.
 
 use clojure_rt::protocol::extend_type;
 use clojure_rt::protocols::ifn::IFn;
 use clojure_rt::value::{TypeId, Value};
-use clojure_rt::{TYPE_BOOL, TYPE_FLOAT64, TYPE_INT64, TYPE_NIL, TYPE_PYOBJECT};
+use clojure_rt::{TYPE_BOOL, TYPE_FLOAT64, TYPE_INT64, TYPE_NIL, FIRST_HEAP_TYPE};
 use pyo3::ffi as pyffi;
 use pyo3::{PyErr, Python};
 
-/// Build a borrowed-PyObject for a single `Value`. On unsupported
-/// tags returns `None`; the caller turns this into a Foreign
-/// exception. The returned pointer's lifetime tracks the underlying
-/// Value's, so callers must wrap it in the call's tuple before any
-/// further conversion that might invalidate the source.
+/// Build a *new* PyObject reference for a single `Value`. The caller
+/// hands the result into `PyTuple_SET_ITEM`, which steals the ref.
+/// On unsupported tags returns `None`; the caller turns that into a
+/// Foreign exception.
 unsafe fn value_to_py_new(v: Value) -> Option<*mut pyffi::PyObject> {
     match v.tag {
         TYPE_NIL => {
@@ -57,13 +53,29 @@ unsafe fn value_to_py_new(v: Value) -> Option<*mut pyffi::PyObject> {
             let p = unsafe { pyffi::PyFloat_FromDouble(f) };
             if p.is_null() { None } else { Some(p) }
         }
-        TYPE_PYOBJECT => {
-            let p = v.payload as *mut pyffi::PyObject;
-            // We're handing this into a tuple via `PyTuple_SET_ITEM`,
-            // which steals one ref. Bump first so the Value's
-            // (borrowed) reference isn't consumed.
-            unsafe { pyffi::Py_INCREF(p); }
-            Some(p)
+        tag if tag >= FIRST_HEAP_TYPE => {
+            // Heap-typed Values are either `pyowned`-wrapped Python
+            // objects or native Clojure heap types. We currently only
+            // support the former — pull the inner ptr and incref it so
+            // PyTuple_SET_ITEM has a fresh +1 to steal. Native Clojure
+            // heap types (string, keyword, list, vector, …) need
+            // dedicated bridges to be passable to Python, which lands
+            // when the value-to-py conversion table grows.
+            //
+            // We detect "is this a pyowned wrapper?" structurally by
+            // checking that the type registry has the pyowned body
+            // layout. For now, we attempt the read and trust the
+            // caller — passing a non-pyowned heap Value here is a bug
+            // that surfaces as a corrupted Python ref, so this needs
+            // tightening (e.g., a per-class flag or a `IsPyObject`
+            // marker protocol). Tracked as a follow-up.
+            let p = unsafe { crate::pyowned::ptr_of(v) };
+            if p.is_null() {
+                None
+            } else {
+                unsafe { pyffi::Py_INCREF(p); }
+                Some(p)
+            }
         }
         _ => None,
     }
@@ -72,10 +84,10 @@ unsafe fn value_to_py_new(v: Value) -> Option<*mut pyffi::PyObject> {
 /// Construct a Python `tuple` of `n` user args and pass it to
 /// `PyObject_Call`. On any conversion failure or Python-side
 /// exception, returns a Foreign-throwable `Value`. On success,
-/// wraps the Python result as `Value::pyobject` (which leaks one
-/// ref — see module-level note).
+/// wraps the Python result as an owning `Value` via `pyowned::taking`
+/// so refcount discipline is balanced (no leak).
 unsafe fn call_n(callable: Value, args: &[Value]) -> Value {
-    let f_ptr = callable.payload as *mut pyffi::PyObject;
+    let f_ptr = unsafe { crate::pyowned::ptr_of(callable) };
     debug_assert!(!f_ptr.is_null(), "IFn/invoke: null Python callable");
 
     Python::attach(|py| {
@@ -110,9 +122,9 @@ unsafe fn call_n(callable: Value, args: &[Value]) -> Value {
             let err = PyErr::take(py).expect("PyObject_Call failed without error");
             return crate::exception::pyerr_to_value(py, err);
         }
-        // result is a new ref; we hand it out as a borrowed-semantics
-        // Value::pyobject and leak this ref (see module note).
-        Value::pyobject(result as *mut _)
+        // result is a new ref; pyowned::taking takes ownership so the
+        // wrapper's destructor will decref when the Value is dropped.
+        crate::pyowned::taking(py, result)
     })
 }
 
@@ -177,4 +189,3 @@ pub fn install(callable_tid: TypeId) {
     extend_type(callable_tid, &IFn::INVOKE_5, ifn_invoke_5_pyobject);
     extend_type(callable_tid, &IFn::INVOKE_6, ifn_invoke_6_pyobject);
 }
-

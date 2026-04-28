@@ -7,7 +7,6 @@ pub const TYPE_BOOL:       TypeId = 1;
 pub const TYPE_INT64:      TypeId = 2;
 pub const TYPE_FLOAT64:    TypeId = 3;
 pub const TYPE_CHAR:       TypeId = 4;
-pub const TYPE_PYOBJECT:   TypeId = 5;
 pub const FIRST_HEAP_TYPE: TypeId = 16;
 
 #[repr(C, align(16))]
@@ -36,21 +35,6 @@ impl Value {
     #[inline(always)]
     pub fn char(c: char) -> Value {
         Value { tag: TYPE_CHAR, _pad: 0, payload: c as u64 }
-    }
-
-    /// Wrap a foreign Python object pointer in a `Value`.
-    ///
-    /// Reference semantics are **borrowed**: this Value does not incref
-    /// the pointed-to PyObject, and `drop_value` on it does not decref.
-    /// The caller is responsible for keeping the underlying PyObject
-    /// alive for as long as any copy of the returned Value is reachable.
-    /// Sound for synchronous protocol dispatch driven by a Python frame
-    /// that owns the reference; unsound for cross-frame storage. The
-    /// owning variant arrives once a protocol port needs PyObject
-    /// storage.
-    #[inline(always)]
-    pub fn pyobject(ptr: *mut core::ffi::c_void) -> Value {
-        Value { tag: TYPE_PYOBJECT, _pad: 0, payload: ptr as u64 }
     }
 
     #[inline(always)]

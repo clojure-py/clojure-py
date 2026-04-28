@@ -1,9 +1,11 @@
 //! `ICounted` impl bound to the Python ABC `collections.abc.Sized`.
 //!
-//! Direct FFI: one `PyObject_Length` C call, no `Bound` construction,
-//! no incref/decref pair. The borrowed semantics of
-//! `Value(TYPE_PYOBJECT)` make this safe — the calling Python frame
-//! owns the underlying ref for the dispatch's duration.
+//! The dispatched Value is a `pyowned`-wrapped Python object; we
+//! pull the inner `*mut PyObject` via `pyowned::ptr_of` and call
+//! `PyObject_Length` on it. The borrowed semantics here are scoped
+//! to the dispatch — the wrapper holds the +1 ref for as long as the
+//! Value is live, so the FFI pointer is valid for the duration of
+//! the call.
 //!
 //! Inheritance is handled by `crate::intern`: when a Python class is
 //! first encountered, the resolver walks registered ABCs and copies
@@ -22,7 +24,7 @@ unsafe extern "C" fn counted_count_via_pyobject_length(
     _n: usize,
 ) -> Value {
     let this = unsafe { *args };
-    let ptr = this.payload as *mut pyffi::PyObject;
+    let ptr = unsafe { crate::pyowned::ptr_of(this) };
     debug_assert!(!ptr.is_null(), "ICounted/count: null Python object pointer");
 
     Python::attach(|py| {

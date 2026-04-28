@@ -18,7 +18,7 @@ pub mod error;
 
 pub use value::{
     Value, TypeId,
-    TYPE_NIL, TYPE_BOOL, TYPE_INT64, TYPE_FLOAT64, TYPE_CHAR, TYPE_PYOBJECT,
+    TYPE_NIL, TYPE_BOOL, TYPE_INT64, TYPE_FLOAT64, TYPE_CHAR,
     FIRST_HEAP_TYPE,
 };
 pub use header::Header;

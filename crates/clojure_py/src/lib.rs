@@ -13,6 +13,7 @@ pub mod counted;
 pub mod exception;
 pub mod ifn;
 pub mod intern;
+pub mod pyowned;
 
 use std::sync::Once;
 
@@ -26,7 +27,6 @@ static INIT: Once = Once::new();
 pub fn init() {
     INIT.call_once(|| {
         clojure_rt::init();
-        intern::install_foreign_resolver();
         Python::attach(|py| {
             abcs::init(py);
         });

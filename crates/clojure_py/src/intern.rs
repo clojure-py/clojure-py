@@ -1,11 +1,13 @@
 //! Lazy interning of Python classes as `clojure_rt` `TypeId`s, plus
 //! per-class inheritance walks (MRO + registered ABCs).
 //!
-//! On first encounter of a Python class at a dispatch site, the class
-//! is registered as a dynamic type in `clojure_rt::type_registry` and
-//! the resulting `TypeId` is cached in `PY_TYPE_TABLE`. Subsequent
-//! dispatches on the same class hit the IC at full speed, like any
-//! Clojure-native type.
+//! Each Python class encountered at the FFI boundary is registered as
+//! a dynamic type whose body shape is `pyowned::PyOwnedBody`
+//! (one `*mut PyObject` slot, balanced by `pyowned::pyowned_destruct`
+//! at refcount-zero). The `TypeId` returned by `tid_for_pyclass` is
+//! what `pyowned::owning` / `pyowned::taking` tag the resulting
+//! `Value` with — so dispatch on a Python Value goes through the
+//! standard heap-typed path, not a foreign-resolver detour.
 //!
 //! Inheritance: when a class is interned, the resolver walks every
 //! registered ABC and copies impl entries from any ABC the class is a
@@ -13,16 +15,12 @@
 //! `__subclasshook__`). Result: `extend Counted to Sized` automatically
 //! covers `list`, `dict`, `str`, and any user class with `__len__`.
 
-use std::alloc::Layout;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use clojure_rt::dispatch::foreign;
 use clojure_rt::dispatch::perfect_hash::PerTypeTable;
-use clojure_rt::header::Header;
 use clojure_rt::type_registry;
 use clojure_rt::value::TypeId;
-use clojure_rt::TYPE_PYOBJECT;
 use pyo3::ffi as pyffi;
 use pyo3::types::{PyType, PyTypeMethods};
 use pyo3::{Bound, PyAny, Python};
@@ -38,27 +36,16 @@ static PY_TYPE_TABLE: LazyLock<RwLock<HashMap<usize, TypeId>>> =
 static REGISTERED_ABCS: LazyLock<RwLock<Vec<(usize, TypeId)>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
-unsafe fn primitive_destruct(_: *mut Header) {
-    unreachable!("Python class TypeIds are inline (no heap header to destruct)");
-}
-
-/// Install the resolver that maps `Value(TYPE_PYOBJECT)` payloads to
-/// per-Python-class `TypeId`s. Call once during `clojure_py` init,
-/// after `clojure_rt::init()`.
-pub fn install_foreign_resolver() {
-    foreign::register_foreign_resolver(TYPE_PYOBJECT, resolver_for_pyobject);
-}
-
-/// Foreign-type resolver for `TYPE_PYOBJECT`. Reads `Py_TYPE(payload)`
-/// and interns it on first encounter; cache-hit fast path otherwise.
-unsafe fn resolver_for_pyobject(payload: u64) -> TypeId {
-    let obj_ptr = payload as *mut pyffi::PyObject;
-    let py_type_ptr = unsafe { (*obj_ptr).ob_type } as *mut pyffi::PyObject;
-
-    if let Some(&tid) = PY_TYPE_TABLE.read().unwrap().get(&(py_type_ptr as usize)) {
+/// Map a Python class pointer to its `clojure_rt` `TypeId`, minting
+/// + walking inherited ABCs on first encounter. Called by
+/// `pyowned::{owning, taking}` to tag freshly-allocated Python Values.
+/// GIL-required.
+pub fn tid_for_pyclass(py: Python<'_>, py_type: *mut pyffi::PyObject) -> TypeId {
+    let key = py_type as usize;
+    if let Some(&tid) = PY_TYPE_TABLE.read().unwrap().get(&key) {
         return tid;
     }
-    Python::attach(|py| intern_with_inheritance(py, py_type_ptr))
+    intern_with_inheritance(py, py_type)
 }
 
 /// Register a Python class as a dynamic clojure_rt type and install
@@ -76,8 +63,8 @@ fn intern_with_inheritance(py: Python<'_>, py_type: *mut pyffi::PyObject) -> Typ
         let name = python_class_name(py, py_type);
         let tid = type_registry::register_dynamic_type(
             name,
-            Layout::from_size_align(0, 1).unwrap(),
-            primitive_destruct,
+            crate::pyowned::body_layout(),
+            crate::pyowned::pyowned_destruct,
         );
         table.insert(key, tid);
         tid
@@ -163,8 +150,8 @@ pub fn register_abc(py: Python<'_>, abc: &Bound<'_, PyAny>) -> TypeId {
     let name = python_class_name(py, abc_ptr);
     let tid = type_registry::register_dynamic_type(
         name,
-        Layout::from_size_align(0, 1).unwrap(),
-        primitive_destruct,
+        crate::pyowned::body_layout(),
+        crate::pyowned::pyowned_destruct,
     );
     table.insert(key, tid);
 
