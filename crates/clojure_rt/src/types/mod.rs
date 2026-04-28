@@ -27,6 +27,8 @@ pub mod pattern;
 pub mod ratio;
 pub mod reduced;
 pub mod string;
+pub mod string_reader;
+pub mod string_writer;
 pub mod symbol;
 pub mod transient_array_map;
 pub mod transient_hash_map;

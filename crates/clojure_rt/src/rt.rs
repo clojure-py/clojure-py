@@ -11,10 +11,13 @@ use crate::protocols::associative::IAssociative;
 use crate::protocols::atom::IAtom;
 use crate::protocols::chunked_seq::IChunkedSeq;
 use crate::protocols::pending::IPending;
+use crate::protocols::pushback_reader::IPushbackReader;
+use crate::protocols::reader::IReader;
 use crate::protocols::r#ref::IRef;
 use crate::protocols::reference::IReference;
 use crate::protocols::volatile::IVolatile;
 use crate::protocols::watchable::IWatchable;
+use crate::protocols::writer::IWriter;
 use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
@@ -566,6 +569,63 @@ pub fn ratio_from_i64s(numer: i64, denom: i64) -> Value {
 #[inline]
 pub fn pattern_from_str(s: &str) -> Value {
     PatternObj::from_str(s)
+}
+
+// --- Reader / Writer IO ----------------------------------------------------
+
+/// `(read-char r)` — pull one Unicode scalar from `r`. Returns
+/// `Value::char` or `Value::NIL` at end-of-input.
+#[inline]
+pub fn read_char(r: Value) -> Value {
+    clojure_rt_macros::dispatch!(IReader::read_char, &[r])
+}
+
+/// `(peek-char r)` — look at the next char without consuming it.
+#[inline]
+pub fn peek_char(r: Value) -> Value {
+    clojure_rt_macros::dispatch!(IReader::peek_char, &[r])
+}
+
+/// `(unread r c)` — push `c` back so the next `read-char` will
+/// return it. Errors via exception value if the reader's pushback
+/// buffer is full.
+#[inline]
+pub fn unread(r: Value, c: Value) -> Value {
+    clojure_rt_macros::dispatch!(IPushbackReader::unread, &[r, c])
+}
+
+/// Build an in-memory reader over `s`. The string is copied into
+/// the reader's storage.
+#[inline]
+pub fn string_reader(s: &str) -> Value {
+    crate::types::string_reader::StringReader::from_str(s)
+}
+
+/// `(.write w s)` — append a string to a writer.
+#[inline]
+pub fn write_str(w: Value, s: Value) -> Value {
+    clojure_rt_macros::dispatch!(IWriter::write, &[w, s])
+}
+
+/// `(.flush w)` — hint a buffered writer to commit. No-op for
+/// in-memory writers.
+#[inline]
+pub fn flush(w: Value) -> Value {
+    clojure_rt_macros::dispatch!(IWriter::flush, &[w])
+}
+
+/// Build an empty in-memory writer.
+#[inline]
+pub fn string_writer() -> Value {
+    crate::types::string_writer::StringWriter::new()
+}
+
+/// Snapshot a `StringWriter`'s accumulated contents as a fresh
+/// `String` Value. Tied to the concrete writer type — call only
+/// on a `StringWriter`.
+#[inline]
+pub fn string_writer_to_string(w: Value) -> Value {
+    crate::types::string_writer::StringWriter::to_string(w)
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or
