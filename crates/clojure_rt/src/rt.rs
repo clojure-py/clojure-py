@@ -10,8 +10,10 @@
 use crate::protocols::associative::IAssociative;
 use crate::protocols::atom::IAtom;
 use crate::protocols::chunked_seq::IChunkedSeq;
+use crate::protocols::pending::IPending;
 use crate::protocols::r#ref::IRef;
 use crate::protocols::reference::IReference;
+use crate::protocols::volatile::IVolatile;
 use crate::protocols::watchable::IWatchable;
 use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::collection::ICollection;
@@ -41,9 +43,11 @@ use crate::protocols::transient_vector::ITransientVector;
 use crate::types::reduced::Reduced;
 use crate::types::array_map::PersistentArrayMap;
 use crate::types::atom::Atom;
+use crate::types::delay::Delay;
 use crate::types::hash_set::PersistentHashSet;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::PersistentList;
+use crate::types::volatile::Volatile;
 use crate::types::string::StringObj;
 use crate::types::symbol::SymbolObj;
 use crate::types::vector::PersistentVector;
@@ -419,6 +423,62 @@ pub fn alter_meta_bang(a: Value, f: Value, args: &[Value]) -> Value {
             n
         ),
     }
+}
+
+// --- Volatiles --------------------------------------------------------------
+
+/// `(volatile! x)` — wrap `x` in a fresh single-thread mutable cell.
+#[inline]
+pub fn volatile(x: Value) -> Value {
+    Volatile::new(x)
+}
+
+/// `(vreset! v x)` — overwrite the volatile's value, return `x`.
+#[inline]
+pub fn vreset_bang(v: Value, x: Value) -> Value {
+    clojure_rt_macros::dispatch!(IVolatile::reset, &[v, x])
+}
+
+/// `(vswap! v f args…)` — read, apply `f` to the current value plus
+/// `args`, write the result, return the new value. Single-threaded
+/// by contract — no CAS retry; caller is responsible for not
+/// concurrently mutating.
+pub fn vswap_bang(v: Value, f: Value, args: &[Value]) -> Value {
+    let cur = deref(v);
+    let mut call_args: Vec<Value> = Vec::with_capacity(1 + args.len());
+    call_args.push(cur);
+    call_args.extend_from_slice(args);
+    let new_v = invoke(f, &call_args);
+    crate::rc::drop_value(cur);
+    if new_v.is_exception() {
+        return new_v;
+    }
+    let r = vreset_bang(v, new_v);
+    crate::rc::drop_value(new_v);
+    r
+}
+
+// --- Delays / IPending ------------------------------------------------------
+
+/// `(delay & body)` — wrap a thunk in a memoizing one-shot cell.
+/// The thunk runs on first `force`/`deref`; subsequent reads return
+/// the cached result.
+#[inline]
+pub fn delay(thunk: Box<dyn Fn() -> Value + Send + Sync>) -> Value {
+    Delay::from_fn(thunk)
+}
+
+/// `(force d)` — realize a delay (no-op for non-delays in JVM, but
+/// here we route through `IDeref` which is the standard read path).
+#[inline]
+pub fn force(d: Value) -> Value {
+    deref(d)
+}
+
+/// `(realized? x)` — has this deferred value been computed yet?
+#[inline]
+pub fn is_realized(x: Value) -> Value {
+    clojure_rt_macros::dispatch!(IPending::is_realized, &[x])
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or
