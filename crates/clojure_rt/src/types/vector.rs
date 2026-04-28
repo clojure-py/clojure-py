@@ -817,67 +817,130 @@ clojure_rt_macros::implements! {
 clojure_rt_macros::implements! { impl ISequential       for PersistentVector {} }
 clojure_rt_macros::implements! { impl IPersistentVector for PersistentVector {} }
 
+// `IReduce` walks the trie one *leaf-block at a time* and iterates the
+// resulting `&[Value; 32]` directly. Each element is **borrowed** for
+// the duration of its `IFn::invoke` — the surrounding leaf node's Arc
+// keeps the element refs alive, so we skip the per-element dup/drop
+// pair. The accumulator is the only Value the loop owns: we drop the
+// old `acc` after each step and own the new one returned by `invoke`.
+//
+// Compared to the per-`nth` shape, this saves an Arc walk + a dup +
+// a drop per element — for a 1024-element vector that's roughly two
+// orders of magnitude fewer atomic operations on the rc/Arc paths.
 clojure_rt_macros::implements! {
     impl IReduce for PersistentVector {
         fn reduce_2(this: Value, f: Value) -> Value {
-            let count = PersistentVector::count_of(this);
-            if count == 0 {
+            let body = unsafe { PersistentVector::body(this) };
+            if body.count == 0 {
                 // (reduce f []) => (f)
                 return clojure_rt_macros::dispatch!(
                     crate::protocols::ifn::IFn::invoke, &[f]
                 );
             }
-            let mut acc = PersistentVector::nth(this, 0).expect("range");
-            let mut i: i64 = 1;
-            while i < count {
-                let x = PersistentVector::nth(this, i).expect("range");
-                let new_acc = clojure_rt_macros::dispatch!(
-                    crate::protocols::ifn::IFn::invoke, &[f, acc, x]
-                );
-                crate::rc::drop_value(acc);
-                crate::rc::drop_value(x);
-                acc = new_acc;
-                if acc.tag == crate::types::reduced::Reduced::type_id() {
-                    let v = clojure_rt_macros::dispatch!(
-                        crate::protocols::deref::IDeref::deref, &[acc]
-                    );
-                    crate::rc::drop_value(acc);
-                    return v;
-                }
-                if acc.is_exception() {
-                    return acc;
-                }
-                i += 1;
-            }
-            acc
+            // Seed = first element. We *own* the seed, so dup once.
+            let seed = first_element(body);
+            crate::rc::dup(seed);
+            reduce_walk(body, f, 1, seed)
         }
         fn reduce_3(this: Value, f: Value, init: Value) -> Value {
-            let count = PersistentVector::count_of(this);
+            let body = unsafe { PersistentVector::body(this) };
             crate::rc::dup(init);
-            let mut acc = init;
-            let mut i: i64 = 0;
-            while i < count {
-                let x = PersistentVector::nth(this, i).expect("range");
-                let new_acc = clojure_rt_macros::dispatch!(
-                    crate::protocols::ifn::IFn::invoke, &[f, acc, x]
-                );
-                crate::rc::drop_value(acc);
-                crate::rc::drop_value(x);
-                acc = new_acc;
-                if acc.tag == crate::types::reduced::Reduced::type_id() {
-                    let v = clojure_rt_macros::dispatch!(
-                        crate::protocols::deref::IDeref::deref, &[acc]
-                    );
-                    crate::rc::drop_value(acc);
-                    return v;
-                }
-                if acc.is_exception() {
-                    return acc;
-                }
-                i += 1;
-            }
-            acc
+            reduce_walk(body, f, 0, init)
         }
+    }
+}
+
+/// First element of a non-empty vector. Borrowed; caller decides
+/// whether to dup. Centralizes the "is index 0 in the trie or in the
+/// tail" branch so reduce_2's seed read uses the same helper as the
+/// loop body would.
+fn first_element(body: &PersistentVector) -> Value {
+    let tail_off = tail_offset(body.count, body.tail.len());
+    if tail_off > 0 {
+        leaf_block_at(&body.root, body.shift, 0)[0]
+    } else {
+        body.tail[0]
+    }
+}
+
+/// Walk the vector starting at `start_idx`, threading `acc` through
+/// `f`. The caller must already own `acc` (one ref); the returned
+/// Value also owns one ref. Borrowed per-element semantics: the leaf
+/// node / tail keeps its element refs alive across the invoke, so we
+/// don't dup `x` before the call or drop after.
+fn reduce_walk(body: &PersistentVector, f: Value, start_idx: i64, mut acc: Value) -> Value {
+    let count = body.count;
+    let tail_off = tail_offset(body.count, body.tail.len());
+    let reduced_tag = crate::types::reduced::Reduced::type_id();
+
+    let mut i = start_idx;
+    while i < tail_off {
+        // Trie block: walk to the containing leaf, then iterate the
+        // [Value; 32] slice directly.
+        let leaf = leaf_block_at(&body.root, body.shift, i);
+        let block_start = i & !MASK;
+        let block_end = (block_start + BRANCHING as i64).min(tail_off);
+        let mut j = (i - block_start) as usize;
+        let last = (block_end - block_start) as usize;
+        while j < last {
+            let x = leaf[j]; // borrowed
+            let new_acc = clojure_rt_macros::dispatch!(
+                crate::protocols::ifn::IFn::invoke, &[f, acc, x]
+            );
+            crate::rc::drop_value(acc);
+            acc = new_acc;
+            if acc.tag == reduced_tag {
+                return crate::rt::unreduced(acc);
+            }
+            if acc.is_exception() {
+                return acc;
+            }
+            j += 1;
+        }
+        i = block_end;
+    }
+
+    // Tail block: same shape, source is `body.tail`.
+    while i < count {
+        let x = body.tail[(i - tail_off) as usize]; // borrowed
+        let new_acc = clojure_rt_macros::dispatch!(
+            crate::protocols::ifn::IFn::invoke, &[f, acc, x]
+        );
+        crate::rc::drop_value(acc);
+        acc = new_acc;
+        if acc.tag == reduced_tag {
+            return crate::rt::unreduced(acc);
+        }
+        if acc.is_exception() {
+            return acc;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
+/// Borrow-traversal of the trie to the leaf-block containing element
+/// index `i`. Returns a reference to the underlying `[Value; 32]`,
+/// alive for the lifetime of `root`. No Arc cloning, no dups —
+/// purely chained `Arc::as_ref()` and `Option::as_ref()` borrows.
+fn leaf_block_at<'a>(root: &'a Arc<PVNode>, shift: i32, i: i64) -> &'a [Value; BRANCHING] {
+    let mut node: &'a PVNode = root.as_ref();
+    let mut s = shift;
+    while s > 0 {
+        let idx = ((i >> s) & MASK) as usize;
+        node = match node {
+            PVNode::Internal { children } => children[idx]
+                .as_ref()
+                .expect("trie invariant: child present")
+                .as_ref(),
+            PVNode::Leaf { .. } => unreachable!("trie invariant: leaf above level 0"),
+        };
+        s -= SHIFT_STEP;
+    }
+    match node {
+        PVNode::Leaf { children } => children,
+        PVNode::Internal { .. } => unreachable!("trie invariant: internal at level 0"),
     }
 }
 
