@@ -34,6 +34,7 @@ pub mod protocols;
 pub mod rt;
 pub mod types;
 pub mod bootstrap;
+pub mod reader;
 
 #[doc(hidden)]
 pub use inventory;
