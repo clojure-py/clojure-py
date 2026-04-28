@@ -74,17 +74,34 @@ impl PersistentArrayMap {
     /// semantics**: caller's refs are unchanged; the map dups each
     /// element for its own storage. Duplicate keys: later occurrence
     /// wins (mirrors JVM `PersistentArrayMap.create`).
+    ///
+    /// Internally uses a `TransientArrayMap` so the bulk-build is a
+    /// linear-scan-and-mutate-in-place sequence over a `Vec<Value>`,
+    /// followed by one final freeze. Avoids the O(N²) cost of N
+    /// persistent `assoc` calls (each scans the existing kvs and
+    /// reallocates the storage Box).
     pub fn from_kvs(items: &[Value]) -> Value {
+        use crate::protocols::transient_associative::ITransientAssociative;
+        use crate::protocols::transient_collection::ITransientCollection;
         debug_assert!(items.len() % 2 == 0, "from_kvs: odd-length kv slice");
-        let mut m = empty_array_map();
+
+        let empty = empty_array_map();
+        let mut t = crate::types::transient_array_map::TransientArrayMap::from_persistent(empty);
+        crate::rc::drop_value(empty);
         let mut i = 0;
         while i < items.len() {
-            let nm = PersistentArrayMap::assoc_kv(m, items[i], items[i + 1]);
-            crate::rc::drop_value(m);
-            m = nm;
+            let nt = clojure_rt_macros::dispatch!(
+                ITransientAssociative::assoc_bang, &[t, items[i], items[i + 1]]
+            );
+            crate::rc::drop_value(t);
+            t = nt;
             i += 2;
         }
-        m
+        let result = clojure_rt_macros::dispatch!(
+            ITransientCollection::persistent_bang, &[t]
+        );
+        crate::rc::drop_value(t);
+        result
     }
 
     /// Number of key/value pairs.

@@ -177,14 +177,31 @@ impl PersistentVector {
     /// Build a vector from a slice. **Borrow semantics**: caller's
     /// refs are unchanged; the new vector dups each element for its
     /// own storage.
+    ///
+    /// Internally uses a `TransientVector` so the bulk-build cost is
+    /// O(N) plus one final freeze, instead of O(N · log32 N) from
+    /// per-element persistent path-copies. Tail mutations are
+    /// fully in-place on a `Vec<Value>`; trie pushes use the
+    /// `Arc::make_mut` fast path on the freshly-allocated nodes the
+    /// transient just created.
     pub fn from_slice(items: &[Value]) -> Value {
-        let mut v = empty_vector();
+        use crate::protocols::transient_collection::ITransientCollection;
+
+        let empty = empty_vector();
+        let mut t = crate::types::transient_vector::TransientVector::from_persistent(empty);
+        crate::rc::drop_value(empty);
         for &x in items {
-            let nv = PersistentVector::cons(v, x);
-            crate::rc::drop_value(v);
-            v = nv;
+            let nt = clojure_rt_macros::dispatch!(
+                ITransientCollection::conj_bang, &[t, x]
+            );
+            crate::rc::drop_value(t);
+            t = nt;
         }
-        v
+        let result = clojure_rt_macros::dispatch!(
+            ITransientCollection::persistent_bang, &[t]
+        );
+        crate::rc::drop_value(t);
+        result
     }
 
     /// Cons `x` onto the tail. **Borrow semantics**: caller's ref to
