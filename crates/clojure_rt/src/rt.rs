@@ -43,10 +43,14 @@ use crate::protocols::transient_vector::ITransientVector;
 use crate::types::reduced::Reduced;
 use crate::types::array_map::PersistentArrayMap;
 use crate::types::atom::Atom;
+use crate::types::big_decimal::BigDecimalObj;
+use crate::types::big_int::BigIntObj;
 use crate::types::delay::Delay;
 use crate::types::hash_set::PersistentHashSet;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::PersistentList;
+use crate::types::pattern::PatternObj;
+use crate::types::ratio::RatioObj;
 use crate::types::var::Var;
 use crate::types::volatile::Volatile;
 use crate::types::string::StringObj;
@@ -525,6 +529,43 @@ pub fn push_thread_bindings(m: Value) {
 #[inline]
 pub fn pop_thread_bindings() {
     crate::types::var::pop_thread_bindings()
+}
+
+// --- Big numerics + ratio ---------------------------------------------------
+
+/// Build a `BigInt` from a decimal string (the reader's `1234N`
+/// path). Exception value on parse failure.
+#[inline]
+pub fn big_int_from_str(s: &str) -> Value {
+    BigIntObj::from_str(s)
+}
+
+/// Build a `BigInt` from an `i64`.
+#[inline]
+pub fn big_int_from_i64(n: i64) -> Value {
+    BigIntObj::from_i64(n)
+}
+
+/// Build a `BigDecimal` from a decimal string (the reader's
+/// `3.14M` path). Exception value on parse failure.
+#[inline]
+pub fn big_decimal_from_str(s: &str) -> Value {
+    BigDecimalObj::from_str(s)
+}
+
+/// Build a `Ratio` from `i64` numerator/denominator. Reduces to
+/// lowest terms and normalizes sign. Exception value on
+/// division-by-zero.
+#[inline]
+pub fn ratio_from_i64s(numer: i64, denom: i64) -> Value {
+    RatioObj::from_i64s(numer, denom)
+}
+
+/// Compile a regex (the reader's `#"..."` path). Exception value
+/// on compile failure.
+#[inline]
+pub fn pattern_from_str(s: &str) -> Value {
+    PatternObj::from_str(s)
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or
