@@ -40,6 +40,7 @@ use crate::protocols::indexed::IIndexed;
 use crate::protocols::lookup::ILookup;
 use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::persistent_vector::IPersistentVector;
+use crate::protocols::reduce::IReduce;
 use crate::protocols::reversible::IReversible;
 use crate::protocols::seq::ISeqable;
 use crate::protocols::sequential::ISequential;
@@ -386,6 +387,61 @@ impl PersistentVector {
 
     pub fn count_of(this: Value) -> i64 {
         unsafe { PersistentVector::body(this) }.count
+    }
+
+    /// Length of the tail block (0..=32). Exposed for chunked seqs
+    /// that need to compute block boundaries without reaching into
+    /// private fields.
+    pub fn tail_len_of(this: Value) -> i64 {
+        unsafe { PersistentVector::body(this) }.tail.len() as i64
+    }
+
+    /// Extract the leaf-block (or tail slice) containing element index
+    /// `i`, dup-ing each element into a fresh `Vec<Value>`. Returns
+    /// the block's logical start and end indices in the vector along
+    /// with the materialized values. `i` must be in `[0, count)`.
+    /// Used by `ChunkedVecSeq` / `IChunkedSeq` to vend `ArrayChunk`s.
+    pub fn block_for(this: Value, i: i64) -> (Vec<Value>, i64, i64) {
+        let body = unsafe { PersistentVector::body(this) };
+        debug_assert!(i >= 0 && i < body.count, "block_for: index out of range");
+        let tail_off = tail_offset(body.count, body.tail.len());
+        if i >= tail_off {
+            // Tail block: from tail_off to count.
+            let mut out: Vec<Value> = Vec::with_capacity(body.tail.len());
+            for &v in body.tail.iter() {
+                crate::rc::dup(v);
+                out.push(v);
+            }
+            return (out, tail_off, body.count);
+        }
+        // Trie block: align `i` down to a 32-multiple, walk to leaf.
+        let block_start = i & !MASK;
+        let block_end = (block_start + BRANCHING as i64).min(tail_off);
+        let mut node: Arc<PVNode> = body.root.clone();
+        let mut s = body.shift;
+        while s > 0 {
+            let idx = ((block_start >> s) & MASK) as usize;
+            let next = match node.as_ref() {
+                PVNode::Internal { children } => children[idx]
+                    .as_ref()
+                    .expect("trie invariant: child present")
+                    .clone(),
+                PVNode::Leaf { .. } => panic!("trie invariant: leaf above level 0"),
+            };
+            node = next;
+            s -= SHIFT_STEP;
+        }
+        let leaf = match node.as_ref() {
+            PVNode::Leaf { children } => children,
+            PVNode::Internal { .. } => panic!("trie invariant: internal at level 0"),
+        };
+        let span = (block_end - block_start) as usize;
+        let mut out: Vec<Value> = Vec::with_capacity(span);
+        for &v in leaf.iter().take(span) {
+            crate::rc::dup(v);
+            out.push(v);
+        }
+        (out, block_start, block_end)
     }
 }
 
@@ -760,6 +816,70 @@ clojure_rt_macros::implements! {
 
 clojure_rt_macros::implements! { impl ISequential       for PersistentVector {} }
 clojure_rt_macros::implements! { impl IPersistentVector for PersistentVector {} }
+
+clojure_rt_macros::implements! {
+    impl IReduce for PersistentVector {
+        fn reduce_2(this: Value, f: Value) -> Value {
+            let count = PersistentVector::count_of(this);
+            if count == 0 {
+                // (reduce f []) => (f)
+                return clojure_rt_macros::dispatch!(
+                    crate::protocols::ifn::IFn::invoke, &[f]
+                );
+            }
+            let mut acc = PersistentVector::nth(this, 0).expect("range");
+            let mut i: i64 = 1;
+            while i < count {
+                let x = PersistentVector::nth(this, i).expect("range");
+                let new_acc = clojure_rt_macros::dispatch!(
+                    crate::protocols::ifn::IFn::invoke, &[f, acc, x]
+                );
+                crate::rc::drop_value(acc);
+                crate::rc::drop_value(x);
+                acc = new_acc;
+                if acc.tag == crate::types::reduced::Reduced::type_id() {
+                    let v = clojure_rt_macros::dispatch!(
+                        crate::protocols::deref::IDeref::deref, &[acc]
+                    );
+                    crate::rc::drop_value(acc);
+                    return v;
+                }
+                if acc.is_exception() {
+                    return acc;
+                }
+                i += 1;
+            }
+            acc
+        }
+        fn reduce_3(this: Value, f: Value, init: Value) -> Value {
+            let count = PersistentVector::count_of(this);
+            crate::rc::dup(init);
+            let mut acc = init;
+            let mut i: i64 = 0;
+            while i < count {
+                let x = PersistentVector::nth(this, i).expect("range");
+                let new_acc = clojure_rt_macros::dispatch!(
+                    crate::protocols::ifn::IFn::invoke, &[f, acc, x]
+                );
+                crate::rc::drop_value(acc);
+                crate::rc::drop_value(x);
+                acc = new_acc;
+                if acc.tag == crate::types::reduced::Reduced::type_id() {
+                    let v = clojure_rt_macros::dispatch!(
+                        crate::protocols::deref::IDeref::deref, &[acc]
+                    );
+                    crate::rc::drop_value(acc);
+                    return v;
+                }
+                if acc.is_exception() {
+                    return acc;
+                }
+                i += 1;
+            }
+            acc
+        }
+    }
+}
 
 // ============================================================================
 // Internal helpers — hash + equiv

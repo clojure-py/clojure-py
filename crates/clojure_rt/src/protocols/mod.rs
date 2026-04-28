@@ -7,8 +7,11 @@
 //! concrete types they extend (`types/<name>.rs`).
 
 pub mod associative;
+pub mod chunk;
+pub mod chunked_seq;
 pub mod collection;
 pub mod counted;
+pub mod deref;
 pub mod emptyable_collection;
 pub mod equiv;
 pub mod hash;
@@ -18,6 +21,7 @@ pub mod lookup;
 pub mod meta;
 pub mod named;
 pub mod persistent_vector;
+pub mod reduce;
 pub mod reversible;
 pub mod seq;
 pub mod sequential;

@@ -6,8 +6,10 @@
 //! `Value` of one of these types holds one ref; `clojure_rt::dup` /
 //! `clojure_rt::drop_value` manage it.
 
+pub mod array_chunk;
 pub mod keyword;
 pub mod list;
+pub mod reduced;
 pub mod string;
 pub mod symbol;
 pub mod vec_seq;

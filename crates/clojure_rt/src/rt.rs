@@ -8,8 +8,10 @@
 //! the leaf call site.
 
 use crate::protocols::associative::IAssociative;
+use crate::protocols::chunked_seq::IChunkedSeq;
 use crate::protocols::collection::ICollection;
 use crate::protocols::counted::ICounted;
+use crate::protocols::deref::IDeref;
 use crate::protocols::emptyable_collection::IEmptyableCollection;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
@@ -18,10 +20,12 @@ use crate::protocols::indexed::IIndexed;
 use crate::protocols::lookup::ILookup;
 use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::named::INamed;
+use crate::protocols::reduce::IReduce;
 use crate::protocols::reversible::IReversible;
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
 use crate::protocols::stack::IStack;
+use crate::types::reduced::Reduced;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::{empty_list, PersistentList};
 use crate::types::string::StringObj;
@@ -211,6 +215,135 @@ pub fn cons(x: Value, coll: Value) -> Value {
 #[inline]
 pub fn sequential(v: Value) -> bool {
     crate::protocol::satisfies(&ISequential::MARKER, v)
+}
+
+// --- Reduce ----------------------------------------------------------------
+
+/// `(reduce f coll)` — three dispatches, in order:
+///
+/// 1. If `coll` directly implements `IReduce`, call its `reduce_2`.
+/// 2. Else, get `(seq coll)`. If the seq implements `IChunkedSeq`,
+///    walk it chunk-by-chunk.
+/// 3. Else, walk it element-by-element via `first`/`next`.
+///
+/// `Reduced` and exception Values short-circuit at every step.
+pub fn reduce(coll: Value, f: Value) -> Value {
+    if crate::protocol::satisfies(&IReduce::REDUCE_2, coll) {
+        return clojure_rt_macros::dispatch!(IReduce::reduce, &[coll, f]);
+    }
+    let s = seq(coll);
+    if s.is_nil() {
+        crate::rc::drop_value(s);
+        return clojure_rt_macros::dispatch!(IFn::invoke, &[f]);
+    }
+    let first_v = first(s);
+    let rest_seq = next(s);
+    crate::rc::drop_value(s);
+    let r = reduce_seq_impl(rest_seq, f, first_v);
+    r
+}
+
+/// `(reduce f init coll)` — same dispatch shape as 2-arity reduce
+/// but with a caller-supplied seed.
+pub fn reduce_init(coll: Value, f: Value, init: Value) -> Value {
+    if crate::protocol::satisfies(&IReduce::REDUCE_3, coll) {
+        return clojure_rt_macros::dispatch!(IReduce::reduce, &[coll, f, init]);
+    }
+    let s = seq(coll);
+    reduce_seq_impl(s, f, init)
+}
+
+/// Walk a seq applying `f` to `acc` and each element. The seq is
+/// consumed (this fn drops the entry-point seq Value when it
+/// finishes). `acc` is consumed too — caller transferred one ref.
+fn reduce_seq_impl(mut s: Value, f: Value, mut acc: Value) -> Value {
+    while !s.is_nil() {
+        if crate::protocol::satisfies(&IChunkedSeq::CHUNKED_FIRST_1, s) {
+            let chunk = clojure_rt_macros::dispatch!(IChunkedSeq::chunked_first, &[s]);
+            let cnt = clojure_rt_macros::dispatch!(ICounted::count, &[chunk])
+                .as_int().expect("ICounted on chunk returns int");
+            let mut i: i64 = 0;
+            while i < cnt {
+                let x = clojure_rt_macros::dispatch!(IIndexed::nth, &[chunk, Value::int(i)]);
+                let new_acc = clojure_rt_macros::dispatch!(IFn::invoke, &[f, acc, x]);
+                crate::rc::drop_value(acc);
+                crate::rc::drop_value(x);
+                acc = new_acc;
+                if is_reduced(acc) {
+                    crate::rc::drop_value(chunk);
+                    crate::rc::drop_value(s);
+                    return unreduced(acc);
+                }
+                if acc.is_exception() {
+                    crate::rc::drop_value(chunk);
+                    crate::rc::drop_value(s);
+                    return acc;
+                }
+                i += 1;
+            }
+            crate::rc::drop_value(chunk);
+            let next_s = clojure_rt_macros::dispatch!(IChunkedSeq::chunked_next, &[s]);
+            crate::rc::drop_value(s);
+            s = next_s;
+            continue;
+        }
+        // Element-by-element fallback.
+        let x = first(s);
+        let new_acc = clojure_rt_macros::dispatch!(IFn::invoke, &[f, acc, x]);
+        crate::rc::drop_value(acc);
+        crate::rc::drop_value(x);
+        acc = new_acc;
+        if is_reduced(acc) {
+            crate::rc::drop_value(s);
+            return unreduced(acc);
+        }
+        if acc.is_exception() {
+            crate::rc::drop_value(s);
+            return acc;
+        }
+        let next_s = next(s);
+        crate::rc::drop_value(s);
+        s = next_s;
+    }
+    crate::rc::drop_value(s);
+    acc
+}
+
+// --- Reduced + IDeref -------------------------------------------------------
+
+/// Wrap `x` as a `Reduced` sentinel so a step function can short-
+/// circuit a reduce. Caller transfers one ref of `x` to the wrapper.
+#[inline]
+pub fn reduced(x: Value) -> Value {
+    Reduced::wrap(x)
+}
+
+/// `(reduced? x)` — true iff `x` is a `Reduced` sentinel.
+#[inline]
+pub fn is_reduced(x: Value) -> bool {
+    if !x.is_heap() {
+        return false;
+    }
+    Reduced::type_id() == x.tag
+}
+
+/// `(unreduced x)` — if reduced, deref the wrapper; else identity.
+/// In the dereferenced case, transfers a fresh ref to the caller and
+/// drops the wrapper's ref.
+#[inline]
+pub fn unreduced(x: Value) -> Value {
+    if is_reduced(x) {
+        let inner = clojure_rt_macros::dispatch!(IDeref::deref, &[x]);
+        crate::rc::drop_value(x);
+        inner
+    } else {
+        x
+    }
+}
+
+#[inline]
+pub fn deref(v: Value) -> Value {
+    clojure_rt_macros::dispatch!(IDeref::deref, &[v])
 }
 
 // --- IFn invocation ---------------------------------------------------------

@@ -11,12 +11,14 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::hash::murmur3;
+use crate::protocols::chunked_seq::IChunkedSeq;
 use crate::protocols::counted::ICounted;
 use crate::protocols::equiv::IEquiv;
 use crate::protocols::hash::IHash;
 use crate::protocols::meta::{IMeta, IWithMeta};
 use crate::protocols::seq::{INext, ISeq, ISeqable};
 use crate::protocols::sequential::ISequential;
+use crate::types::array_chunk::ArrayChunk;
 use crate::types::vector::PersistentVector;
 use crate::value::Value;
 
@@ -163,6 +165,72 @@ clojure_rt_macros::implements! {
 }
 
 clojure_rt_macros::implements! { impl ISequential for VecSeq {} }
+
+clojure_rt_macros::implements! {
+    impl IChunkedSeq for VecSeq {
+        fn chunked_first(this: Value) -> Value {
+            let body = unsafe { VecSeq::body(this) };
+            // Materialize the leaf-block (or tail tail) containing
+            // `index`, then trim to the active range starting at
+            // `index` (which may be mid-block if a previous
+            // chunked-rest didn't land on a boundary, though our
+            // `chunked_rest` always advances to the next block start).
+            let (block, block_start, block_end) =
+                PersistentVector::block_for(body.vec, body.index);
+            let _ = block_end;
+            // Compute the offset within the materialized block where
+            // `index` falls; drop earlier elements (refcount-wise) so
+            // the chunk only owns its active range.
+            let drop_count = (body.index - block_start) as usize;
+            let mut iter = block.into_iter();
+            for _ in 0..drop_count {
+                if let Some(v) = iter.next() {
+                    crate::rc::drop_value(v);
+                }
+            }
+            let active: Vec<Value> = iter.collect();
+            ArrayChunk::from_vec(active)
+        }
+        fn chunked_rest(this: Value) -> Value {
+            let body = unsafe { VecSeq::body(this) };
+            let count = PersistentVector::count_of(body.vec);
+            // Advance to the first index of the *next* block.
+            let block_end = next_block_boundary(body.vec, body.index);
+            if block_end >= count {
+                crate::types::list::empty_list()
+            } else {
+                crate::rc::dup(body.vec);
+                VecSeq::alloc(body.vec, block_end, Value::NIL, AtomicI32::new(0))
+            }
+        }
+        fn chunked_next(this: Value) -> Value {
+            let body = unsafe { VecSeq::body(this) };
+            let count = PersistentVector::count_of(body.vec);
+            let block_end = next_block_boundary(body.vec, body.index);
+            if block_end >= count {
+                Value::NIL
+            } else {
+                crate::rc::dup(body.vec);
+                VecSeq::alloc(body.vec, block_end, Value::NIL, AtomicI32::new(0))
+            }
+        }
+    }
+}
+
+/// First index of the *next* block after the one containing `i`.
+/// For tail-region indices this is `count` (no further block). For
+/// trie-region indices it's the next 32-aligned boundary, capped at
+/// the tail offset (which is itself the end of the trie region).
+fn next_block_boundary(vec: Value, i: i64) -> i64 {
+    let count = PersistentVector::count_of(vec);
+    let tail_off = count - PersistentVector::tail_len_of(vec);
+    if i >= tail_off {
+        return count;
+    }
+    let block_start = i & !0x1f;
+    let next = block_start + 32;
+    next.min(tail_off).min(count)
+}
 
 // ============================================================================
 // VecRSeq — reverse
