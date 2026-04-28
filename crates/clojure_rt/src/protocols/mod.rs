@@ -7,6 +7,7 @@
 //! concrete types they extend (`types/<name>.rs`).
 
 pub mod associative;
+pub mod atom;
 pub mod chunk;
 pub mod chunked_seq;
 pub mod collection;

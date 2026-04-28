@@ -8,6 +8,7 @@
 //! the leaf call site.
 
 use crate::protocols::associative::IAssociative;
+use crate::protocols::atom::IAtom;
 use crate::protocols::chunked_seq::IChunkedSeq;
 use crate::protocols::editable_collection::IEditableCollection;
 use crate::protocols::collection::ICollection;
@@ -36,6 +37,7 @@ use crate::protocols::transient_map::ITransientMap;
 use crate::protocols::transient_vector::ITransientVector;
 use crate::types::reduced::Reduced;
 use crate::types::array_map::PersistentArrayMap;
+use crate::types::atom::Atom;
 use crate::types::hash_set::PersistentHashSet;
 use crate::types::keyword::KeywordObj;
 use crate::types::list::PersistentList;
@@ -312,6 +314,44 @@ pub fn hash_set(items: &[Value]) -> Value {
 #[inline]
 pub fn disj(s: Value, k: Value) -> Value {
     clojure_rt_macros::dispatch!(ISet::disjoin, &[s, k])
+}
+
+// --- Atoms ------------------------------------------------------------------
+
+/// `(atom x)` — wrap `x` in a fresh `Atom`. Borrow semantics on `x`.
+#[inline]
+pub fn atom(x: Value) -> Value {
+    Atom::new(x)
+}
+
+/// `(reset! a x)` — install `x` as the atom's value, returning `x`.
+#[inline]
+pub fn reset_bang(a: Value, x: Value) -> Value {
+    clojure_rt_macros::dispatch!(IAtom::reset, &[a, x])
+}
+
+/// `(compare-and-set! a old new)` — succeed iff the atom currently
+/// holds a value equiv to `old`. Returns `Value::TRUE` / `Value::FALSE`.
+#[inline]
+pub fn compare_and_set(a: Value, old: Value, new: Value) -> Value {
+    clojure_rt_macros::dispatch!(IAtom::compare_and_set, &[a, old, new])
+}
+
+/// `(swap! a f args…)` — atomically replace the atom's value with
+/// `(apply f current args)` under CAS retry. Caps at 4 user args (0..=3
+/// in `args`); extending follows IFn's pattern (one extra arity).
+#[inline]
+pub fn swap_bang(a: Value, f: Value, args: &[Value]) -> Value {
+    match args.len() {
+        0 => clojure_rt_macros::dispatch!(IAtom::swap, &[a, f]),
+        1 => clojure_rt_macros::dispatch!(IAtom::swap, &[a, f, args[0]]),
+        2 => clojure_rt_macros::dispatch!(IAtom::swap, &[a, f, args[0], args[1]]),
+        3 => clojure_rt_macros::dispatch!(IAtom::swap, &[a, f, args[0], args[1], args[2]]),
+        n => panic!(
+            "rt::swap_bang: arity {} exceeds current IAtom::swap cap of 3 user args — extend protocols/atom.rs",
+            n
+        ),
+    }
 }
 
 /// `(cons x coll)`. Returns a `PersistentList` when `coll` is nil or

@@ -9,6 +9,7 @@
 pub mod array_chunk;
 pub mod array_map;
 pub mod array_map_seq;
+pub mod atom;
 pub mod cons;
 pub mod hash_map;
 pub mod hash_map_seq;
