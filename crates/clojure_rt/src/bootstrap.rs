@@ -76,12 +76,17 @@ pub fn current_ns_var() -> Value {
 
 /// `*data-readers*` — map of tag-symbol → reader-fn. The reader's
 /// `#tag form` path looks here first; `*default-data-readers*` is
-/// the fallback. Initial root: an empty map.
+/// the fallback. Initial root: the empty-map singleton (already
+/// shared, so cross-thread `deref` + `dup` round-trip safely).
 pub fn data_readers_var() -> Value {
     static SLOT: OnceLock<Value> = OnceLock::new();
     *SLOT.get_or_init(|| {
         let sym = crate::rt::symbol(None, "*data-readers*");
-        let v = Var::intern(Value::NIL, sym, crate::rt::array_map(&[]));
+        let v = Var::intern(
+            Value::NIL,
+            sym,
+            crate::types::array_map::empty_array_map(),
+        );
         let _ = Var::set_dynamic(v);
         crate::rc::drop_value(sym);
         v
@@ -89,14 +94,17 @@ pub fn data_readers_var() -> Value {
 }
 
 /// `*default-data-readers*` — the fallback map consulted after
-/// `*data-readers*` for `#tag form`. Initial root: an empty map;
-/// `#inst` and `#uuid` will land here once the runtime has
-/// `Inst`/`UUID` types.
+/// `*data-readers*` for `#tag form`. Initial root: the empty-map
+/// singleton.
 pub fn default_data_readers_var() -> Value {
     static SLOT: OnceLock<Value> = OnceLock::new();
     *SLOT.get_or_init(|| {
         let sym = crate::rt::symbol(None, "*default-data-readers*");
-        let v = Var::intern(Value::NIL, sym, crate::rt::array_map(&[]));
+        let v = Var::intern(
+            Value::NIL,
+            sym,
+            crate::types::array_map::empty_array_map(),
+        );
         let _ = Var::set_dynamic(v);
         crate::rc::drop_value(sym);
         v
@@ -106,13 +114,18 @@ pub fn default_data_readers_var() -> Value {
 /// `*reader-features*` — the set of feature keywords reader
 /// conditionals (`#?(:k1 e1 :k2 e2)`) match against. Initial
 /// root: `#{:cljr}` (our platform tag — distinct from `:clj` /
-/// `:cljs`). Add features as we grow.
+/// `:cljs`).
 pub fn reader_features_var() -> Value {
     static SLOT: OnceLock<Value> = OnceLock::new();
     *SLOT.get_or_init(|| {
         let sym = crate::rt::symbol(None, "*reader-features*");
         let cljr = crate::rt::keyword(None, "cljr");
         let initial = crate::rt::hash_set(&[cljr]);
+        // Pre-share the set + its element so cross-thread reads
+        // can dup safely. Keywords are already interned-shared,
+        // but cover them too for the discipline.
+        crate::rc::share(initial);
+        crate::rc::share(cljr);
         let v = Var::intern(Value::NIL, sym, initial);
         let _ = Var::set_dynamic(v);
         crate::rc::drop_value(sym);
@@ -156,13 +169,12 @@ pub fn source_pos_meta(line: i64, column: i64, file: &str) -> Value {
     m
 }
 
-/// `(with-meta form (source-pos-meta line col file))` shortcut.
-/// Returns a fresh form with the position attached. Borrow
-/// semantics on `form`. Falls through to `form` (with a dup) if
-/// `form` doesn't satisfy `IWithMeta` — primitives, strings, and
-/// keywords don't carry meta in JVM Clojure, and trying to
-/// `with-meta` them throws there; we silently no-op since the
-/// reader hands every form to this helper without checking.
+/// Attach `(:line :column :file)` source-position metadata to
+/// `form`. Existing meta on the form (e.g., from a `^...` reader
+/// macro) is preserved — user-set keys win over source-pos keys
+/// when they collide. Falls through to `form` (with a dup) if
+/// `form` doesn't satisfy `IWithMeta` (primitives, strings,
+/// keywords).
 pub fn with_source_pos(form: Value, line: i64, column: i64, file: &str) -> Value {
     if !crate::protocol::satisfies(
         &crate::protocols::meta::IWithMeta::WITH_META_2,
@@ -171,8 +183,35 @@ pub fn with_source_pos(form: Value, line: i64, column: i64, file: &str) -> Value
         crate::rc::dup(form);
         return form;
     }
-    let meta = source_pos_meta(line, column, file);
-    let r = crate::rt::with_meta(form, meta);
-    crate::rc::drop_value(meta);
+    let pos_meta = source_pos_meta(line, column, file);
+    let cur_meta = crate::rt::meta(form);
+    let merged = if cur_meta.is_nil() {
+        crate::rc::drop_value(cur_meta);
+        pos_meta
+    } else {
+        // Merge cur_meta over pos_meta — user-set keys override
+        // source-pos keys.
+        let mut acc = pos_meta;
+        let mut s = crate::rt::seq(cur_meta);
+        while !s.is_nil() {
+            let entry = crate::rt::first(s);
+            let k = crate::rt::key(entry);
+            let v = crate::rt::val(entry);
+            let next = crate::rt::assoc(acc, k, v);
+            crate::rc::drop_value(acc);
+            crate::rc::drop_value(k);
+            crate::rc::drop_value(v);
+            crate::rc::drop_value(entry);
+            acc = next;
+            let n = crate::rt::next(s);
+            crate::rc::drop_value(s);
+            s = n;
+        }
+        crate::rc::drop_value(s);
+        crate::rc::drop_value(cur_meta);
+        acc
+    };
+    let r = crate::rt::with_meta(form, merged);
+    crate::rc::drop_value(merged);
     r
 }

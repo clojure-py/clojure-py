@@ -114,11 +114,19 @@ impl Namespace {
             crate::rc::dup(*existing);
             return *existing;
         }
+        // Deep-share the symbol so its inner ns/name StringObjs are
+        // visible to non-owner threads (a bare `share()` only shares
+        // the symbol's heap object itself, not its children).
         crate::rc::dup(sym);
-        crate::rc::share(sym);
+        unsafe { crate::types::symbol::SymbolObj::share_for_publication(sym); }
+        // Use the empty-array-map singleton (already pre-shared) for
+        // the initial mappings/aliases — a fresh `array_map(&[])`
+        // would be biased to the creating thread.
+        let empty_m = crate::types::array_map::empty_array_map();
+        let empty_a = crate::types::array_map::empty_array_map();
         let ns = Namespace::alloc(
-            ArcSwap::from(cell(crate::rt::array_map(&[]))),
-            ArcSwap::from(cell(crate::rt::array_map(&[]))),
+            ArcSwap::from(cell(empty_m)),
+            ArcSwap::from(cell(empty_a)),
             ArcSwap::from(cell(Value::NIL)),
             sym,
         );
