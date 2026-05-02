@@ -133,8 +133,10 @@ cdef class PersistentArrayMap:
             new_arr = list(self._array)
             new_arr[i + 1] = val
             return _make_pam(new_arr, self._meta)
-        # Not present — grow. (Java would spillover to PersistentHashMap when
-        # array.length >= 16; we let the array grow until PHM lands.)
+        # Not present — grow. JVM Clojure spillovers to PersistentHashMap when
+        # the array reaches 16 entries (8 KV pairs).
+        if len(self._array) >= _ARRAY_MAP_HT_THRESHOLD:
+            return _phm_from_pam_array(self._array, self._meta).assoc(key, val)
         new_arr = list(self._array)
         new_arr.append(key)
         new_arr.append(val)
@@ -142,9 +144,12 @@ cdef class PersistentArrayMap:
 
     def assoc_ex(self, key, val):
         cdef int i = _pam_index_of(self._array, key)
+        cdef list new_arr
         if i >= 0:
             raise ValueError(f"Key already present: {key!r}")
-        cdef list new_arr = list(self._array)
+        if len(self._array) >= _ARRAY_MAP_HT_THRESHOLD:
+            return _phm_from_pam_array(self._array, self._meta).assoc_ex(key, val)
+        new_arr = list(self._array)
         new_arr.append(key)
         new_arr.append(val)
         return _make_pam(new_arr, self._meta)
@@ -476,6 +481,12 @@ cdef class TransientArrayMap:
             if self._array[i + 1] is not val and self._array[i + 1] != val:
                 self._array[i + 1] = val
             return self
+        # JVM spillovers to TransientHashMap once the array hits the threshold.
+        if self._len >= _ARRAY_MAP_HT_THRESHOLD:
+            t = _phm_from_pam_array(list(self._array[:self._len]), None).as_transient()
+            t.assoc(key, val)
+            self._owner = None  # invalidate this transient
+            return t
         # Grow buffer if needed.
         if self._len >= len(self._array):
             self._array += [None] * 16
@@ -559,3 +570,18 @@ IFn.register(TransientArrayMap)
 
 cdef PersistentArrayMap _PAM_EMPTY = _make_pam([], None)
 PERSISTENT_ARRAY_MAP_EMPTY = _PAM_EMPTY
+
+
+# ---------- HashMap spillover helper ----------
+
+cdef object _phm_from_pam_array(list array, object meta):
+    """Build a PersistentHashMap from a flat [k,v,k,v,...] array. Used when
+    PersistentArrayMap (or its transient) outgrows the array threshold."""
+    t = PERSISTENT_HASH_MAP_EMPTY.as_transient()
+    cdef int i
+    for i in range(0, len(array), 2):
+        t.assoc(array[i], array[i + 1])
+    cdef PersistentHashMap result = t.persistent()
+    if meta is None:
+        return result
+    return result.with_meta(meta)

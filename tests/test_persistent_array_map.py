@@ -519,11 +519,13 @@ class TestTransientArrayMap:
         assert result.val_at("a") == 1
         assert result.val_at("b") == 2
 
-    def test_grows_past_threshold(self):
-        # Same as persistent: we let transient grow without HT spillover.
+    def test_grows_past_threshold_spillovers_to_transient_hash_map(self):
+        # Past 8 entries (16 array slots) the transient spills to TransientHashMap.
+        # Java's contract: rebind the result of assoc — it MAY be a different
+        # transient instance after spillover.
         t = PersistentArrayMap.create().as_transient()
         for i in range(50):
-            t.assoc(i, i * 10)
+            t = t.assoc(i, i * 10)
         result = t.persistent()
         assert result.count() == 50
         assert result.val_at(30) == 300
