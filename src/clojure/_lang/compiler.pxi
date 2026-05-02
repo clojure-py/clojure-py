@@ -91,6 +91,40 @@ def _is_self_eval_literal(form):
     return False
 
 
+# --- symbol resolution --------------------------------------------------
+
+def _resolve_in_current_ns(sym):
+    """Look `sym` up in the current namespace's mappings. Returns a Var,
+    a class, some other mapped value, or None."""
+    return Compiler.maybe_resolve_in(Compiler.current_ns(), sym)
+
+
+def _resolve_var_or_die(sym):
+    """For special forms that need a Var specifically (`var`, later `def`
+    in some shapes)."""
+    v = _resolve_in_current_ns(sym)
+    if isinstance(v, Var):
+        return v
+    raise NameError("Unable to resolve var: " + str(sym))
+
+
+def _emit_symbol_value(sym, ctx):
+    """Emit code that pushes the *value* of `sym` (deref'd if a Var)."""
+    v = _resolve_in_current_ns(sym)
+    if v is None:
+        raise NameError("Unable to resolve symbol: " + str(sym))
+    if isinstance(v, Var):
+        # LOAD_CONST <var>; LOAD_ATTR (method-form) deref; CALL 0
+        ctx.emit(
+            _bc_Instr("LOAD_CONST", v),
+            _bc_Instr("LOAD_ATTR", (True, "deref")),
+            _bc_Instr("CALL", 0),
+        )
+        return
+    # Class or other mapped object — just load it.
+    ctx.emit(_bc_Instr("LOAD_CONST", v))
+
+
 # --- emitter ------------------------------------------------------------
 
 def _compile_form(form, ctx):
@@ -98,6 +132,10 @@ def _compile_form(form, ctx):
     stack."""
     if _is_self_eval_literal(form):
         ctx.emit(_bc_Instr("LOAD_CONST", form))
+        return
+
+    if isinstance(form, Symbol):
+        _emit_symbol_value(form, ctx)
         return
 
     # Lists / seqs are calls or special forms. An empty list evaluates to
@@ -115,6 +153,15 @@ def _compile_form(form, ctx):
                 if rest is None:
                     raise SyntaxError("quote requires one argument")
                 ctx.emit(_bc_Instr("LOAD_CONST", rest.first()))
+                return
+            if sname == "var":
+                rest = s.next()
+                if rest is None:
+                    raise SyntaxError("var requires a symbol argument")
+                target = rest.first()
+                if not isinstance(target, Symbol):
+                    raise SyntaxError("var requires a symbol argument")
+                ctx.emit(_bc_Instr("LOAD_CONST", _resolve_var_or_die(target)))
                 return
         raise NotImplementedError(
             "compile: form not yet supported: " + repr(form))
