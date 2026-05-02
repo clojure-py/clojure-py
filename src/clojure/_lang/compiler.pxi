@@ -91,6 +91,65 @@ def _is_self_eval_literal(form):
     return False
 
 
+# --- FAST → CELL promotion / capture chain ------------------------------
+
+def _promote_to_cell(ctx, slot_name):
+    """Convert a FAST local at python `slot_name` into a CELL. Idempotent
+    for already-cells. Patches every already-emitted LOAD_FAST/STORE_FAST
+    for this slot to LOAD_DEREF/STORE_DEREF, and adds the slot to
+    `ctx.cellvars` so MAKE_CELL appears in the prologue at to_code time.
+
+    Used when an inner fn discovers it needs to capture an outer let*
+    binding or arg that we'd previously assumed was a plain local."""
+    if slot_name in ctx.cellvars:
+        return
+    ctx.cellvars.append(slot_name)
+    cv = _bc_CellVar(slot_name)
+    patched = []
+    for ins in ctx.instrs:
+        nm = getattr(ins, "name", None)
+        arg = getattr(ins, "arg", None)
+        if nm == "LOAD_FAST" and arg == slot_name:
+            patched.append(_bc_Instr("LOAD_DEREF", cv))
+        elif nm == "STORE_FAST" and arg == slot_name:
+            patched.append(_bc_Instr("STORE_DEREF", cv))
+        else:
+            patched.append(ins)
+    ctx.instrs = patched
+    for clj_name, (kind, sn) in list(ctx.locals.items()):
+        if sn == slot_name and kind == "FAST":
+            ctx.locals[clj_name] = ("CELL", slot_name)
+
+
+def _resolve_local_through_chain(start_ctx, clj_name):
+    """If `clj_name` is bound in `start_ctx` or any ancestor, ensure the
+    cell/freevar plumbing exists between binding site and `start_ctx`,
+    and return the python slot name in `start_ctx`. Returns None if not
+    bound anywhere up the chain.
+
+    Slot names propagate unchanged through a capture chain — every layer
+    (binding site, intermediates, start) uses the same string. They live
+    in disjoint frames so there's no clash."""
+    if clj_name in start_ctx.locals:
+        return start_ctx.locals[clj_name][1]
+    intermediates = []
+    bind_ctx = start_ctx.parent
+    while bind_ctx is not None:
+        if clj_name in bind_ctx.locals:
+            kind, slot = bind_ctx.locals[clj_name]
+            if kind == "FAST":
+                _promote_to_cell(bind_ctx, slot)
+            for c in intermediates + [start_ctx]:
+                if slot not in c.freevars:
+                    c.freevars.append(slot)
+                if clj_name not in c.locals:
+                    c.locals[clj_name] = ("FREE", slot)
+            return slot
+        intermediates.append(bind_ctx)
+        bind_ctx = bind_ctx.parent
+    return None
+
+
 # --- symbol resolution --------------------------------------------------
 
 def _resolve_in_current_ns(sym):
@@ -109,21 +168,26 @@ def _resolve_var_or_die(sym):
 
 
 def _emit_symbol_value(sym, ctx):
-    """Emit code that pushes the *value* of `sym` (a local, or a Var
-    resolved through the current namespace and dereffed)."""
-    # Lexical local first — only unqualified symbols can shadow.
-    if sym.ns is None and sym.name in ctx.locals:
-        kind, slot = ctx.locals[sym.name]
-        if kind == "FAST":
-            ctx.emit(_bc_Instr("LOAD_FAST", slot))
-            return
-        if kind == "CELL":
-            ctx.emit(_bc_Instr("LOAD_DEREF", _bc_CellVar(slot)))
-            return
-        if kind == "FREE":
-            ctx.emit(_bc_Instr("LOAD_DEREF", _bc_FreeVar(slot)))
-            return
-        raise AssertionError("unknown local kind: " + repr(kind))
+    """Emit code that pushes the *value* of `sym` (a local — possibly
+    captured from an outer fn — or a Var resolved through the current
+    namespace and dereffed)."""
+    # Lexical local first — walk the lexical chain. This may promote a
+    # parent FAST local to a CELL and add freevar entries through any
+    # intermediate fn contexts.
+    if sym.ns is None:
+        slot = _resolve_local_through_chain(ctx, sym.name)
+        if slot is not None:
+            kind = ctx.locals[sym.name][0]
+            if kind == "FAST":
+                ctx.emit(_bc_Instr("LOAD_FAST", slot))
+                return
+            if kind == "CELL":
+                ctx.emit(_bc_Instr("LOAD_DEREF", _bc_CellVar(slot)))
+                return
+            if kind == "FREE":
+                ctx.emit(_bc_Instr("LOAD_DEREF", _bc_FreeVar(slot)))
+                return
+            raise AssertionError("unknown local kind: " + repr(kind))
 
     v = _resolve_in_current_ns(sym)
     if v is None:
@@ -186,6 +250,9 @@ def _compile_form(form, ctx):
                 return
             if sname == "let*":
                 _compile_let_star(s.next(), ctx)
+                return
+            if sname == "fn*":
+                _compile_fn_star(s.next(), ctx)
                 return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
@@ -288,6 +355,98 @@ def _compile_let_star(args, ctx):
         _compile_do(body, ctx)
     finally:
         ctx.locals = saved_locals
+
+
+def _compile_fn_star(args, ctx):
+    """(fn* [args...] body...) or (fn* name [args...] body...)
+
+    Single-arity only for slice 5 — multi-arity `(fn* ([a] ...) ([a b] ...))`
+    and varargs `& rest` come later.
+
+    Emits a nested code object compiled in a child _FnContext, then
+    constructs the function in the outer scope. If the inner body
+    captured anything from the outer chain (now visible via inner.freevars),
+    we build the closure tuple by LOAD_FAST'ing each cell from the outer's
+    fast-locals (cells live in the same fast-locals array as plain
+    locals on 3.14).
+
+    For named fn (the optional `name` allows recursion), we allocate a
+    self-cell in OUTER, expose it as a freevar in INNER, and after
+    MAKE_FUNCTION we COPY + STORE_DEREF the function into the cell so
+    inner refs to `name` resolve to the function itself."""
+    if args is None:
+        raise SyntaxError("fn* requires at least an arglist")
+    first = args.first()
+    rest = args.next()
+    fn_name = None
+    if isinstance(first, Symbol):
+        fn_name = first.name
+        if rest is None:
+            raise SyntaxError("fn* with name requires an arglist")
+        args_vec = rest.first()
+        body = rest.next()
+    else:
+        args_vec = first
+        body = rest
+    if not isinstance(args_vec, IPersistentVector):
+        raise SyntaxError(
+            "fn* arglist must be a vector "
+            "(multi-arity fn* not yet supported)")
+
+    arg_names = []
+    for i in range(args_vec.count()):
+        an = args_vec.nth(i)
+        if not isinstance(an, Symbol) or an.ns is not None:
+            raise SyntaxError("fn* arg names must be unqualified symbols")
+        arg_names.append(an.name)
+
+    inner = _FnContext(
+        name=fn_name if fn_name else "__fn__",
+        argnames=arg_names,
+        parent=ctx,
+    )
+
+    self_cell_slot = None
+    if fn_name is not None:
+        self_cell_slot = ctx.gensym(fn_name)
+        if self_cell_slot not in ctx.cellvars:
+            ctx.cellvars.append(self_cell_slot)
+        inner.freevars.append(self_cell_slot)
+        inner.locals[fn_name] = ("FREE", self_cell_slot)
+
+    _compile_do(body, inner)
+    inner.emit(_bc_Instr("RETURN_VALUE"))
+    inner_code = inner.to_code()
+
+    if inner.freevars:
+        for fv in inner.freevars:
+            # In OUR (outer) frame, the cell holding this name is in
+            # fast-locals at the slot for either a cellvar (we MAKE_CELL'd
+            # it) or a freevar (we received it via COPY_FREE_VARS, then
+            # pass it through to a deeper child). The bytecode lib needs
+            # the CellVar/FreeVar marker to classify the slot correctly
+            # — a bare string would be treated as a regular local.
+            if fv in ctx.cellvars:
+                ctx.emit(_bc_Instr("LOAD_FAST", _bc_CellVar(fv)))
+            elif fv in ctx.freevars:
+                ctx.emit(_bc_Instr("LOAD_FAST", _bc_FreeVar(fv)))
+            else:
+                raise AssertionError(
+                    "fn* freevar not found in outer cells/frees: "
+                    + repr(fv))
+        ctx.emit(_bc_Instr("BUILD_TUPLE", len(inner.freevars)))
+        ctx.emit(_bc_Instr("LOAD_CONST", inner_code))
+        ctx.emit(_bc_Instr("MAKE_FUNCTION"))
+        ctx.emit(_bc_Instr("SET_FUNCTION_ATTRIBUTE", 8))
+    else:
+        ctx.emit(_bc_Instr("LOAD_CONST", inner_code))
+        ctx.emit(_bc_Instr("MAKE_FUNCTION"))
+
+    if self_cell_slot is not None:
+        ctx.emit(
+            _bc_Instr("COPY", 1),
+            _bc_Instr("STORE_DEREF", _bc_CellVar(self_cell_slot)),
+        )
 
 
 def _compile_call(s, ctx):
