@@ -254,6 +254,9 @@ def _compile_form(form, ctx):
             if sname == "fn*":
                 _compile_fn_star(s.next(), ctx)
                 return
+            if sname == "def":
+                _compile_def(s.next(), ctx)
+                return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
         return
@@ -447,6 +450,66 @@ def _compile_fn_star(args, ctx):
             _bc_Instr("COPY", 1),
             _bc_Instr("STORE_DEREF", _bc_CellVar(self_cell_slot)),
         )
+
+
+def _compile_def(args, ctx):
+    """(def name)              — intern an unbound Var
+       (def name init)         — intern and set its root to init
+       (def name docstring init) — same, with :doc metadata
+
+    The Var is interned at compile time so subsequent forms (within
+    the same compilation unit, or in other forms compiled afterwards)
+    can resolve `name` even if `init` later refers back to the var.
+    The init value is evaluated at run time and stored as the root."""
+    if args is None:
+        raise SyntaxError("def requires a name")
+    name_sym = args.first()
+    if not isinstance(name_sym, Symbol):
+        raise SyntaxError("def's first argument must be a symbol")
+    if name_sym.ns is not None:
+        raise SyntaxError(
+            "def's name must not be namespace-qualified: " + str(name_sym))
+
+    rest = args.next()
+    docstring = None
+    init_form = None
+    has_init = False
+    if rest is not None:
+        first_rest = rest.first()
+        rest2 = rest.next()
+        if rest2 is not None and isinstance(first_rest, str):
+            docstring = first_rest
+            init_form = rest2.first()
+            has_init = True
+            if rest2.next() is not None:
+                raise SyntaxError("Too many arguments to def")
+        else:
+            init_form = first_rest
+            has_init = True
+            if rest2 is not None:
+                raise SyntaxError("Too many arguments to def")
+
+    ns = Compiler.current_ns()
+    v = ns.intern(name_sym)
+    if docstring is not None:
+        v.set_meta(RT.assoc(v.meta() or PersistentArrayMap.EMPTY,
+                            Keyword.intern(None, "doc"), docstring))
+
+    if has_init:
+        # Stack: leave Var on TOS at the end.
+        # Emit: var.bind_root(<init>); LOAD_CONST var
+        ctx.emit(
+            _bc_Instr("LOAD_CONST", v),
+            _bc_Instr("LOAD_ATTR", (True, "bind_root")),
+        )
+        _compile_form(init_form, ctx)
+        ctx.emit(
+            _bc_Instr("CALL", 1),
+            _bc_Instr("POP_TOP"),
+            _bc_Instr("LOAD_CONST", v),
+        )
+    else:
+        ctx.emit(_bc_Instr("LOAD_CONST", v))
 
 
 def _compile_call(s, ctx):
