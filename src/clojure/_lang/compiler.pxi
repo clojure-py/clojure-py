@@ -163,11 +163,92 @@ def _compile_form(form, ctx):
                     raise SyntaxError("var requires a symbol argument")
                 ctx.emit(_bc_Instr("LOAD_CONST", _resolve_var_or_die(target)))
                 return
-        raise NotImplementedError(
-            "compile: form not yet supported: " + repr(form))
+            if sname == "if":
+                _compile_if(s.next(), ctx)
+                return
+            if sname == "do":
+                _compile_do(s.next(), ctx)
+                return
+        # Function-call form: (f arg1 arg2 ...)
+        _compile_call(s, ctx)
+        return
 
     raise NotImplementedError(
         "compile: form not yet supported: " + repr(form))
+
+
+# --- if / do / function-call -------------------------------------------
+
+def _compile_if(args, ctx):
+    """args is the seq AFTER the `if` head: (test then else?) — `else` is
+    optional and defaults to nil."""
+    if args is None:
+        raise SyntaxError("if requires at least a test and a then branch")
+    test = args.first()
+    rest = args.next()
+    if rest is None:
+        raise SyntaxError("if requires a then branch")
+    then_form = rest.first()
+    else_rest = rest.next()
+    has_else = else_rest is not None
+    else_form = else_rest.first() if has_else else None
+    if has_else and else_rest.next() is not None:
+        raise SyntaxError("if takes at most 3 arguments (test then else)")
+
+    else_label = ctx.new_label()
+    end_label = ctx.new_label()
+
+    # Wrap the test in RT.boolean_cast so Clojure's nil/false-only falsy
+    # semantics drive the jump rather than Python's broader falsiness.
+    ctx.emit(
+        _bc_Instr("LOAD_CONST", RT.boolean_cast),
+        _bc_Instr("PUSH_NULL"),
+    )
+    _compile_form(test, ctx)
+    ctx.emit(
+        _bc_Instr("CALL", 1),
+        _bc_Instr("POP_JUMP_IF_FALSE", else_label),
+    )
+    _compile_form(then_form, ctx)
+    ctx.emit(_bc_Instr("JUMP_FORWARD", end_label))
+    ctx.emit(else_label)
+    _compile_form(else_form, ctx)
+    ctx.emit(end_label)
+
+
+def _compile_do(args, ctx):
+    """(do form1 form2 ... formN) — evaluate each in order, value of the
+    last is the value of the do. Empty `(do)` is nil."""
+    if args is None:
+        ctx.emit(_bc_Instr("LOAD_CONST", None))
+        return
+    s = args
+    while True:
+        nxt = s.next()
+        if nxt is None:
+            # Last form — leave its value on the stack.
+            _compile_form(s.first(), ctx)
+            return
+        # Intermediate form — evaluate for effect, discard value.
+        _compile_form(s.first(), ctx)
+        ctx.emit(_bc_Instr("POP_TOP"))
+        s = nxt
+
+
+def _compile_call(s, ctx):
+    """Plain function-call form: (callable arg1 arg2 ...)."""
+    callable_form = s.first()
+    args = s.next()
+    # Stack layout for CALL n: [callable, NULL_or_self, arg1, ..., argn].
+    _compile_form(callable_form, ctx)
+    ctx.emit(_bc_Instr("PUSH_NULL"))
+    nargs = 0
+    cur = args
+    while cur is not None:
+        _compile_form(cur.first(), ctx)
+        nargs += 1
+        cur = cur.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
 
 
 # --- entry points -------------------------------------------------------
