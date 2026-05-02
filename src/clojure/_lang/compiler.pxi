@@ -109,7 +109,22 @@ def _resolve_var_or_die(sym):
 
 
 def _emit_symbol_value(sym, ctx):
-    """Emit code that pushes the *value* of `sym` (deref'd if a Var)."""
+    """Emit code that pushes the *value* of `sym` (a local, or a Var
+    resolved through the current namespace and dereffed)."""
+    # Lexical local first — only unqualified symbols can shadow.
+    if sym.ns is None and sym.name in ctx.locals:
+        kind, slot = ctx.locals[sym.name]
+        if kind == "FAST":
+            ctx.emit(_bc_Instr("LOAD_FAST", slot))
+            return
+        if kind == "CELL":
+            ctx.emit(_bc_Instr("LOAD_DEREF", _bc_CellVar(slot)))
+            return
+        if kind == "FREE":
+            ctx.emit(_bc_Instr("LOAD_DEREF", _bc_FreeVar(slot)))
+            return
+        raise AssertionError("unknown local kind: " + repr(kind))
+
     v = _resolve_in_current_ns(sym)
     if v is None:
         raise NameError("Unable to resolve symbol: " + str(sym))
@@ -168,6 +183,9 @@ def _compile_form(form, ctx):
                 return
             if sname == "do":
                 _compile_do(s.next(), ctx)
+                return
+            if sname == "let*":
+                _compile_let_star(s.next(), ctx)
                 return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
@@ -233,6 +251,43 @@ def _compile_do(args, ctx):
         _compile_form(s.first(), ctx)
         ctx.emit(_bc_Instr("POP_TOP"))
         s = nxt
+
+
+def _compile_let_star(args, ctx):
+    """(let* [name1 val1, name2 val2, ...] body...)
+
+    Each binding is compiled in order and stored to a freshly gensym'd
+    Python local; later bindings can reference earlier ones. The body is
+    evaluated as an implicit `do`. On exit, the lexical scope is popped
+    so the names are no longer visible to enclosing forms (the Python
+    locals themselves remain in the frame — that's fine, they're just
+    inaccessible from Clojure code)."""
+    if args is None:
+        raise SyntaxError("let* requires a bindings vector")
+    bindings = args.first()
+    body = args.next()
+    if not isinstance(bindings, IPersistentVector):
+        raise SyntaxError("let* requires a vector for its bindings")
+    bcount = bindings.count()
+    if bcount % 2 != 0:
+        raise SyntaxError(
+            "let* requires an even number of forms in the binding vector")
+
+    saved_locals = dict(ctx.locals)
+    try:
+        for i in range(0, bcount, 2):
+            name_sym = bindings.nth(i)
+            value_form = bindings.nth(i + 1)
+            if not isinstance(name_sym, Symbol) or name_sym.ns is not None:
+                raise SyntaxError(
+                    "let* binding names must be unqualified symbols")
+            slot = ctx.gensym(name_sym.name)
+            _compile_form(value_form, ctx)
+            ctx.emit(_bc_Instr("STORE_FAST", slot))
+            ctx.locals[name_sym.name] = ("FAST", slot)
+        _compile_do(body, ctx)
+    finally:
+        ctx.locals = saved_locals
 
 
 def _compile_call(s, ctx):
