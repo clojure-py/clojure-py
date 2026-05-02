@@ -25,11 +25,18 @@
 
 # --- helpers ------------------------------------------------------------
 
+_CellType = _pytypes.CellType  # types.CellType — 3.8+
+
 def _make_cell(value):
     """Return a fresh Python closure cell holding `value`. Used when an
     inner fn captures a `loop` binding so that each iteration's closure
-    sees that iteration's value rather than sharing one mutating cell."""
-    return (lambda: value).__closure__[0]
+    sees that iteration's value rather than sharing one mutating cell.
+
+    The `(lambda: value).__closure__[0]` idiom is correct in pure Python
+    but Cython optimizes the lambda's free-var reference into a constant
+    inline, leaving __closure__ as None. types.CellType(value) is the
+    explicit constructor and side-steps that."""
+    return _CellType(value)
 
 
 # --- per-function compiler state ----------------------------------------
@@ -127,9 +134,15 @@ def _resolve_local_through_chain(start_ctx, clj_name):
     and return the python slot name in `start_ctx`. Returns None if not
     bound anywhere up the chain.
 
+    FAST locals get promoted to CELL on capture (mutation-free, since
+    Clojure forbids set! on locals). FAST_LOOP locals (loop* bindings)
+    do NOT get promoted — instead, the closest enclosing fn boundary
+    freshens a new cell at MAKE_FUNCTION time so each iteration's
+    closure sees that iteration's value (the JS late-binding fix).
+
     Slot names propagate unchanged through a capture chain — every layer
-    (binding site, intermediates, start) uses the same string. They live
-    in disjoint frames so there's no clash."""
+    uses the same string. They live in disjoint frames so there's no
+    clash."""
     if clj_name in start_ctx.locals:
         return start_ctx.locals[clj_name][1]
     intermediates = []
@@ -139,6 +152,9 @@ def _resolve_local_through_chain(start_ctx, clj_name):
             kind, slot = bind_ctx.locals[clj_name]
             if kind == "FAST":
                 _promote_to_cell(bind_ctx, slot)
+            # FAST_LOOP stays FAST_LOOP — no promotion. The freshen
+            # happens at the inner-fn closure-tuple build site (see
+            # _compile_fn_star's freevar emit loop).
             for c in intermediates + [start_ctx]:
                 if slot not in c.freevars:
                     c.freevars.append(slot)
@@ -147,6 +163,16 @@ def _resolve_local_through_chain(start_ctx, clj_name):
             return slot
         intermediates.append(bind_ctx)
         bind_ctx = bind_ctx.parent
+    return None
+
+
+def _slot_kind_in(ctx, slot_name):
+    """Reverse-lookup: what kind is `slot_name` in `ctx`'s locals? Used
+    by fn* when deciding how to push a captured cell into the closure
+    tuple. Returns ('FAST'|'FAST_LOOP'|'CELL'|'FREE') or None."""
+    for _, (kind, sn) in ctx.locals.items():
+        if sn == slot_name:
+            return kind
     return None
 
 
@@ -178,7 +204,7 @@ def _emit_symbol_value(sym, ctx):
         slot = _resolve_local_through_chain(ctx, sym.name)
         if slot is not None:
             kind = ctx.locals[sym.name][0]
-            if kind == "FAST":
+            if kind == "FAST" or kind == "FAST_LOOP":
                 ctx.emit(_bc_Instr("LOAD_FAST", slot))
                 return
             if kind == "CELL":
@@ -256,6 +282,12 @@ def _compile_form(form, ctx):
                 return
             if sname == "def":
                 _compile_def(s.next(), ctx)
+                return
+            if sname == "loop*":
+                _compile_loop_star(s.next(), ctx)
+                return
+            if sname == "recur":
+                _compile_recur(s.next(), ctx)
                 return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
@@ -360,6 +392,90 @@ def _compile_let_star(args, ctx):
         ctx.locals = saved_locals
 
 
+def _compile_loop_star(args, ctx):
+    """(loop* [name1 init1 name2 init2 ...] body...)
+
+    Like let* but also establishes a `recur` target. Bindings get the
+    FAST_LOOP slot kind so any inner fn that captures one of them gets
+    a freshly allocated cell at MAKE_FUNCTION time rather than sharing
+    a mutating cell with subsequent iterations."""
+    if args is None:
+        raise SyntaxError("loop* requires a bindings vector")
+    bindings = args.first()
+    body = args.next()
+    if not isinstance(bindings, IPersistentVector):
+        raise SyntaxError("loop* requires a vector for its bindings")
+    bcount = bindings.count()
+    if bcount % 2 != 0:
+        raise SyntaxError(
+            "loop* requires an even number of forms in the binding vector")
+
+    saved_locals = dict(ctx.locals)
+    slot_names = []
+    clj_names = []
+    try:
+        for i in range(0, bcount, 2):
+            name_sym = bindings.nth(i)
+            value_form = bindings.nth(i + 1)
+            if not isinstance(name_sym, Symbol) or name_sym.ns is not None:
+                raise SyntaxError(
+                    "loop* binding names must be unqualified symbols")
+            slot = ctx.gensym(name_sym.name)
+            _compile_form(value_form, ctx)
+            ctx.emit(_bc_Instr("STORE_FAST", slot))
+            ctx.locals[name_sym.name] = ("FAST_LOOP", slot)
+            slot_names.append(slot)
+            clj_names.append(name_sym.name)
+
+        loop_label = ctx.new_label()
+        ctx.emit(loop_label)
+        ctx.recur_targets.append((loop_label, slot_names, clj_names))
+        try:
+            _compile_do(body, ctx)
+        finally:
+            ctx.recur_targets.pop()
+    finally:
+        ctx.locals = saved_locals
+
+
+def _compile_recur(args, ctx):
+    """(recur expr...) — evaluate each expr, rebind the recur targets,
+    and jump back. Tail-position only (we don't enforce that yet, but
+    Python's stack tracker would catch many misuses)."""
+    n = len(ctx.recur_targets)
+    if n == 0:
+        raise SyntaxError("recur outside of loop")
+    # Note: explicit positive index — Cython compiler-directive
+    # wraparound=False makes [-1] index literally -1 (out of range).
+    target = ctx.recur_targets[n - 1]
+    label = target[0]
+    slot_names = target[1]
+
+    # Count and validate
+    nargs = 0
+    cur = args
+    while cur is not None:
+        nargs += 1
+        cur = cur.next()
+    if nargs != len(slot_names):
+        raise SyntaxError(
+            "Mismatched argument count to recur, expected: "
+            + str(len(slot_names)) + " args, got: " + str(nargs))
+
+    # Evaluate all args first, leaving them on the stack — this preserves
+    # the old binding values during evaluation (so e.g. (recur (inc i))
+    # uses the OLD i rather than a partially-overwritten one).
+    cur = args
+    while cur is not None:
+        _compile_form(cur.first(), ctx)
+        cur = cur.next()
+    # Pop them into the slots in reverse order (last value popped first
+    # corresponds to the last slot).
+    for slot in reversed(slot_names):
+        ctx.emit(_bc_Instr("STORE_FAST", slot))
+    ctx.emit(_bc_Instr("JUMP_BACKWARD", label))
+
+
 def _compile_fn_star(args, ctx):
     """(fn* [args...] body...) or (fn* name [args...] body...)
 
@@ -423,20 +539,26 @@ def _compile_fn_star(args, ctx):
 
     if inner.freevars:
         for fv in inner.freevars:
-            # In OUR (outer) frame, the cell holding this name is in
-            # fast-locals at the slot for either a cellvar (we MAKE_CELL'd
-            # it) or a freevar (we received it via COPY_FREE_VARS, then
-            # pass it through to a deeper child). The bytecode lib needs
-            # the CellVar/FreeVar marker to classify the slot correctly
-            # — a bare string would be treated as a regular local.
+            # In OUR (outer) frame, the source for this freevar is one
+            # of: a cellvar we MAKE_CELL'd, a freevar we received and
+            # pass through, or a FAST_LOOP local that needs freshening
+            # so each loop iteration's closure captures THAT iteration's
+            # value (rather than sharing a mutating cell).
             if fv in ctx.cellvars:
                 ctx.emit(_bc_Instr("LOAD_FAST", _bc_CellVar(fv)))
             elif fv in ctx.freevars:
                 ctx.emit(_bc_Instr("LOAD_FAST", _bc_FreeVar(fv)))
+            elif _slot_kind_in(ctx, fv) == "FAST_LOOP":
+                # Freshen: _make_cell(<current value of loop binding>)
+                ctx.emit(
+                    _bc_Instr("LOAD_CONST", _make_cell),
+                    _bc_Instr("PUSH_NULL"),
+                    _bc_Instr("LOAD_FAST", fv),
+                    _bc_Instr("CALL", 1),
+                )
             else:
                 raise AssertionError(
-                    "fn* freevar not found in outer cells/frees: "
-                    + repr(fv))
+                    "fn* freevar not classifiable in outer: " + repr(fv))
         ctx.emit(_bc_Instr("BUILD_TUPLE", len(inner.freevars)))
         ctx.emit(_bc_Instr("LOAD_CONST", inner_code))
         ctx.emit(_bc_Instr("MAKE_FUNCTION"))
