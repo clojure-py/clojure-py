@@ -121,6 +121,30 @@ class IRef(IDeref):
     def remove_watch(self, key): ...
 
 
+class IAtom(ABC):
+    """An atomic, validated, watch-able cell. Java has 4 overloads of swap;
+    we collapse to one *args form."""
+
+    @abstractmethod
+    def swap(self, f, *args): ...
+
+    @abstractmethod
+    def compare_and_set(self, oldv, newv): ...
+
+    @abstractmethod
+    def reset(self, newval): ...
+
+
+class IAtom2(IAtom):
+    """IAtom plus the *vals variants that return [old, new] vectors."""
+
+    @abstractmethod
+    def swap_vals(self, f, *args): ...
+
+    @abstractmethod
+    def reset_vals(self, newv): ...
+
+
 class IPending(ABC):
     @abstractmethod
     def is_realized(self): ...
