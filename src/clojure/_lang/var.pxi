@@ -14,6 +14,10 @@
 import threading as _threading
 
 
+# Sentinel for Var.create() — distinguishes "no arg" from "root explicitly None".
+cdef object _VAR_NO_ROOT = object()
+
+
 # --- Binding (a tiny linked-list element) -------------------------------
 
 cdef class Binding:
@@ -134,9 +138,12 @@ cdef class Var(ARef):
     # --- factories ---
 
     @staticmethod
-    def create(root=None):
-        """Anonymous var (no ns/sym)."""
-        if root is None:
+    def create(root=_VAR_NO_ROOT):
+        """Anonymous var (no ns/sym).
+
+        - Var.create()      → unbound (root is the Unbound sentinel)
+        - Var.create(value) → root is `value` (None counts; matches Java)"""
+        if root is _VAR_NO_ROOT:
             return Var(None, None)
         return Var(None, None, root, _set_root=True)
 

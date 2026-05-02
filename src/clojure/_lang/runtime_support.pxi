@@ -1,0 +1,422 @@
+# Runtime support — RT helper namespace, Compiler stubs, Reflector for
+# Python interop.
+#
+# JVM Clojure ships these as huge classes; we provide only what the LispReader
+# (and later the Compiler/core) actually need. The set will grow as more
+# pieces of the runtime come online.
+
+
+import importlib as _importlib
+import builtins as _builtins
+import itertools as _runtime_itertools
+
+
+cdef object _RT_ID_COUNTER = _runtime_itertools.count(1)
+
+
+# --- RT — runtime helpers ------------------------------------------------
+
+class RT:
+    """Java's clojure.lang.RT — static helpers for the rest of the runtime."""
+
+    # Vars (initialized below in _init_rt_runtime_vars)
+    READEVAL = None
+    SUPPRESS_READ = None
+    READER_RESOLVER = None
+    DATA_READERS = None
+    DEFAULT_DATA_READERS = None
+    DEFAULT_DATA_READER_FN = None
+    CURRENT_NS = None        # *ns*
+    PRINT_META = None
+    PRINT_DUP = None
+
+    # Keyword constants
+    LINE_KEY = Keyword.intern(None, "line")
+    COLUMN_KEY = Keyword.intern(None, "column")
+    TAG_KEY = Keyword.intern(None, "tag")
+    PARAM_TAGS_KEY = Keyword.intern(None, "param-tags")
+    FILE_KEY = Keyword.intern(None, "file")
+
+    # Truth constants (Clojure has these as Boolean.TRUE/FALSE)
+    T = True
+    F = False
+
+    # --- seq ops ---
+
+    @staticmethod
+    def list(*args):
+        return PersistentList.create(args)
+
+    @staticmethod
+    def list_star(*args):
+        # (list* a b c rest) → a cons'd onto (cons b (cons c rest)).
+        if len(args) == 0:
+            return None
+        if len(args) == 1:
+            return RT.seq(args[0])
+        head = args[:-1]
+        tail = args[-1]
+        s = RT.seq(tail)
+        for x in reversed(head):
+            s = Cons(x, s)
+        return s
+
+    @staticmethod
+    def cons(x, seq):
+        if seq is None:
+            return PersistentList.create([x])
+        if isinstance(seq, ISeq):
+            return Cons(x, seq)
+        return Cons(x, RT.seq(seq))
+
+    @staticmethod
+    def seq(x):
+        if x is None:
+            return None
+        if isinstance(x, Seqable):
+            return x.seq()
+        if isinstance(x, str):
+            return None if len(x) == 0 else IteratorSeq.from_iterable(x)
+        if isinstance(x, (list, tuple)):
+            return None if len(x) == 0 else IteratorSeq.from_iterable(x)
+        try:
+            it = iter(x)
+        except TypeError:
+            raise TypeError(
+                f"Don't know how to create ISeq from: {type(x).__name__}")
+        return IteratorSeq.from_iterable(x)
+
+    @staticmethod
+    def first(x):
+        s = RT.seq(x)
+        return None if s is None else s.first()
+
+    @staticmethod
+    def second(x):
+        s = RT.seq(x)
+        if s is None: return None
+        n = s.next()
+        return None if n is None else n.first()
+
+    @staticmethod
+    def next(x):
+        s = RT.seq(x)
+        return None if s is None else s.next()
+
+    @staticmethod
+    def rest(x):
+        s = RT.seq(x)
+        return _empty_list if s is None else s.more()
+
+    @staticmethod
+    def count(x):
+        if x is None:
+            return 0
+        if hasattr(x, "count"):
+            return x.count()
+        return len(x)
+
+    # --- map / set ops ---
+
+    @staticmethod
+    def map(*args):
+        if len(args) == 0:
+            return _PHM_EMPTY
+        if len(args) % 2 != 0:
+            raise ValueError("RT.map requires an even number of args")
+        if len(args) <= 16:
+            return PersistentArrayMap.create(*args)
+        return PersistentHashMap.create(*args)
+
+    @staticmethod
+    def map_unique_keys(*args):
+        if len(args) <= 16:
+            return PersistentArrayMap.create(*args)
+        return PersistentHashMap.create(*args)
+
+    @staticmethod
+    def set(*args):
+        return PersistentHashSet.from_iterable(args)
+
+    @staticmethod
+    def assoc(coll, k, v):
+        if coll is None:
+            return PersistentArrayMap.create(k, v)
+        return coll.assoc(k, v)
+
+    @staticmethod
+    def dissoc(coll, k):
+        if coll is None:
+            return None
+        return coll.without(k)
+
+    @staticmethod
+    def get(coll, k, not_found=None):
+        if coll is None:
+            return not_found
+        if hasattr(coll, "val_at"):
+            return coll.val_at(k, not_found)
+        try:
+            return coll[k]
+        except (KeyError, IndexError, TypeError):
+            return not_found
+
+    @staticmethod
+    def contains(coll, k):
+        if coll is None:
+            return False
+        if hasattr(coll, "contains_key"):
+            return coll.contains_key(k)
+        if hasattr(coll, "contains"):
+            return coll.contains(k)
+        return k in coll
+
+    @staticmethod
+    def conj(coll, x):
+        if coll is None:
+            return PersistentList.create([x])
+        return coll.cons(x)
+
+    @staticmethod
+    def meta(o):
+        if hasattr(o, "meta"):
+            return o.meta()
+        return None
+
+    @staticmethod
+    def keys(m):
+        if m is None: return None
+        if hasattr(m, "seq"):
+            s = m.seq()
+            if s is None: return None
+            return _SetKeySeq(s)
+        return None
+
+    # --- vars / namespaces ---
+
+    @staticmethod
+    def var(ns_name, name=None):
+        if name is None:
+            # var(symbol) form
+            sym = ns_name
+            if isinstance(sym, str):
+                sym = Symbol.intern(sym)
+            ns = Namespace.find_or_create(Symbol.intern(sym.ns))
+            return ns.intern(Symbol.intern(sym.name))
+        ns = Namespace.find_or_create(Symbol.intern(ns_name))
+        return ns.intern(Symbol.intern(name))
+
+    # --- class lookup ---
+
+    @staticmethod
+    def class_for_name(name):
+        """Resolve a dotted Python name to a class. 'collections.Counter' →
+        the class, 'int' → builtins.int."""
+        parts = name.split(".")
+        if len(parts) == 1:
+            return getattr(_builtins, name)
+        mod_name = ".".join(parts[:-1])
+        cls_name = parts[-1]
+        mod = _importlib.import_module(mod_name)
+        return getattr(mod, cls_name)
+
+    @staticmethod
+    def class_for_name_non_loading(name):
+        # Python doesn't separate "load" from "lookup" at this level.
+        return RT.class_for_name(name)
+
+    # --- arrays / coercion ---
+
+    @staticmethod
+    def to_array(coll):
+        if coll is None:
+            return []
+        if isinstance(coll, list):
+            return list(coll)
+        s = RT.seq(coll)
+        out = []
+        while s is not None:
+            out.append(s.first())
+            s = s.next()
+        return out
+
+    @staticmethod
+    def boolean_cast(x):
+        # Clojure: only false and nil are falsy; everything else is true.
+        if x is None or x is False:
+            return False
+        return True
+
+    @staticmethod
+    def is_reduced(x):
+        return isinstance(x, Reduced)
+
+    # --- ID / suppress-read ---
+
+    @staticmethod
+    def next_id():
+        return next(_RT_ID_COUNTER)
+
+    @staticmethod
+    def suppress_read():
+        if RT.SUPPRESS_READ is None:
+            return False
+        try:
+            return bool(RT.SUPPRESS_READ.deref())
+        except Exception:
+            return False
+
+
+# Initialize the runtime Vars (called after Var/Namespace are loaded).
+def _init_rt_runtime_vars():
+    ns = Namespace.find_or_create(Symbol.intern("clojure.core"))
+    user_ns = Namespace.find_or_create(Symbol.intern("user"))
+
+    RT.READEVAL = Var.intern(ns, Symbol.intern("*read-eval*"), True).set_dynamic()
+    RT.SUPPRESS_READ = Var.intern(ns, Symbol.intern("*suppress-read*"), False).set_dynamic()
+    RT.READER_RESOLVER = Var.intern(ns, Symbol.intern("*reader-resolver*"), None).set_dynamic()
+    RT.DATA_READERS = Var.intern(ns, Symbol.intern("*data-readers*"), _PHM_EMPTY).set_dynamic()
+    RT.DEFAULT_DATA_READERS = Var.intern(ns, Symbol.intern("default-data-readers"), _PHM_EMPTY)
+    RT.DEFAULT_DATA_READER_FN = Var.intern(
+        ns, Symbol.intern("*default-data-reader-fn*"), None).set_dynamic()
+    RT.CURRENT_NS = Var.intern(ns, Symbol.intern("*ns*"), user_ns).set_dynamic()
+    RT.PRINT_META = Var.intern(ns, Symbol.intern("*print-meta*"), False).set_dynamic()
+    RT.PRINT_DUP = Var.intern(ns, Symbol.intern("*print-dup*"), False).set_dynamic()
+
+
+_init_rt_runtime_vars()
+
+
+# --- Compiler stubs ------------------------------------------------------
+
+class Compiler:
+    """Just enough of clojure.lang.Compiler for the LispReader to function.
+    Real Compiler logic arrives in a much later slice."""
+
+    QUOTE = Symbol.intern("quote")
+    THE_VAR = Symbol.intern("var")
+    FN = Symbol.intern("fn*")
+    DO_SYM = Symbol.intern("do")
+    DEF_SYM = Symbol.intern("def")
+    LET_SYM = Symbol.intern("let*")
+    LOOP_SYM = Symbol.intern("loop*")
+    RECUR_SYM = Symbol.intern("recur")
+    IF_SYM = Symbol.intern("if")
+    NEW_SYM = Symbol.intern("new")
+    THROW_SYM = Symbol.intern("throw")
+    TRY_SYM = Symbol.intern("try")
+    CATCH_SYM = Symbol.intern("catch")
+    FINALLY_SYM = Symbol.intern("finally")
+    LETFN_SYM = Symbol.intern("letfn*")
+    SET_BANG = Symbol.intern("set!")
+    DOT_SYM = Symbol.intern(".")
+    IMPORT_STAR = Symbol.intern("import*")
+    DEFTYPE = Symbol.intern("deftype*")
+    REIFY = Symbol.intern("reify*")
+    CASE_SYM = Symbol.intern("case*")
+    MONITOR_ENTER = Symbol.intern("monitor-enter")
+    MONITOR_EXIT = Symbol.intern("monitor-exit")
+    _AMP_ = Symbol.intern("&")
+
+    SPECIAL_FORMS = frozenset([
+        Symbol.intern("def"), Symbol.intern("loop*"), Symbol.intern("recur"),
+        Symbol.intern("if"), Symbol.intern("case*"), Symbol.intern("let*"),
+        Symbol.intern("letfn*"), Symbol.intern("do"), Symbol.intern("fn*"),
+        Symbol.intern("quote"), Symbol.intern("var"), Symbol.intern("import*"),
+        Symbol.intern("."), Symbol.intern("set!"), Symbol.intern("deftype*"),
+        Symbol.intern("reify*"), Symbol.intern("try"), Symbol.intern("throw"),
+        Symbol.intern("monitor-enter"), Symbol.intern("monitor-exit"),
+        Symbol.intern("catch"), Symbol.intern("finally"), Symbol.intern("new"),
+    ])
+
+    @staticmethod
+    def is_special(form):
+        return isinstance(form, Symbol) and form in Compiler.SPECIAL_FORMS
+
+    @staticmethod
+    def current_ns():
+        return RT.CURRENT_NS.deref()
+
+    @staticmethod
+    def maybe_resolve_in(ns, sym):
+        """Look up `sym` in `ns`'s mappings — returns Var, class, or None."""
+        if not isinstance(sym, Symbol):
+            return None
+        if sym.ns is not None:
+            # Qualified: look up the namespace first.
+            target_ns = Namespace.find(Symbol.intern(sym.ns))
+            if target_ns is None:
+                # Try alias.
+                target_ns = ns.lookup_alias(Symbol.intern(sym.ns))
+            if target_ns is None:
+                return None
+            return target_ns.find_interned_var(Symbol.intern(sym.name))
+        return ns.get_mapping(sym)
+
+    @staticmethod
+    def names_static_member(sym):
+        """True if sym looks like ClassName/staticMember AND ns part resolves
+        to a class in the current namespace. Used by EvalReader for #=."""
+        if not isinstance(sym, Symbol) or sym.ns is None:
+            return False
+        ns = Compiler.current_ns()
+        cls = ns.get_mapping(Symbol.intern(sym.ns))
+        return isinstance(cls, type)
+
+    @staticmethod
+    def resolve_symbol(sym):
+        """Resolve `sym` in the current namespace.  Returns a fully-qualified
+        Symbol (or `sym` unchanged if it's already qualified or nothing
+        resolves)."""
+        if not isinstance(sym, Symbol):
+            return sym
+        ns = Compiler.current_ns()
+        if sym.ns is not None:
+            # Try to resolve the ns part as a class name; if so, qualify with
+            # the class's full name. Otherwise return as-is.
+            cls = ns.get_mapping(Symbol.intern(sym.ns))
+            if isinstance(cls, type):
+                return Symbol.intern(cls.__module__ + "." + cls.__name__, sym.name)
+            # Maybe it's a namespace alias.
+            aliased = ns.lookup_alias(Symbol.intern(sym.ns))
+            if aliased is not None:
+                return Symbol.intern(aliased.name.name, sym.name)
+            return sym
+        # Unqualified: look up in current ns.
+        v = ns.get_mapping(sym)
+        if isinstance(v, Var):
+            return Symbol.intern(v.ns.name.name, v.sym.name)
+        if isinstance(v, type):
+            return Symbol.intern(None, v.__module__ + "." + v.__name__)
+        return Symbol.intern(ns.name.name, sym.name)
+
+
+# --- Reflector — Python interop ------------------------------------------
+
+class Reflector:
+    """clojure.lang.Reflector equivalent for Python — there's no separate
+    reflection step in Python, so these are mostly trivial thin wrappers."""
+
+    @staticmethod
+    def invoke_constructor(cls, args):
+        return cls(*args)
+
+    @staticmethod
+    def invoke_static_method(cls_or_name, method_name, args):
+        cls = cls_or_name if isinstance(cls_or_name, type) else RT.class_for_name(cls_or_name)
+        m = getattr(cls, method_name)
+        return m(*args)
+
+    @staticmethod
+    def invoke_instance_method(obj, method_name, args):
+        m = getattr(obj, method_name)
+        return m(*args)
+
+    @staticmethod
+    def get_static_field(cls_or_name, field_name):
+        cls = cls_or_name if isinstance(cls_or_name, type) else RT.class_for_name(cls_or_name)
+        return getattr(cls, field_name)
+
+    @staticmethod
+    def get_instance_field(obj, field_name):
+        return getattr(obj, field_name)
