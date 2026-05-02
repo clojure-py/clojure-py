@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Cython generated
+src/clojure/*.c
+src/clojure/*.cpp
+src/clojure/*.html
+src/clojure/lang/*.c
+src/clojure/lang/*.cpp
+src/clojure/lang/*.html
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.venv/
+venv/
+.env
