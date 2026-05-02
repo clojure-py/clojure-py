@@ -92,6 +92,35 @@ class IBlockingDeref(ABC):
     def deref(self, ms, timeout_value): ...
 
 
+class IReference(IMeta):
+    """A reference type that supports altering / resetting its metadata."""
+
+    @abstractmethod
+    def alter_meta(self, alter, args): ...
+
+    @abstractmethod
+    def reset_meta(self, m): ...
+
+
+class IRef(IDeref):
+    """A reference type with validator + watch support (Atom, Var, Ref, Agent)."""
+
+    @abstractmethod
+    def set_validator(self, vf): ...
+
+    @abstractmethod
+    def get_validator(self): ...
+
+    @abstractmethod
+    def get_watches(self): ...
+
+    @abstractmethod
+    def add_watch(self, key, callback): ...
+
+    @abstractmethod
+    def remove_watch(self, key): ...
+
+
 class IPending(ABC):
     @abstractmethod
     def is_realized(self): ...
