@@ -54,9 +54,9 @@ IMeta.register(AReference)
 cdef class ARef(AReference):
     """Reference with a validator function and watch callbacks."""
 
-    cdef object _validator
-    cdef object _watches
-    cdef object _ref_lock
+    cdef public object _validator
+    cdef public object _watches
+    cdef public object _ref_lock
 
     def __init__(self, meta=None):
         AReference.__init__(self, meta)
