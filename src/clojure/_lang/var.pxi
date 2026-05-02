@@ -425,3 +425,33 @@ cdef object _KW_TAG = Keyword.intern(None, "tag")
 
 
 cdef object _assoc_fn = lambda m, k, v: (m if m is not None else _PHM_EMPTY).assoc(k, v)
+
+
+# --- thread-binding convenience ------------------------------------------
+
+def with_bindings(bindings, fn):
+    """Push `bindings` (a PHM of Var→val), call fn() with no args, pop on
+    exit. Returns fn's result. Mirrors `clojure.core/with-bindings*`."""
+    Var.push_thread_bindings(bindings)
+    try:
+        return fn()
+    finally:
+        Var.pop_thread_bindings()
+
+
+def bound_fn(fn):
+    """Capture the current dynamic-binding frame and return a wrapped fn
+    that always runs under that frame, regardless of which thread invokes
+    it. Mirrors `clojure.core/bound-fn*`.
+
+    The captured frame is restored on entry and the caller's frame is
+    re-installed on exit."""
+    captured = Var.clone_thread_binding_frame()
+    def bound(*args, **kwargs):
+        prior = Var.get_thread_binding_frame()
+        Var.reset_thread_binding_frame(captured)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            Var.reset_thread_binding_frame(prior)
+    return bound
