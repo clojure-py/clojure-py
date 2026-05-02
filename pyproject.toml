@@ -8,6 +8,7 @@ version = "0.0.1"
 description = "Faithful 1:1 port of JVM Clojure to Python (Cython, free-threaded)"
 requires-python = ">=3.14"
 license = "EPL-1.0"
+dependencies = ["bytecode>=0.16"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

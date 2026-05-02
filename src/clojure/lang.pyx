@@ -9,6 +9,15 @@ from libc.stdint cimport int32_t, uint32_t
 from decimal import Decimal
 from threading import Lock
 
+import types as _pytypes
+from bytecode import (
+    Bytecode as _bc_Bytecode,
+    Instr as _bc_Instr,
+    Label as _bc_Label,
+    FreeVar as _bc_FreeVar,
+    CellVar as _bc_CellVar,
+)
+
 include "_lang/interfaces.pxi"
 include "_lang/murmur3.pxi"
 include "_lang/hash_helpers.pxi"
@@ -49,3 +58,4 @@ include "_lang/multimethod.pxi"
 include "_lang/reader_io.pxi"
 include "_lang/runtime_support.pxi"
 include "_lang/lisp_reader.pxi"
+include "_lang/compiler.pxi"
