@@ -278,6 +278,16 @@ cdef class Var(ARef):
 
     # --- meta keys: macro, private, tag ---
 
+    def set_meta(self, m):
+        """Replace meta, ensuring :name → sym and :ns → ns are still present.
+        Mirrors Java's Var.setMeta."""
+        if m is None:
+            m = _PHM_EMPTY
+        if not isinstance(m, IPersistentMap):
+            raise TypeError(f"set_meta requires IPersistentMap, got {type(m).__name__}")
+        new_meta = m.assoc(_KW_NAME, self.sym).assoc(_KW_NS, self.ns)
+        self.reset_meta(new_meta)
+
     def set_macro(self):
         self.alter_meta(_assoc_fn, [_KW_MACRO, True])
 
@@ -285,9 +295,22 @@ cdef class Var(ARef):
         m = self._meta
         return bool(m and m.val_at(_KW_MACRO))
 
+    def set_private(self, b=True):
+        """Mark this var as private (sets :private → b in meta)."""
+        self.alter_meta(_assoc_fn, [_KW_PRIVATE, b])
+
     def is_public(self):
         m = self._meta
         return not bool(m and m.val_at(_KW_PRIVATE))
+
+    def set_tag(self, tag):
+        """Set the :tag meta key. `tag` is typically a Symbol but any value
+        is accepted."""
+        self.alter_meta(_assoc_fn, [_KW_TAG, tag])
+
+    def get_tag(self):
+        m = self._meta
+        return None if m is None else m.val_at(_KW_TAG)
 
     # --- IFn ---
 
@@ -398,6 +421,7 @@ cdef object _KW_NAME = Keyword.intern(None, "name")
 cdef object _KW_NS = Keyword.intern(None, "ns")
 cdef object _KW_MACRO = Keyword.intern(None, "macro")
 cdef object _KW_PRIVATE = Keyword.intern(None, "private")
+cdef object _KW_TAG = Keyword.intern(None, "tag")
 
 
 cdef object _assoc_fn = lambda m, k, v: (m if m is not None else _PHM_EMPTY).assoc(k, v)
