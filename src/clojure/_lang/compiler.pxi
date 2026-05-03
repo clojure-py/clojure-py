@@ -46,11 +46,13 @@ class _FnContext:
     the locals map, the cellvar/freevar lists, the instruction stream,
     label allocator, and the recur target stack."""
 
-    def __init__(self, name="__anon__", argnames=None, parent=None):
+    def __init__(self, name="__anon__", argnames=None, parent=None,
+                 varargs=False):
         self.name = name
         self.argnames = list(argnames) if argnames else []
         self.parent = parent
-        # clj-name -> ('FAST'|'CELL'|'FREE', python_slot_name)
+        self.varargs = varargs   # True iff the last argname is *rest
+        # clj-name -> ('FAST'|'FAST_LOOP'|'CELL'|'FREE', python_slot_name)
         self.locals = {}
         self.cellvars = []   # cells declared in THIS frame
         self.freevars = []   # captured FROM parent
@@ -73,7 +75,16 @@ class _FnContext:
     def to_code(self):
         bc = _bc_Bytecode()
         bc.name = self.name
-        bc.argcount = len(self.argnames)
+        # CO_OPTIMIZED | CO_NEWLOCALS — standard for any user function;
+        # `bytecode` doesn't infer them automatically.
+        bc.flags = bc.flags | _bc_CompilerFlags.OPTIMIZED | _bc_CompilerFlags.NEWLOCALS
+        # With *rest, the last argname is the rest param and is NOT
+        # counted in argcount.
+        if self.varargs:
+            bc.argcount = len(self.argnames) - 1
+            bc.flags = bc.flags | _bc_CompilerFlags.VARARGS
+        else:
+            bc.argcount = len(self.argnames)
         bc.argnames = list(self.argnames)
         bc.cellvars = list(self.cellvars)
         bc.freevars = list(self.freevars)
@@ -513,17 +524,46 @@ def _compile_fn_star(args, ctx):
             "(multi-arity fn* not yet supported)")
 
     arg_names = []
-    for i in range(args_vec.count()):
+    has_rest = False
+    av_count = args_vec.count()
+    i = 0
+    while i < av_count:
         an = args_vec.nth(i)
+        if isinstance(an, Symbol) and an.ns is None and an.name == "&":
+            # `& rest` — the next symbol is the rest binding
+            if i + 1 >= av_count:
+                raise SyntaxError("Missing rest arg after `&`")
+            rest_sym = args_vec.nth(i + 1)
+            if not isinstance(rest_sym, Symbol) or rest_sym.ns is not None:
+                raise SyntaxError("rest arg must be an unqualified symbol")
+            if i + 2 != av_count:
+                raise SyntaxError("Only one symbol allowed after `&`")
+            arg_names.append(rest_sym.name)
+            has_rest = True
+            break
         if not isinstance(an, Symbol) or an.ns is not None:
             raise SyntaxError("fn* arg names must be unqualified symbols")
         arg_names.append(an.name)
+        i += 1
 
     inner = _FnContext(
         name=fn_name if fn_name else "__fn__",
         argnames=arg_names,
         parent=ctx,
+        varargs=has_rest,
     )
+
+    if has_rest:
+        # The rest param starts as a tuple of extra args; rebind it to a
+        # Clojure seq (or nil if empty) so user code sees Clojure semantics.
+        rest_slot = arg_names[len(arg_names) - 1]
+        inner.emit(
+            _bc_Instr("LOAD_CONST", RT.seq),
+            _bc_Instr("PUSH_NULL"),
+            _bc_Instr("LOAD_FAST", rest_slot),
+            _bc_Instr("CALL", 1),
+            _bc_Instr("STORE_FAST", rest_slot),
+        )
 
     self_cell_slot = None
     if fn_name is not None:

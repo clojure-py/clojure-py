@@ -17,6 +17,7 @@ from bytecode import (
     FreeVar as _bc_FreeVar,
     CellVar as _bc_CellVar,
 )
+from bytecode.flags import CompilerFlags as _bc_CompilerFlags
 
 include "_lang/interfaces.pxi"
 include "_lang/murmur3.pxi"
