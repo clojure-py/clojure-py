@@ -18,6 +18,25 @@ cdef class Util:
         return a is b
 
     @staticmethod
+    def compare(k1, k2):
+        """Java Util.compare — three-way comparison. Returns negative/
+        zero/positive for k1 < / == / > k2. Nil sorts before everything."""
+        if k1 is k2:
+            return 0
+        if k1 is None:
+            return -1
+        if k2 is None:
+            return 1
+        if isinstance(k1, (int, float, BigInt, Ratio, Decimal)) and \
+           isinstance(k2, (int, float, BigInt, Ratio, Decimal)):
+            return Numbers.compare(k1, k2)
+        if k1 < k2:
+            return -1
+        if k1 > k2:
+            return 1
+        return 0
+
+    @staticmethod
     def cast(c, x):
         """Java Class.cast equivalent: returns x if it's an instance of c,
         else raises TypeError (Python's analog of Java's

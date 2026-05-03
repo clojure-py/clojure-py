@@ -773,3 +773,326 @@
        (cat (concat x y) zs))))
 
 ;;;;;;;;;;;;;;;;at this point all the support for syntax-quote exists;;;;;;;;;;;;;;;;;;;;;;
+(defmacro delay
+  "Takes a body of expressions and yields a Delay object that will
+  invoke the body only the first time it is forced (with force or deref/@), and
+  will cache the result and return it on all subsequent force
+  calls. See also - realized?"
+  {:added "1.0"}
+  [& body]
+    (list 'new 'clojure.lang.Delay (list* `^{:once true} fn* [] body)))
+
+(defn delay?
+  "returns true if x is a Delay created with delay"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.Delay x))
+
+(defn force
+  "If x is a Delay, returns the (possibly cached) value of its expression, else returns x"
+  {:added "1.0"
+   :static true}
+  [x] (. clojure.lang.Delay (force x)))
+
+(defmacro if-not
+  "Evaluates test. If logical false, evaluates and returns then expr,
+  otherwise else expr, if supplied, else nil."
+  {:added "1.0"}
+  ([test then] `(if-not ~test ~then nil))
+  ([test then else]
+   `(if (not ~test) ~then ~else)))
+
+(defn identical?
+  "Tests if 2 arguments are the same object"
+  {:inline (fn [x y] `(. clojure.lang.Util identical ~x ~y))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x y] (clojure.lang.Util/identical x y)))
+
+;equiv-based
+(defn =
+  "Equality. Returns true if x equals y, false if not. Same as
+  Java x.equals(y) except it also works for nil, and compares
+  numbers and collections in a type-independent manner.  Clojure's immutable data
+  structures define equals() (and thus =) as a value, not an identity,
+  comparison."
+  {:inline (fn [x y] `(. clojure.lang.Util equiv ~x ~y))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (clojure.lang.Util/equiv x y))
+  ([x y & more]
+   (if (clojure.lang.Util/equiv x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (clojure.lang.Util/equiv y (first more)))
+     false)))
+
+;equals-based
+#_(defn =
+  "Equality. Returns true if x equals y, false if not. Same as Java
+  x.equals(y) except it also works for nil. Boxed numbers must have
+  same type. Clojure's immutable data structures define equals() (and
+  thus =) as a value, not an identity, comparison."
+  {:inline (fn [x y] `(. clojure.lang.Util equals ~x ~y))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (clojure.lang.Util/equals x y))
+  ([x y & more]
+   (if (= x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (= y (first more)))
+     false)))
+
+(defn not=
+  "Same as (not (= obj1 obj2))"
+  {:tag Boolean
+   :added "1.0"
+   :static true}
+  ([x] false)
+  ([x y] (not (= x y)))
+  ([x y & more]
+   (not (apply = x y more))))
+
+
+
+(defn compare
+  "Comparator. Returns a negative number, zero, or a positive number
+  when x is logically 'less than', 'equal to', or 'greater than'
+  y. Same as Java x.compareTo(y) except it also works for nil, and
+  compares numbers and collections in a type-independent manner. x
+  must implement Comparable"
+  {
+   :inline (fn [x y] `(. clojure.lang.Util compare ~x ~y))
+   :added "1.0"}
+  [x y] (. clojure.lang.Util (compare x y)))
+
+(defmacro and
+  "Evaluates exprs one at a time, from left to right. If a form
+  returns logical false (nil or false), and returns that value and
+  doesn't evaluate any of the other expressions, otherwise it returns
+  the value of the last expr. (and) returns true."
+  {:added "1.0"}
+  ([] true)
+  ([x] x)
+  ([x & next]
+   `(let [and# ~x]
+      (if and# (and ~@next) and#))))
+
+(defmacro or
+  "Evaluates exprs one at a time, from left to right. If a form
+  returns a logical true value, or returns that value and doesn't
+  evaluate any of the other expressions, otherwise it returns the
+  value of the last expression. (or) returns nil."
+  {:added "1.0"}
+  ([] nil)
+  ([x] x)
+  ([x & next]
+      `(let [or# ~x]
+         (if or# or# (or ~@next)))))
+
+;;;;;;;;;;;;;;;;;;; sequence fns  ;;;;;;;;;;;;;;;;;;;;;;;
+(defn zero?
+  "Returns true if num is zero, else false"
+  {
+   :inline (fn [num] `(. clojure.lang.Numbers (is_zero ~num)))
+   :added "1.0"}
+  [num] (. clojure.lang.Numbers (is_zero num)))
+
+(defn count
+  "Returns the number of items in the collection. (count nil) returns
+  0.  Also works on strings, arrays, and Java Collections and Maps"
+  {
+   :inline (fn  [x] `(. clojure.lang.RT (count ~x)))
+   :added "1.0"}
+  [coll] (clojure.lang.RT/count coll))
+
+(defn int
+  "Coerce to int"
+  {
+   :inline (fn  [x] `(. clojure.lang.RT (~(if *unchecked-math* 'unchecked_int_cast 'int_cast) ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.RT (int_cast x)))
+
+(defn nth
+  "Returns the value at the index. get returns nil if index out of
+  bounds, nth throws an exception unless not-found is supplied.  nth
+  also works for strings, Java arrays, regex Matchers and Lists, and,
+  in O(n) time, for sequences."
+  {:inline (fn  [c i & nf] `(. clojure.lang.RT (nth ~c ~i ~@nf)))
+   :inline-arities #{2 3}
+   :added "1.0"}
+  ([coll index] (. clojure.lang.RT (nth coll index)))
+  ([coll index not-found] (. clojure.lang.RT (nth coll index not-found))))
+
+(defn <
+  "Returns non-nil if nums are in monotonically increasing order,
+  otherwise false."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (lt ~x ~y)))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (. clojure.lang.Numbers (lt x y)))
+  ([x y & more]
+   (if (< x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (< y (first more)))
+     false)))
+
+(defn inc'
+  "Returns a number one greater than num. Supports arbitrary precision.
+  See also: inc"
+  {:inline (fn [x] `(. clojure.lang.Numbers (inc_p ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (inc_p x)))
+
+(defn inc
+  "Returns a number one greater than num. Does not auto-promote
+  longs, will throw on overflow. See also: inc'"
+  {:inline (fn [x] `(. clojure.lang.Numbers (~(if *unchecked-math* 'unchecked_inc 'inc) ~x)))
+   :added "1.2"}
+  [x] (. clojure.lang.Numbers (inc x)))
+
+;; reduce is defined again later after InternalReduce loads
+(defn ^:private ^:static
+  reduce1
+       ([f coll]
+             (let [s (seq coll)]
+               (if s
+         (reduce1 f (first s) (next s))
+                 (f))))
+       ([f val coll]
+          (let [s (seq coll)]
+            (if s
+              (if (chunked-seq? s)
+                (recur f
+                       (.reduce (chunk-first s) f val)
+                       (chunk-next s))
+                (recur f (f val (first s)) (next s)))
+         val))))
+
+(defn reverse
+  "Returns a seq of the items in coll in reverse order. Not lazy."
+  {:added "1.0"
+   :static true}
+  [coll]
+    (reduce1 conj () coll))
+
+;;math stuff
+(defn ^:private nary-inline
+  ([op] (nary-inline op op))
+  ([op unchecked-op]
+     (fn
+       ([x] (let [op (if *unchecked-math* unchecked-op op)]
+              `(. clojure.lang.Numbers (~op ~x))))
+       ([x y] (let [op (if *unchecked-math* unchecked-op op)]
+                `(. clojure.lang.Numbers (~op ~x ~y))))
+       ([x y & more]
+          (let [op (if *unchecked-math* unchecked-op op)]
+            (reduce1
+             (fn [a b] `(. clojure.lang.Numbers (~op ~a ~b)))
+             `(. clojure.lang.Numbers (~op ~x ~y)) more))))))
+
+(defn ^:private >1? [n] (clojure.lang.Numbers/gt n 1))
+(defn ^:private >0? [n] (clojure.lang.Numbers/gt n 0))
+
+(defn +'
+  "Returns the sum of nums. (+') returns 0. Supports arbitrary precision.
+  See also: +"
+  {:inline (nary-inline 'add_p)
+   :inline-arities >1?
+   :added "1.0"}
+  ([] 0)
+  ([x] (cast Number x))
+  ([x y] (. clojure.lang.Numbers (add_p x y)))
+  ([x y & more]
+   (reduce1 +' (+' x y) more)))
+
+(defn +
+  "Returns the sum of nums. (+) returns 0. Does not auto-promote
+  longs, will throw on overflow. See also: +'"
+  {:inline (nary-inline 'add 'unchecked_add)
+   :inline-arities >1?
+   :added "1.2"}
+  ([] 0)
+  ([x] (cast Number x))
+  ([x y] (. clojure.lang.Numbers (add x y)))
+  ([x y & more]
+     (reduce1 + (+ x y) more)))
+
+(defn *'
+  "Returns the product of nums. (*') returns 1. Supports arbitrary precision.
+  See also: *"
+  {:inline (nary-inline 'multiply_p)
+   :inline-arities >1?
+   :added "1.0"}
+  ([] 1)
+  ([x] (cast Number x))
+  ([x y] (. clojure.lang.Numbers (multiply_p x y)))
+  ([x y & more]
+   (reduce1 *' (*' x y) more)))
+
+(defn *
+  "Returns the product of nums. (*) returns 1. Does not auto-promote
+  longs, will throw on overflow. See also: *'"
+  {:inline (nary-inline 'multiply 'unchecked_multiply)
+   :inline-arities >1?
+   :added "1.2"}
+  ([] 1)
+  ([x] (cast Number x))
+  ([x y] (. clojure.lang.Numbers (multiply x y)))
+  ([x y & more]
+     (reduce1 * (* x y) more)))
+
+(defn /
+  "If no denominators are supplied, returns 1/numerator,
+  else returns numerator divided by all of the denominators."
+  {:inline (nary-inline 'divide)
+   :inline-arities >1?
+   :added "1.0"}
+  ([x] (/ 1 x))
+  ([x y] (. clojure.lang.Numbers (divide x y)))
+  ([x y & more]
+   (reduce1 / (/ x y) more)))
+
+(defn -'
+  "If no ys are supplied, returns the negation of x, else subtracts
+  the ys from x and returns the result. Supports arbitrary precision.
+  See also: -"
+  {:inline (nary-inline 'minus_p)
+   :inline-arities >0?
+   :added "1.0"}
+  ([x] (. clojure.lang.Numbers (minus_p x)))
+  ([x y] (. clojure.lang.Numbers (minus_p x y)))
+  ([x y & more]
+   (reduce1 -' (-' x y) more)))
+
+(defn -
+  "If no ys are supplied, returns the negation of x, else subtracts
+  the ys from x and returns the result. Does not auto-promote
+  longs, will throw on overflow. See also: -'"
+  {:inline (nary-inline 'minus 'unchecked_minus)
+   :inline-arities >0?
+   :added "1.2"}
+  ([x] (. clojure.lang.Numbers (minus x)))
+  ([x y] (. clojure.lang.Numbers (minus x y)))
+  ([x y & more]
+     (reduce1 - (- x y) more)))
+
+(defn <=
+  "Returns non-nil if nums are in monotonically non-decreasing order,
+  otherwise false."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (lte ~x ~y)))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (. clojure.lang.Numbers (lte x y)))
+  ([x y & more]
+   (if (<= x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (<= y (first more)))
+     false)))

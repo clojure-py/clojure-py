@@ -115,6 +115,49 @@ class RT:
         return RT.rest(x)
 
     @staticmethod
+    def nth(coll, idx, not_found=NOT_FOUND):
+        """JVM-style nth. Indexed lookup with O(1) for vectors and
+        O(n) for seqs. With not_found returns it instead of raising
+        on out-of-range; without not_found, raises IndexError."""
+        if coll is None:
+            if not_found is NOT_FOUND:
+                raise IndexError("nth on nil")
+            return not_found
+        # Indexed (vector / list / tuple / str): direct index
+        if hasattr(coll, "nth"):
+            if not_found is NOT_FOUND:
+                return coll.nth(idx)
+            return coll.nth(idx, not_found)
+        if isinstance(coll, (list, tuple, str, bytes)):
+            try:
+                return coll[idx]
+            except IndexError:
+                if not_found is NOT_FOUND:
+                    raise
+                return not_found
+        # Seq / iterable — walk
+        s = RT.seq(coll)
+        cur = s
+        i = 0
+        while cur is not None:
+            if i == idx:
+                return cur.first()
+            cur = cur.next()
+            i += 1
+        if not_found is NOT_FOUND:
+            raise IndexError("nth: index out of bounds")
+        return not_found
+
+    @staticmethod
+    def int_cast(x):
+        """JVM RT.intCast — coerce to int. Forwards to Numbers.int_cast."""
+        return Numbers.int_cast(x)
+
+    @staticmethod
+    def unchecked_int_cast(x):
+        return Numbers.int_cast(x)
+
+    @staticmethod
     def subvec(v, start, end):
         """Slice of a vector: returns a new vector with elements
         [start, end)."""
@@ -134,6 +177,11 @@ class RT:
     def count(x):
         if x is None:
             return 0
+        # Python builtins (str/list/tuple) have a `count` method that
+        # takes a value to count occurrences of — not what Clojure
+        # `count` means. Use len() for those.
+        if isinstance(x, (str, list, tuple, dict, bytes)):
+            return len(x)
         if hasattr(x, "count"):
             return x.count()
         return len(x)

@@ -16,6 +16,43 @@ from clojure.lang import (
 )
 
 
+class _Delay:
+    """Compat shim for clojure.lang.Delay. A Delay holds a 0-arg fn and
+    evaluates it lazily on first force/deref, caching the result."""
+
+    __slots__ = ("_fn", "_val", "_evaluated", "_exception")
+
+    def __init__(self, fn):
+        self._fn = fn
+        self._val = None
+        self._evaluated = False
+        self._exception = None
+
+    @staticmethod
+    def force(x):
+        if isinstance(x, _Delay):
+            if not x._evaluated:
+                try:
+                    x._val = x._fn()
+                except BaseException as e:
+                    x._exception = e
+                    x._evaluated = True
+                    x._fn = None
+                    raise
+                x._evaluated = True
+                x._fn = None
+            if x._exception is not None:
+                raise x._exception
+            return x._val
+        return x
+
+    def deref(self):
+        return _Delay.force(self)
+
+    def is_realized(self):
+        return self._evaluated
+
+
 class _StringBuilder:
     """Compat shim for java.lang.StringBuilder. Mutable string buffer
     used by clojure.core/str's variadic arity. Methods match the JVM
@@ -65,6 +102,7 @@ def _bootstrap():
     # resolves it.
     setattr(_lang, "LazilyPersistentVector", _LazilyPersistentVector)
     setattr(_lang, "StringBuilder", _StringBuilder)
+    setattr(_lang, "Delay", _Delay)
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)
@@ -80,6 +118,16 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("ClassCastException"), TypeError)
     core_ns.import_class(_Symbol.intern("StringBuilder"), _StringBuilder)
     core_ns.import_class(_Symbol.intern("Object"), object)
+    import numbers as _numbers_mod
+    core_ns.import_class(_Symbol.intern("Number"), _numbers_mod.Number)
+
+    # Pre-intern dynamic vars that core.clj references before they're
+    # otherwise defined. *unchecked-math* is read inside :inline fn
+    # bodies that compile (but never run) during the bootstrap.
+    from clojure.lang import Var as _Var
+    _Var.intern(core_ns,
+                _Symbol.intern("*unchecked-math*"),
+                False).set_dynamic()
 
     here = _os.path.dirname(_os.path.abspath(__file__))
     try:

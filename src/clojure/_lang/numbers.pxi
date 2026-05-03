@@ -342,6 +342,68 @@ cdef class Numbers:
         _check_number(x)
         return Numbers._promote_arithmetic(x, 1, x - 1)
 
+    # --- JVM auto-promoting / unchecked aliases ------------------------
+    # On the JVM these are distinct from `add`/`multiply` etc. (the
+    # checked ones throw on overflow, the P-suffixed ones promote to
+    # BigInteger). Python ints don't overflow, so for our port the two
+    # families collapse onto the same implementation. Kept as separate
+    # names so the 1:1 core.clj translation finds the JVM names.
+
+    @staticmethod
+    def add_p(x, y):
+        return Numbers.add(x, y)
+
+    @staticmethod
+    def multiply_p(x, y):
+        return Numbers.multiply(x, y)
+
+    @staticmethod
+    def minus_p(x, y=None):
+        return Numbers.minus(x, y)
+
+    @staticmethod
+    def inc_p(x):
+        return Numbers.inc(x)
+
+    @staticmethod
+    def dec_p(x):
+        return Numbers.dec(x)
+
+    @staticmethod
+    def unchecked_add(x, y):
+        return Numbers.add(x, y)
+
+    @staticmethod
+    def unchecked_multiply(x, y):
+        return Numbers.multiply(x, y)
+
+    @staticmethod
+    def unchecked_minus(x, y=None):
+        return Numbers.minus(x, y)
+
+    @staticmethod
+    def unchecked_inc(x):
+        return Numbers.inc(x)
+
+    @staticmethod
+    def unchecked_dec(x):
+        return Numbers.dec(x)
+
+    @staticmethod
+    def int_cast(x):
+        """Coerce x to a Python int. Mirrors JVM's RT.intCast."""
+        if isinstance(x, bool):
+            return 1 if x else 0
+        if isinstance(x, int):
+            return x
+        if isinstance(x, float):
+            return int(x)
+        return int(x)
+
+    @staticmethod
+    def unchecked_int_cast(x):
+        return Numbers.int_cast(x)
+
     # --- BigInt tag preservation ---
 
     @staticmethod
