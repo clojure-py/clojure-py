@@ -1096,3 +1096,505 @@
        (recur y (first more) (next more))
        (<= y (first more)))
      false)))
+
+(defn >
+  "Returns non-nil if nums are in monotonically decreasing order,
+  otherwise false."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (gt ~x ~y)))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (. clojure.lang.Numbers (gt x y)))
+  ([x y & more]
+   (if (> x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (> y (first more)))
+     false)))
+
+(defn >=
+  "Returns non-nil if nums are in monotonically non-increasing order,
+  otherwise false."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (gte ~x ~y)))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (. clojure.lang.Numbers (gte x y)))
+  ([x y & more]
+   (if (>= x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (>= y (first more)))
+     false)))
+
+(defn ==
+  "Returns non-nil if nums all have the equivalent
+  value (type-independent), otherwise false"
+  {:inline (fn [x y] `(. clojure.lang.Numbers (equiv ~x ~y)))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([x] true)
+  ([x y] (. clojure.lang.Numbers (equiv x y)))
+  ([x y & more]
+   (if (== x y)
+     (if (next more)
+       (recur y (first more) (next more))
+       (== y (first more)))
+     false)))
+
+(defn max
+  "Returns the greatest of the nums."
+  {:added "1.0"
+   :inline-arities >1?
+   :inline (nary-inline 'max)}
+  ([x] x)
+  ([x y] (. clojure.lang.Numbers (max x y)))
+  ([x y & more]
+   (reduce1 max (max x y) more)))
+
+(defn min
+  "Returns the least of the nums."
+  {:added "1.0"
+   :inline-arities >1?
+   :inline (nary-inline 'min)}
+  ([x] x)
+  ([x y] (. clojure.lang.Numbers (min x y)))
+  ([x y & more]
+   (reduce1 min (min x y) more)))
+
+(defn abs
+  {:doc "Returns the absolute value of a.
+  If a is Long/MIN_VALUE => Long/MIN_VALUE
+  If a is a double and zero => +0.0
+  If a is a double and ##Inf or ##-Inf => ##Inf
+  If a is a double and ##NaN => ##NaN"
+   :inline-arities #{1}
+   :inline (fn [a] `(clojure.lang.Numbers/abs ~a))
+   :added "1.11"}
+  [a]
+  (clojure.lang.Numbers/abs a))
+
+(defn dec'
+  "Returns a number one less than num. Supports arbitrary precision.
+  See also: dec"
+  {:inline (fn [x] `(. clojure.lang.Numbers (dec_p ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (dec_p x)))
+
+(defn dec
+  "Returns a number one less than num. Does not auto-promote
+  longs, will throw on overflow. See also: dec'"
+  {:inline (fn [x] `(. clojure.lang.Numbers (~(if *unchecked-math* 'unchecked_dec 'dec) ~x)))
+   :added "1.2"}
+  [x] (. clojure.lang.Numbers (dec x)))
+
+(defn unchecked-inc-int
+  "Returns a number one greater than x, an int.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x] `(. clojure.lang.Numbers (unchecked_int_inc ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (unchecked_int_inc x)))
+
+(defn unchecked-inc
+  "Returns a number one greater than x, a long.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x] `(. clojure.lang.Numbers (unchecked_inc ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (unchecked_inc x)))
+
+(defn unchecked-dec-int
+  "Returns a number one less than x, an int.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x] `(. clojure.lang.Numbers (unchecked_int_dec ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (unchecked_int_dec x)))
+
+(defn unchecked-dec
+  "Returns a number one less than x, a long.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x] `(. clojure.lang.Numbers (unchecked_dec ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (unchecked_dec x)))
+
+(defn unchecked-negate-int
+  "Returns the negation of x, an int.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x] `(. clojure.lang.Numbers (unchecked_int_negate ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (unchecked_int_negate x)))
+
+(defn unchecked-negate
+  "Returns the negation of x, a long.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x] `(. clojure.lang.Numbers (unchecked_minus ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (unchecked_minus x)))
+
+(defn unchecked-add-int
+  "Returns the sum of x and y, both int.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_int_add ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_int_add x y)))
+
+(defn unchecked-add
+  "Returns the sum of x and y, both long.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_add ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_add x y)))
+
+(defn unchecked-subtract-int
+  "Returns the difference of x and y, both int.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_int_subtract ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_int_subtract x y)))
+
+(defn unchecked-subtract
+  "Returns the difference of x and y, both long.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_minus ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_minus x y)))
+
+(defn unchecked-multiply-int
+  "Returns the product of x and y, both int.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_int_multiply ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_int_multiply x y)))
+
+(defn unchecked-multiply
+  "Returns the product of x and y, both long.
+  Note - uses a primitive operator subject to overflow."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_multiply ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_multiply x y)))
+
+(defn unchecked-divide-int
+  "Returns the division of x by y, both int.
+  Note - uses a primitive operator subject to truncation."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_int_divide ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_int_divide x y)))
+
+(defn unchecked-remainder-int
+  "Returns the remainder of division of x by y, both int.
+  Note - uses a primitive operator subject to truncation."
+  {:inline (fn [x y] `(. clojure.lang.Numbers (unchecked_int_remainder ~x ~y)))
+   :added "1.0"}
+  [x y] (. clojure.lang.Numbers (unchecked_int_remainder x y)))
+
+(defn pos?
+  "Returns true if num is greater than zero, else false"
+  {
+   :inline (fn [num] `(. clojure.lang.Numbers (is_pos ~num)))
+   :added "1.0"}
+  [num] (. clojure.lang.Numbers (is_pos num)))
+
+(defn neg?
+  "Returns true if num is less than zero, else false"
+  {
+   :inline (fn [num] `(. clojure.lang.Numbers (is_neg ~num)))
+   :added "1.0"}
+  [num] (. clojure.lang.Numbers (is_neg num)))
+
+(defn quot
+  "quot[ient] of dividing numerator by denominator."
+  {:added "1.0"
+   :static true
+   :inline (fn [x y] `(. clojure.lang.Numbers (quotient ~x ~y)))}
+  [num div]
+    (. clojure.lang.Numbers (quotient num div)))
+
+(defn rem
+  "remainder of dividing numerator by denominator."
+  {:added "1.0"
+   :static true
+   :inline (fn [x y] `(. clojure.lang.Numbers (remainder ~x ~y)))}
+  [num div]
+    (. clojure.lang.Numbers (remainder num div)))
+
+(defn rationalize
+  "returns the rational value of num"
+  {:added "1.0"
+   :static true}
+  [num]
+  (. clojure.lang.Numbers (rationalize num)))
+
+;;Bit ops
+
+(defn bit-not
+  "Bitwise complement"
+  {:inline (fn [x] `(. clojure.lang.Numbers (bit_not ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers bit_not x))
+
+
+(defn bit-and
+  "Bitwise and"
+   {:inline (nary-inline 'bit_and)
+    :inline-arities >1?
+    :added "1.0"}
+   ([x y] (. clojure.lang.Numbers bit_and x y))
+   ([x y & more]
+      (reduce1 bit-and (bit-and x y) more)))
+
+(defn bit-or
+  "Bitwise or"
+  {:inline (nary-inline 'bit_or)
+   :inline-arities >1?
+   :added "1.0"}
+  ([x y] (. clojure.lang.Numbers bit_or x y))
+  ([x y & more]
+    (reduce1 bit-or (bit-or x y) more)))
+
+(defn bit-xor
+  "Bitwise exclusive or"
+  {:inline (nary-inline 'bit_xor)
+   :inline-arities >1?
+   :added "1.0"}
+  ([x y] (. clojure.lang.Numbers bit_xor x y))
+  ([x y & more]
+    (reduce1 bit-xor (bit-xor x y) more)))
+
+(defn bit-and-not
+  "Bitwise and with complement"
+  {:inline (nary-inline 'bit_and_not)
+   :inline-arities >1?
+   :added "1.0"
+   :static true}
+  ([x y] (. clojure.lang.Numbers bit_and_not x y))
+  ([x y & more]
+    (reduce1 bit-and-not (bit-and-not x y) more)))
+
+
+(defn bit-clear
+  "Clear bit at index n"
+  {:added "1.0"
+   :static true}
+  [x n] (. clojure.lang.Numbers bit_clear x n))
+
+(defn bit-set
+  "Set bit at index n"
+  {:added "1.0"
+   :static true}
+  [x n] (. clojure.lang.Numbers bit_set x n))
+
+(defn bit-flip
+  "Flip bit at index n"
+  {:added "1.0"
+   :static true}
+  [x n] (. clojure.lang.Numbers bit_flip x n))
+
+(defn bit-test
+  "Test bit at index n"
+  {:added "1.0"
+   :static true}
+  [x n] (. clojure.lang.Numbers bit_test x n))
+
+
+(defn bit-shift-left
+  "Bitwise shift left"
+  {:inline (fn [x n] `(. clojure.lang.Numbers (shift_left ~x ~n)))
+   :added "1.0"}
+  [x n] (. clojure.lang.Numbers shift_left x n))
+
+(defn bit-shift-right
+  "Bitwise shift right"
+  {:inline (fn [x n] `(. clojure.lang.Numbers (shift_right ~x ~n)))
+   :added "1.0"}
+  [x n] (. clojure.lang.Numbers shift_right x n))
+
+(defn unsigned-bit-shift-right
+  "Bitwise shift right, without sign-extension."
+  {:inline (fn [x n] `(. clojure.lang.Numbers (unsigned_shift_right ~x ~n)))
+   :added "1.6"}
+  [x n] (. clojure.lang.Numbers unsigned_shift_right x n))
+
+(defn integer?
+  "Returns true if n is an integer"
+  {:added "1.0"
+   :static true}
+  [n]
+  (or (instance? Integer n)
+      (instance? Long n)
+      (instance? clojure.lang.BigInt n)
+      (instance? BigInteger n)
+      (instance? Short n)
+      (instance? Byte n)))
+
+(defn even?
+  "Returns true if n is even, throws an exception if n is not an integer"
+  {:added "1.0"
+   :static true}
+   [n] (if (integer? n)
+        (zero? (bit-and (clojure.lang.RT/unchecked_long_cast n) 1))
+        (throw (IllegalArgumentException. (str "Argument must be an integer: " n)))))
+
+(defn odd?
+  "Returns true if n is odd, throws an exception if n is not an integer"
+  {:added "1.0"
+   :static true}
+  [n] (not (even? n)))
+
+(defn int?
+  "Return true if x is a fixed precision integer"
+  {:added "1.9"}
+  [x] (or (instance? Long x)
+          (instance? Integer x)
+          (instance? Short x)
+          (instance? Byte x)))
+
+(defn pos-int?
+  "Return true if x is a positive fixed precision integer"
+  {:added "1.9"}
+  [x] (and (int? x)
+           (pos? x)))
+
+(defn neg-int?
+  "Return true if x is a negative fixed precision integer"
+  {:added "1.9"}
+  [x] (and (int? x)
+           (neg? x)))
+
+(defn nat-int?
+  "Return true if x is a non-negative fixed precision integer"
+  {:added "1.9"}
+  [x] (and (int? x)
+           (not (neg? x))))
+
+(defn double?
+  "Return true if x is a Double"
+  {:added "1.9"}
+  [x] (instance? Double x))
+
+;;
+
+(defn complement
+  "Takes a fn f and returns a fn that takes the same arguments as f,
+  has the same effects, if any, and returns the opposite truth value."
+  {:added "1.0"
+   :static true}
+  [f]
+  (fn
+    ([] (not (f)))
+    ([x] (not (f x)))
+    ([x y] (not (f x y)))
+    ([x y & zs] (not (apply f x y zs)))))
+
+(defn constantly
+  "Returns a function that takes any number of arguments and returns x."
+  {:added "1.0"
+   :static true}
+  [x] (fn
+        ([] x)
+        ([_] x)
+        ([_ _] x)
+        ([_ _ & args] x)))
+
+(defn identity
+  "Returns its argument."
+  {:added "1.0"
+   :static true}
+  [x] x)
+
+;;Collection stuff
+
+;;list stuff
+(defn peek
+  "For a list or queue, same as first, for a vector, same as, but much
+  more efficient than, last. If the collection is empty, returns nil."
+  {:added "1.0"
+   :static true}
+  [coll] (. clojure.lang.RT (peek coll)))
+
+(defn pop
+  "For a list or queue, returns a new list/queue without the first
+  item, for a vector, returns a new vector without the last item. If
+  the collection is empty, throws an exception.  Note - not the same
+  as next/butlast."
+  {:added "1.0"
+   :static true}
+  [coll] (. clojure.lang.RT (pop coll)))
+
+;;map stuff
+
+(defn map-entry?
+  "Return true if x is a map entry"
+  {:added "1.8"}
+  [x]
+	(instance? clojure.lang.MapEntry x))
+
+(defn contains?
+  "Returns true if key is present in the given collection, otherwise
+  returns false.  Note that for numerically indexed collections like
+  vectors and Java arrays, this tests if the numeric key is within the
+  range of indexes. 'contains?' operates constant or logarithmic time;
+  it will not perform a linear search for a value.  See also 'some'."
+  {:added "1.0"
+   :static true}
+  [coll key] (. clojure.lang.RT (contains coll key)))
+
+(defn get
+  "Returns the value mapped to key, not-found or nil if key not present
+  in associative collection, set, string, array, or ILookup instance."
+  {:inline (fn  [m k & nf] `(. clojure.lang.RT (get ~m ~k ~@nf)))
+   :inline-arities #{2 3}
+   :added "1.0"}
+  ([map key]
+   (. clojure.lang.RT (get map key)))
+  ([map key not-found]
+   (. clojure.lang.RT (get map key not-found))))
+
+(defn dissoc
+  "dissoc[iate]. Returns a new map of the same (hashed/sorted) type,
+  that does not contain a mapping for key(s)."
+  {:added "1.0"
+   :static true}
+  ([map] map)
+  ([map key]
+   (. clojure.lang.RT (dissoc map key)))
+  ([map key & ks]
+   (let [ret (dissoc map key)]
+     (if ks
+       (recur ret (first ks) (next ks))
+       ret))))
+
+(defn disj
+  "disj[oin]. Returns a new set of the same (hashed/sorted) type, that
+  does not contain key(s)."
+  {:added "1.0"
+   :static true}
+  ([set] set)
+  ([^clojure.lang.IPersistentSet set key]
+   (when set
+     (. set (disjoin key))))
+  ([set key & ks]
+   (when set
+     (let [ret (disj set key)]
+       (if ks
+         (recur ret (first ks) (next ks))
+         ret)))))
+
+(defn find
+  "Returns the map entry for key, or nil if key not present."
+  {:added "1.0"
+   :static true}
+  [map key] (. clojure.lang.RT (find map key)))
+
+(defn select-keys
+  "Returns a map containing only those entries in map whose key is in keys"
+  {:added "1.0"
+   :static true}
+  [map keyseq]
+    (loop [ret {} keys (seq keyseq)]
+      (if keys
+        (let [entry (. clojure.lang.RT (find map (first keys)))]
+          (recur
+           (if entry
+             (conj ret entry)
+             ret)
+           (next keys)))
+        (with-meta ret (meta map)))))

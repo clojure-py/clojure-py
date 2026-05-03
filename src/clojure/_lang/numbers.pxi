@@ -404,6 +404,63 @@ cdef class Numbers:
     def unchecked_int_cast(x):
         return Numbers.int_cast(x)
 
+    # JVM has separate int (32-bit) variants of unchecked ops. Python
+    # ints don't overflow so they all behave identically — keep the
+    # JVM-named entry points so the 1:1 translation finds them.
+
+    @staticmethod
+    def unchecked_int_inc(x):
+        return Numbers.inc(x)
+
+    @staticmethod
+    def unchecked_int_dec(x):
+        return Numbers.dec(x)
+
+    @staticmethod
+    def unchecked_int_negate(x):
+        return Numbers.minus(x)
+
+    @staticmethod
+    def unchecked_int_add(x, y):
+        return Numbers.add(x, y)
+
+    @staticmethod
+    def unchecked_int_subtract(x, y):
+        return Numbers.minus(x, y)
+
+    @staticmethod
+    def unchecked_int_multiply(x, y):
+        return Numbers.multiply(x, y)
+
+    @staticmethod
+    def unchecked_int_divide(x, y):
+        return Numbers.quotient(x, y)
+
+    @staticmethod
+    def unchecked_int_remainder(x, y):
+        return Numbers.remainder(x, y)
+
+    @staticmethod
+    def unchecked_long_cast(x):
+        """JVM RT.uncheckedLongCast — coerce to int (long)."""
+        return Numbers.int_cast(x)
+
+    @staticmethod
+    def rationalize(x):
+        """Return a rational equivalent of x (int, BigInt, or Ratio).
+        Floats are converted via Python's Fraction → Ratio."""
+        if isinstance(x, (int, BigInt, Ratio)):
+            return x
+        if isinstance(x, float):
+            from fractions import Fraction
+            f = Fraction(x).limit_denominator(10**18)
+            return Ratio(f.numerator, f.denominator)
+        if isinstance(x, Decimal):
+            from fractions import Fraction
+            f = Fraction(x)
+            return Ratio(f.numerator, f.denominator)
+        raise TypeError("Cannot rationalize " + type(x).__name__)
+
     # --- BigInt tag preservation ---
 
     @staticmethod

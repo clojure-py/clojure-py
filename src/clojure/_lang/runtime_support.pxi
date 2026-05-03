@@ -158,6 +158,50 @@ class RT:
         return Numbers.int_cast(x)
 
     @staticmethod
+    def unchecked_long_cast(x):
+        return Numbers.int_cast(x)
+
+    @staticmethod
+    def peek(coll):
+        """Look at the first item of a list/queue or last of a vector,
+        without removing. Returns nil for nil/empty."""
+        if coll is None:
+            return None
+        if hasattr(coll, "peek"):
+            return coll.peek()
+        if isinstance(coll, (list, tuple)):
+            return coll[len(coll) - 1] if coll else None
+        return None
+
+    @staticmethod
+    def pop(coll):
+        """Drop the peek end of a list/queue/vector. Raises on empty."""
+        if coll is None:
+            return None
+        if hasattr(coll, "pop"):
+            return coll.pop()
+        raise TypeError(
+            "Can't pop from " + type(coll).__name__)
+
+    @staticmethod
+    def find(coll, key):
+        """Returns the map entry [k v] for key, or nil if not present."""
+        if coll is None:
+            return None
+        if hasattr(coll, "entry_at"):
+            return coll.entry_at(key)
+        if hasattr(coll, "get") and hasattr(coll, "contains_key"):
+            if coll.contains_key(key):
+                return MapEntry(key, coll.get(key))
+            return None
+        try:
+            if key in coll:
+                return MapEntry(key, coll[key])
+        except TypeError:
+            pass
+        return None
+
+    @staticmethod
     def subvec(v, start, end):
         """Slice of a vector: returns a new vector with elements
         [start, end)."""

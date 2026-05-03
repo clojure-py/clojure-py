@@ -121,6 +121,19 @@ def _bootstrap():
     import numbers as _numbers_mod
     core_ns.import_class(_Symbol.intern("Number"), _numbers_mod.Number)
 
+    # Java numeric type aliases. JVM has Integer/Long/Short/Byte all as
+    # distinct fixed-width int classes; in Python all ints are arbitrary
+    # precision and indistinguishable, so they all map to `int`.
+    # BigInteger maps to our BigInt subclass; Double to float.
+    from clojure.lang import BigInt as _BigInt
+    core_ns.import_class(_Symbol.intern("Integer"), int)
+    core_ns.import_class(_Symbol.intern("Long"), int)
+    core_ns.import_class(_Symbol.intern("Short"), int)
+    core_ns.import_class(_Symbol.intern("Byte"), int)
+    core_ns.import_class(_Symbol.intern("BigInteger"), _BigInt)
+    core_ns.import_class(_Symbol.intern("Double"), float)
+    core_ns.import_class(_Symbol.intern("Float"), float)
+
     # Pre-intern dynamic vars that core.clj references before they're
     # otherwise defined. *unchecked-math* is read inside :inline fn
     # bodies that compile (but never run) during the bootstrap.
