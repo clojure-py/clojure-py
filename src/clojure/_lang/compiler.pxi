@@ -27,6 +27,40 @@
 
 _CellType = _pytypes.CellType  # types.CellType — 3.8+
 
+def _make_arity_dispatcher(*arity_fns):
+    """Wrap N single-arity functions in a dispatcher that selects based
+    on argument count. Each fn's __code__.co_argcount + CO_VARARGS flag
+    determines its arity range. At most one variadic arity is permitted
+    (and any variadic arity matches >= its required-arg count, after
+    fixed arities have a chance)."""
+    fixed = []
+    var = None
+    for fn in arity_fns:
+        argc = fn.__code__.co_argcount
+        is_var = bool(fn.__code__.co_flags & 0x04)
+        if is_var:
+            if var is not None:
+                raise SyntaxError(
+                    "Can't have more than 1 variadic overload")
+            var = (argc, fn)
+        else:
+            fixed.append((argc, fn))
+    fixed.sort(key=lambda p: p[0])
+    fn_name = arity_fns[0].__name__ if arity_fns else "__fn__"
+
+    def dispatcher(*args):
+        n = len(args)
+        for argc, fn in fixed:
+            if n == argc:
+                return fn(*args)
+        if var is not None and n >= var[0]:
+            return var[1](*args)
+        raise TypeError(
+            "Wrong number of args (" + str(n) + ") passed to: " + fn_name)
+    dispatcher.__name__ = fn_name
+    return dispatcher
+
+
 def _make_cell(value):
     """Return a fresh Python closure cell holding `value`. Used when an
     inner fn captures a `loop` binding so that each iteration's closure
@@ -487,42 +521,10 @@ def _compile_recur(args, ctx):
     ctx.emit(_bc_Instr("JUMP_BACKWARD", label))
 
 
-def _compile_fn_star(args, ctx):
-    """(fn* [args...] body...) or (fn* name [args...] body...)
-
-    Single-arity only for slice 5 — multi-arity `(fn* ([a] ...) ([a b] ...))`
-    and varargs `& rest` come later.
-
-    Emits a nested code object compiled in a child _FnContext, then
-    constructs the function in the outer scope. If the inner body
-    captured anything from the outer chain (now visible via inner.freevars),
-    we build the closure tuple by LOAD_FAST'ing each cell from the outer's
-    fast-locals (cells live in the same fast-locals array as plain
-    locals on 3.14).
-
-    For named fn (the optional `name` allows recursion), we allocate a
-    self-cell in OUTER, expose it as a freevar in INNER, and after
-    MAKE_FUNCTION we COPY + STORE_DEREF the function into the cell so
-    inner refs to `name` resolve to the function itself."""
-    if args is None:
-        raise SyntaxError("fn* requires at least an arglist")
-    first = args.first()
-    rest = args.next()
-    fn_name = None
-    if isinstance(first, Symbol):
-        fn_name = first.name
-        if rest is None:
-            raise SyntaxError("fn* with name requires an arglist")
-        args_vec = rest.first()
-        body = rest.next()
-    else:
-        args_vec = first
-        body = rest
+def _parse_fn_args(args_vec):
+    """Parse an arglist vector into (arg_names, has_rest)."""
     if not isinstance(args_vec, IPersistentVector):
-        raise SyntaxError(
-            "fn* arglist must be a vector "
-            "(multi-arity fn* not yet supported)")
-
+        raise SyntaxError("fn* arglist must be a vector")
     arg_names = []
     has_rest = False
     av_count = args_vec.count()
@@ -530,7 +532,6 @@ def _compile_fn_star(args, ctx):
     while i < av_count:
         an = args_vec.nth(i)
         if isinstance(an, Symbol) and an.ns is None and an.name == "&":
-            # `& rest` — the next symbol is the rest binding
             if i + 1 >= av_count:
                 raise SyntaxError("Missing rest arg after `&`")
             rest_sym = args_vec.nth(i + 1)
@@ -545,17 +546,25 @@ def _compile_fn_star(args, ctx):
             raise SyntaxError("fn* arg names must be unqualified symbols")
         arg_names.append(an.name)
         i += 1
+    return arg_names, has_rest
 
+
+def _compile_one_arity(args_vec, body, ctx, fn_name, self_cell_slot):
+    """Compile one arity into an inner _FnContext + code object. Caller
+    is responsible for emitting MAKE_FUNCTION in `ctx` afterward (via
+    _emit_make_function).
+
+    `self_cell_slot` (if non-None) is the OUTER cellvar slot holding the
+    fn-self reference for recursion; this arity's body will see `fn_name`
+    as a freevar pointing at it."""
+    arg_names, has_rest = _parse_fn_args(args_vec)
     inner = _FnContext(
         name=fn_name if fn_name else "__fn__",
         argnames=arg_names,
         parent=ctx,
         varargs=has_rest,
     )
-
     if has_rest:
-        # The rest param starts as a tuple of extra args; rebind it to a
-        # Clojure seq (or nil if empty) so user code sees Clojure semantics.
         rest_slot = arg_names[len(arg_names) - 1]
         inner.emit(
             _bc_Instr("LOAD_CONST", RT.seq),
@@ -564,32 +573,25 @@ def _compile_fn_star(args, ctx):
             _bc_Instr("CALL", 1),
             _bc_Instr("STORE_FAST", rest_slot),
         )
-
-    self_cell_slot = None
-    if fn_name is not None:
-        self_cell_slot = ctx.gensym(fn_name)
-        if self_cell_slot not in ctx.cellvars:
-            ctx.cellvars.append(self_cell_slot)
+    if self_cell_slot is not None and fn_name is not None:
         inner.freevars.append(self_cell_slot)
         inner.locals[fn_name] = ("FREE", self_cell_slot)
-
     _compile_do(body, inner)
     inner.emit(_bc_Instr("RETURN_VALUE"))
-    inner_code = inner.to_code()
+    return inner, inner.to_code()
 
+
+def _emit_make_function(ctx, inner, inner_code):
+    """Emit the closure-tuple + MAKE_FUNCTION + SET_FUNCTION_ATTRIBUTE
+    sequence in `ctx` for the inner code object. Leaves the function on
+    the operand stack."""
     if inner.freevars:
         for fv in inner.freevars:
-            # In OUR (outer) frame, the source for this freevar is one
-            # of: a cellvar we MAKE_CELL'd, a freevar we received and
-            # pass through, or a FAST_LOOP local that needs freshening
-            # so each loop iteration's closure captures THAT iteration's
-            # value (rather than sharing a mutating cell).
             if fv in ctx.cellvars:
                 ctx.emit(_bc_Instr("LOAD_FAST", _bc_CellVar(fv)))
             elif fv in ctx.freevars:
                 ctx.emit(_bc_Instr("LOAD_FAST", _bc_FreeVar(fv)))
             elif _slot_kind_in(ctx, fv) == "FAST_LOOP":
-                # Freshen: _make_cell(<current value of loop binding>)
                 ctx.emit(
                     _bc_Instr("LOAD_CONST", _make_cell),
                     _bc_Instr("PUSH_NULL"),
@@ -606,6 +608,80 @@ def _compile_fn_star(args, ctx):
     else:
         ctx.emit(_bc_Instr("LOAD_CONST", inner_code))
         ctx.emit(_bc_Instr("MAKE_FUNCTION"))
+
+
+def _compile_fn_star(args, ctx):
+    """(fn* [args...] body...)
+       (fn* name [args...] body...)
+       (fn* ([args1...] body1) ([args2...] body2) ...)
+       (fn* name ([args1...] body1) ([args2...] body2) ...)
+
+    Single-arity yields one Python function. Multi-arity compiles each
+    overload as its own inner function and wraps them in a runtime
+    dispatcher (_make_arity_dispatcher) that selects on len(args).
+
+    For named fn, a self-cell in OUTER lets the body recurse through the
+    name; in multi-arity that cell ends up holding the dispatcher, so
+    recursive calls go through dispatch."""
+    if args is None:
+        raise SyntaxError("fn* requires at least an arglist or arity list")
+    first = args.first()
+    rest = args.next()
+    fn_name = None
+    if isinstance(first, Symbol):
+        fn_name = first.name
+        if rest is None:
+            raise SyntaxError("fn* with name requires at least one arity")
+        first = rest.first()
+        rest = rest.next()
+
+    # Detect multi-arity: each remaining form is a list whose first
+    # element is a vector. Single-arity: `first` itself is a vector.
+    if isinstance(first, IPersistentVector):
+        arities = [(first, rest)]
+    elif isinstance(first, ISeq):
+        arities = []
+        cur = args
+        if fn_name is not None:
+            cur = args.next()
+        while cur is not None:
+            arity_form = cur.first()
+            if not isinstance(arity_form, ISeq):
+                raise SyntaxError(
+                    "fn* multi-arity expects each overload as (args body...)")
+            a_seq = arity_form.seq()
+            if a_seq is None:
+                raise SyntaxError("fn* arity overload requires an arglist")
+            a_args = a_seq.first()
+            a_body = a_seq.next()
+            arities.append((a_args, a_body))
+            cur = cur.next()
+    else:
+        raise SyntaxError("fn* expects a vector or arity list")
+
+    self_cell_slot = None
+    if fn_name is not None:
+        self_cell_slot = ctx.gensym(fn_name)
+        if self_cell_slot not in ctx.cellvars:
+            ctx.cellvars.append(self_cell_slot)
+
+    if len(arities) == 1:
+        a_args, a_body = arities[0]
+        inner, inner_code = _compile_one_arity(
+            a_args, a_body, ctx, fn_name, self_cell_slot)
+        _emit_make_function(ctx, inner, inner_code)
+    else:
+        # Validate at most one variadic arity, and only as the highest
+        # arity-count overload. Build each then call the dispatcher.
+        ctx.emit(
+            _bc_Instr("LOAD_CONST", _make_arity_dispatcher),
+            _bc_Instr("PUSH_NULL"),
+        )
+        for a_args, a_body in arities:
+            inner, inner_code = _compile_one_arity(
+                a_args, a_body, ctx, fn_name, self_cell_slot)
+            _emit_make_function(ctx, inner, inner_code)
+        ctx.emit(_bc_Instr("CALL", len(arities)))
 
     if self_cell_slot is not None:
         ctx.emit(
