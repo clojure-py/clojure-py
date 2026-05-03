@@ -346,6 +346,9 @@ def _compile_form(form, ctx):
             if sname == "new":
                 _compile_new(s.next(), ctx)
                 return
+            if sname == "set!":
+                _compile_set_bang(s.next(), ctx)
+                return
             # `.method` and `.-field` interop sugar.
             if len(sname) > 1 and sname[0] == ".":
                 if sname[1] == "-" and len(sname) > 2:
@@ -574,6 +577,106 @@ def _resolve_catch_class(form, ctx):
     finally:
         ctx.instrs = saved
     return sub_ctx_instrs
+
+
+def _compile_set_bang(args, ctx):
+    """(set! target value)
+
+    Two legal target shapes:
+      - var-symbol      → set the dynamic var's thread binding (must be
+                          dynamic and currently thread-bound)
+      - (.-field obj)   → setattr(obj, "field", value)
+      - (. obj -field)  → same
+
+    Locals can't be set! — Clojure forbids it (immutability), and
+    we'd have no way to STORE_FAST a captured cell across closure
+    boundaries safely anyway."""
+    if args is None:
+        raise SyntaxError("set! requires a target and a value")
+    target = args.first()
+    rest = args.next()
+    if rest is None:
+        raise SyntaxError("set! requires a value")
+    value_form = rest.first()
+    if rest.next() is not None:
+        raise SyntaxError("set! takes exactly two arguments")
+
+    # Var target
+    if isinstance(target, Symbol):
+        # Locals can't be set!
+        if target.ns is None and target.name in ctx.locals:
+            raise SyntaxError(
+                "Can't change value of local: " + str(target))
+        v = _resolve_in_current_ns(target)
+        if not isinstance(v, Var):
+            raise SyntaxError(
+                "set! target must resolve to a Var: " + str(target))
+        # Stack: <var>.set(<value>)
+        ctx.emit(
+            _bc_Instr("LOAD_CONST", v),
+            _bc_Instr("LOAD_ATTR", (True, "set")),
+        )
+        _compile_form(value_form, ctx)
+        ctx.emit(_bc_Instr("CALL", 1))
+        return
+
+    # Field target — (.-field obj) or (. obj -field)
+    if isinstance(target, ISeq):
+        ts = target.seq()
+        if ts is not None and isinstance(ts.first(), Symbol):
+            head = ts.first()
+            if head.ns is None:
+                hname = head.name
+                # (.-field obj)
+                if len(hname) > 2 and hname[0] == "." and hname[1] == "-":
+                    field = hname[2:]
+                    rest_t = ts.next()
+                    if rest_t is None or rest_t.next() is not None:
+                        raise SyntaxError(
+                            "set! field target requires exactly one object")
+                    obj_form = rest_t.first()
+                    _emit_setattr(obj_form, field, value_form, ctx)
+                    return
+                # (. obj -field)
+                if hname == ".":
+                    rest_t = ts.next()
+                    if rest_t is None:
+                        raise SyntaxError("set! (. ...) requires obj and member")
+                    obj_form = rest_t.first()
+                    rest_m = rest_t.next()
+                    if rest_m is None:
+                        raise SyntaxError("set! (. ...) requires obj and member")
+                    member = rest_m.first()
+                    if not isinstance(member, Symbol) or member.ns is not None:
+                        raise SyntaxError("set! field name must be unqualified")
+                    mn = member.name
+                    if not (len(mn) > 1 and mn[0] == "-"):
+                        raise SyntaxError(
+                            "set! (. obj member) requires -field form")
+                    field = mn[1:]
+                    if rest_m.next() is not None:
+                        raise SyntaxError(
+                            "set! (. obj -field) takes no extra args")
+                    _emit_setattr(obj_form, field, value_form, ctx)
+                    return
+
+    raise SyntaxError(
+        "set! target must be a Var-symbol or a field-access form")
+
+
+def _emit_setattr(obj_form, field, value_form, ctx):
+    """setattr(obj, field, value) and leave value on TOS as the result."""
+    # Stash value in a temp slot via STORE_FAST/LOAD_FAST so we can re-use it.
+    tmp = ctx.gensym("setval")
+    _compile_form(value_form, ctx)
+    ctx.emit(_bc_Instr("STORE_FAST", tmp))
+    ctx.emit(_bc_Instr("LOAD_CONST", setattr), _bc_Instr("PUSH_NULL"))
+    _compile_form(obj_form, ctx)
+    ctx.emit(_bc_Instr("LOAD_CONST", field))
+    ctx.emit(_bc_Instr("LOAD_FAST", tmp))
+    ctx.emit(_bc_Instr("CALL", 3))
+    ctx.emit(_bc_Instr("POP_TOP"))   # discard setattr's None return
+    ctx.emit(_bc_Instr("LOAD_FAST", tmp))
 
 
 def _compile_new(args, ctx):
