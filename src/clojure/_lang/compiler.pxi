@@ -556,7 +556,13 @@ def _compile_one_arity(args_vec, body, ctx, fn_name, self_cell_slot):
 
     `self_cell_slot` (if non-None) is the OUTER cellvar slot holding the
     fn-self reference for recursion; this arity's body will see `fn_name`
-    as a freevar pointing at it."""
+    as a freevar pointing at it.
+
+    Fn args are marked FAST_LOOP and a recur target is pushed at the
+    start of the body — that's how `(recur ...)` in fn-tail position
+    rebinds the args and jumps back. The recur label sits AFTER the
+    prologue (vararg seq-conversion etc.), so subsequent iterations
+    skip that work."""
     arg_names, has_rest = _parse_fn_args(args_vec)
     inner = _FnContext(
         name=fn_name if fn_name else "__fn__",
@@ -576,7 +582,19 @@ def _compile_one_arity(args_vec, body, ctx, fn_name, self_cell_slot):
     if self_cell_slot is not None and fn_name is not None:
         inner.freevars.append(self_cell_slot)
         inner.locals[fn_name] = ("FREE", self_cell_slot)
-    _compile_do(body, inner)
+    # Mark args as FAST_LOOP so any recur in the body can rebind them,
+    # and any inner fn capturing one freshens a per-creation cell rather
+    # than promoting to a shared mutating cell.
+    for an in arg_names:
+        inner.locals[an] = ("FAST_LOOP", an)
+    recur_label = inner.new_label()
+    inner.emit(recur_label)
+    inner.recur_targets.append(
+        (recur_label, list(arg_names), list(arg_names)))
+    try:
+        _compile_do(body, inner)
+    finally:
+        inner.recur_targets.pop()
     inner.emit(_bc_Instr("RETURN_VALUE"))
     return inner, inner.to_code()
 

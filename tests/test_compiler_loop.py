@@ -110,12 +110,15 @@ def test_recur_outside_loop_raises():
     with pytest.raises(SyntaxError):
         _eval("(recur 1)")
 
-def test_recur_in_fn_without_enclosing_loop_raises():
-    """Slice 7 only supports loop-recur; fn-tail-recur (which uses fn
-    args as recur targets) is deferred. So a recur inside a bare fn
-    body should also raise."""
-    with pytest.raises(SyntaxError):
-        _eval("(fn* [x] (recur (clp-inc x)))")
+def test_recur_in_fn_targets_fn_args():
+    """fn-tail recur uses the fn's own args as recur targets — no
+    enclosing loop required."""
+    f = _eval(
+        "(fn* [n] (if (clp-zero? n) :done (recur (clp-dec n))))"
+    )
+    from clojure.lang import Keyword
+    assert f(5) == Keyword.intern(None, "done")
+    assert f(0) == Keyword.intern(None, "done")
 
 
 # --- recur arity check -------------------------------------------------
