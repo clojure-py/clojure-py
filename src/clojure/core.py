@@ -19,12 +19,6 @@ from clojure.lang import (
 def _bootstrap():
     """Pre-create the clojure.core namespace, install Java→Python class
     aliases that the translation references, then load core.clj."""
-    import clojure.lang as _lang
-    # JVM nested-class alias: clojure.lang.Compiler$HostExpr is just our
-    # Compiler. Python identifiers can't have $, so register as a module
-    # attr via setattr — `class_for_name` will find it.
-    setattr(_lang, "Compiler$HostExpr", _lang.Compiler)
-
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)
 

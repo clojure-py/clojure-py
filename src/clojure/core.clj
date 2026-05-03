@@ -8,13 +8,9 @@
 
 ;; clojure-py port note:
 ;;   This is a 1:1 form-by-form port of clojure/src/clj/clojure/core.clj
-;;   from JVM Clojure. Comments, metadata, and Java-style method names
-;;   are preserved verbatim — the compiler auto-falls-back from
-;;   javaCamelCase to python_snake_case at the call site for both method
-;;   calls and static-attr lookups, so .withMeta, .getName, .setMacro
-;;   etc. just work even though our underlying classes use snake_case.
+;;   from JVM Clojure. Comments and metadata are preserved verbatim.
 ;;
-;;   Remaining adaptations (kept as small as possible):
+;;   Adaptations (kept as small as possible):
 ;;   - The (ns clojure.core) form at the top is omitted; the loader binds
 ;;     *ns* to clojure.core before evaluation. The `ns` macro will be
 ;;     translated alongside its definition later.
@@ -22,15 +18,14 @@
 ;;     a callable static field (e.g. PersistentList.creator) are
 ;;     rewritten as `ClassName/fieldName` — Python has no compile-time
 ;;     way to distinguish a static field from a no-arg static method.
-;;   - Compiler$HostExpr is registered as a module-attr alias for
-;;     Compiler (our port has no nested-class equivalent).
+;;   - Java method names in (.method obj) interop are written using
+;;     Python's snake_case (.with_meta, .get_name, .find for indexOf,
+;;     etc.) because our port follows Python's PEP 8 naming.
+;;   - Compiler$HostExpr internals (maybeSpecialTag, maybeClass) are
+;;     stubbed on our clojure.lang.Compiler class — the JVM nested-class
+;;     name doesn't translate to Python identifiers.
 ;;   - Java exception classes (IllegalArgumentException etc.) are mapped
 ;;     to Python equivalents in this same file before they're used.
-;;   - .concat and .indexOf on Java Strings would call methods Python's
-;;     str doesn't have. Both currently appear in dead code paths
-;;     (resolve-tag in `sigs`, the inline-fn renaming in `defn`) that
-;;     aren't exercised by the bootstrap; they'll get adapted (or grow
-;;     a generic str-method bridge) when a real call site shows up.
 
 (def unquote)
 (def unquote-splicing)
@@ -65,8 +60,8 @@
  ^{:macro true
    :added "1.0"}
  fn (fn* fn [&form &env & decl]
-         (.withMeta ^clojure.lang.IObj (cons 'fn* decl)
-                    (.meta ^clojure.lang.IMeta &form))))
+         (.with_meta ^clojure.lang.IObj (cons 'fn* decl)
+                     (.meta ^clojure.lang.IMeta &form))))
 
 (def
  ^{:arglists '([coll])
@@ -239,7 +234,7 @@
    :added "1.0"
    :static true}
  with-meta (fn ^:static with-meta [^clojure.lang.IObj x m]
-             (. x (withMeta m))))
+             (. x (with_meta m))))
 
 (def ^{:private true :dynamic true}
   assert-valid-fdecl (fn [fdecl]))
@@ -266,11 +261,11 @@
                         (let [m (meta argvec)
                               ^clojure.lang.Symbol tag (:tag m)]
                           (if (instance? clojure.lang.Symbol tag)
-                            (if (clojure.lang.Util/equiv (.indexOf (.getName tag) ".") -1)
-                              (if (clojure.lang.Util/equals nil (clojure.lang.Compiler$HostExpr/maybeSpecialTag tag))
-                                (let [c (clojure.lang.Compiler$HostExpr/maybeClass tag false)]
+                            (if (clojure.lang.Util/equiv (.find (.get_name tag) ".") -1)
+                              (if (clojure.lang.Util/equals nil (clojure.lang.Compiler/maybe_special_tag tag))
+                                (let [c (clojure.lang.Compiler/maybe_class tag false)]
                                   (if c
-                                    (with-meta argvec (assoc m :tag (clojure.lang.Symbol/intern (.getName c))))
+                                    (with-meta argvec (assoc m :tag (clojure.lang.Symbol/intern (.get_name c))))
                                     argvec))
                                 argvec)
                               argvec)
@@ -347,7 +342,7 @@
                   (if (if (clojure.lang.Util/equiv 'fn ifn)
                         (if (instance? clojure.lang.Symbol iname) false true))
                     ;; inserts the same fn name to the inline fn if it does not have one
-                    (assoc m :inline (cons ifn (cons (clojure.lang.Symbol/intern (.concat (.getName ^clojure.lang.Symbol name) "__inliner"))
+                    (assoc m :inline (cons ifn (cons (clojure.lang.Symbol/intern (.concat (.get_name ^clojure.lang.Symbol name) "__inliner"))
                                                      (next inline))))
                     m))
               m (conj (if (meta name) (meta name) {}) m)]
@@ -357,4 +352,4 @@
                 ;;(cons `fn fdecl)
                 (with-meta (cons `fn fdecl) {:rettag (:tag m)})))))
 
-(. (var defn) (setMacro))
+(. (var defn) (set_macro))

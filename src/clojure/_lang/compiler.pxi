@@ -27,53 +27,6 @@
 
 _CellType = _pytypes.CellType  # types.CellType — 3.8+
 
-def _camel_to_snake(name):
-    """Convert javaCamelCase to python_snake_case. Returns None if the
-    name has no uppercase (i.e. nothing to convert) or already contains
-    an underscore (looks Pythonic already)."""
-    if "_" in name:
-        return None
-    has_upper = False
-    for c in name:
-        if c.isupper():
-            has_upper = True
-            break
-    if not has_upper:
-        return None
-    out = []
-    for i, c in enumerate(name):
-        if i > 0 and c.isupper():
-            out.append("_")
-        out.append(c.lower())
-    return "".join(out)
-
-
-def _interop_method_camel(obj, java_name, snake_name, *args):
-    """Java-style method call with snake_case fallback. Used by interop
-    forms whose method name is camelCase: try the literal name first
-    (faithful to the JVM source), then the auto-derived snake_case
-    form (so our Pythonic methods match)."""
-    m = getattr(obj, java_name, None)
-    if m is None:
-        m = getattr(obj, snake_name, None)
-        if m is None:
-            raise AttributeError(
-                type(obj).__name__ + " has no method "
-                + repr(java_name) + " or " + repr(snake_name))
-    return m(*args)
-
-
-def _interop_attr_camel(obj, java_name, snake_name):
-    """Same idea for field access: try camelCase, then snake_case."""
-    if hasattr(obj, java_name):
-        return getattr(obj, java_name)
-    if hasattr(obj, snake_name):
-        return getattr(obj, snake_name)
-    raise AttributeError(
-        type(obj).__name__ + " has no attr "
-        + repr(java_name) + " or " + repr(snake_name))
-
-
 def _make_arity_dispatcher(*arity_fns):
     """Wrap N single-arity functions in a dispatcher that selects based
     on argument count. Each fn's __code__.co_argcount + CO_VARARGS flag
@@ -337,9 +290,6 @@ def _try_resolve_class_or_static(sym):
       - `clojure.lang.RT`        → ns=None name='clojure.lang.RT' → the class
       - `clojure.lang.RT/cons`   → ns='clojure.lang.RT' name='cons'
                                    → the class's `cons` attribute
-      - `clojure.lang.Compiler$HostExpr/maybeSpecialTag`
-                                 → camelCase falls back to snake_case so
-                                   our Pythonic methods match
       - `ValueError`             → ns=None name='ValueError' → builtin
                                    (only if not bound elsewhere — JVM
                                    Clojure auto-imports java.lang.*; the
@@ -358,14 +308,7 @@ def _try_resolve_class_or_static(sym):
         cls = RT.class_for_name(sym.ns)
     except (ImportError, AttributeError):
         return None
-    val = getattr(cls, sym.name, None)
-    if val is not None:
-        return val
-    # camelCase → snake_case fallback (e.g. .maybeSpecialTag → .maybe_special_tag)
-    snake = _camel_to_snake(sym.name)
-    if snake is not None:
-        return getattr(cls, snake, None)
-    return None
+    return getattr(cls, sym.name, None)
 
 
 # --- macroexpansion -----------------------------------------------------
@@ -926,53 +869,26 @@ def _compile_set_literal(st, ctx):
 
 
 def _compile_method_call(method_name, args, ctx):
-    """(.method obj arg1 arg2 ...) — emit obj.method(args).
-
-    Fast path uses LOAD_ATTR's method-form so CPython's call-site
-    optimization fires. For Java-style camelCase names, fall back to a
-    runtime helper that also tries snake_case — so the 1:1 core.clj
-    translation can keep `.withMeta`, `.getName`, `.setMacro` etc. while
-    our underlying Python classes use `.with_meta`, `.get_name`,
-    `.set_macro`."""
+    """(.method obj arg1 arg2 ...) — emit obj.method(args) using the
+    LOAD_ATTR method-form so CPython's call optimization fires."""
     if args is None:
         raise SyntaxError(
             "Method call requires a target object: ." + method_name)
     target = args.first()
     rest = args.next()
-    snake = _camel_to_snake(method_name)
-    if snake is None:
-        # Pythonic name — direct method-form call
-        _compile_form(target, ctx)
-        ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
-        nargs = 0
-        cur = rest
-        while cur is not None:
-            _compile_form(cur.first(), ctx)
-            nargs += 1
-            cur = cur.next()
-        ctx.emit(_bc_Instr("CALL", nargs))
-        return
-    # camelCase name — go through helper for snake_case fallback
-    ctx.emit(
-        _bc_Instr("LOAD_CONST", _interop_method_camel),
-        _bc_Instr("PUSH_NULL"),
-    )
     _compile_form(target, ctx)
-    ctx.emit(_bc_Instr("LOAD_CONST", method_name))
-    ctx.emit(_bc_Instr("LOAD_CONST", snake))
+    ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
     nargs = 0
     cur = rest
     while cur is not None:
         _compile_form(cur.first(), ctx)
         nargs += 1
         cur = cur.next()
-    ctx.emit(_bc_Instr("CALL", 3 + nargs))
+    ctx.emit(_bc_Instr("CALL", nargs))
 
 
 def _compile_field_access(field_name, args, ctx):
-    """(.-field obj) — emit obj.field via plain LOAD_ATTR (non-method).
-    camelCase falls back to snake_case via a helper, mirroring the
-    method-call path."""
+    """(.-field obj) — emit obj.field via plain LOAD_ATTR (non-method)."""
     if args is None:
         raise SyntaxError(
             "Field access requires a target object: .-" + field_name)
@@ -980,19 +896,8 @@ def _compile_field_access(field_name, args, ctx):
     if args.next() is not None:
         raise SyntaxError(
             "Field access takes a single target object: .-" + field_name)
-    snake = _camel_to_snake(field_name)
-    if snake is None:
-        _compile_form(target, ctx)
-        ctx.emit(_bc_Instr("LOAD_ATTR", (False, field_name)))
-        return
-    ctx.emit(
-        _bc_Instr("LOAD_CONST", _interop_attr_camel),
-        _bc_Instr("PUSH_NULL"),
-    )
     _compile_form(target, ctx)
-    ctx.emit(_bc_Instr("LOAD_CONST", field_name))
-    ctx.emit(_bc_Instr("LOAD_CONST", snake))
-    ctx.emit(_bc_Instr("CALL", 3))
+    ctx.emit(_bc_Instr("LOAD_ATTR", (False, field_name)))
 
 
 def _compile_dot(args, ctx):
@@ -1024,10 +929,16 @@ def _compile_dot(args, ctx):
             raise SyntaxError(
                 "When using (. obj (method ...)), don't pass extra args")
         # Recompose as a method-call: receiver is `target`, args from ms.next()
-        # Build a fresh seq starting with target so we can reuse
-        # _compile_method_call (which handles camelCase fallback).
-        new_args = RT.cons(target, ms.next())
-        _compile_method_call(m_name_sym.name, new_args, ctx)
+        method_name = m_name_sym.name
+        _compile_form(target, ctx)
+        ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
+        nargs = 0
+        cur = ms.next()
+        while cur is not None:
+            _compile_form(cur.first(), ctx)
+            nargs += 1
+            cur = cur.next()
+        ctx.emit(_bc_Instr("CALL", nargs))
         return
 
     if not isinstance(member, Symbol) or member.ns is not None:
@@ -1038,10 +949,19 @@ def _compile_dot(args, ctx):
         if member_args is not None:
             raise SyntaxError(
                 "Field access via (. obj -field) takes no extra args")
-        _compile_field_access(name[1:], RT.cons(target, None), ctx)
+        _compile_form(target, ctx)
+        ctx.emit(_bc_Instr("LOAD_ATTR", (False, name[1:])))
         return
     # Method call (or zero-arg)
-    _compile_method_call(name, RT.cons(target, member_args), ctx)
+    _compile_form(target, ctx)
+    ctx.emit(_bc_Instr("LOAD_ATTR", (True, name)))
+    nargs = 0
+    cur = member_args
+    while cur is not None:
+        _compile_form(cur.first(), ctx)
+        nargs += 1
+        cur = cur.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
 
 
 def _parse_try_args(args):
