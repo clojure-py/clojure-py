@@ -211,12 +211,16 @@ class RT:
     @staticmethod
     def class_for_name(name):
         """Resolve a dotted Python name to a class. 'collections.Counter' →
-        the class, 'int' → builtins.int."""
-        parts = name.split(".")
-        if len(parts) == 1:
+        the class, 'int' → builtins.int.
+
+        Uses rfind+slice rather than str.rsplit/split — the latter
+        segfault under Cython 3.2 + CPython 3.14t (free-threading
+        codegen bug)."""
+        cdef int dot = name.rfind(".")
+        if dot < 0:
             return getattr(_builtins, name)
-        mod_name = ".".join(parts[:-1])
-        cls_name = parts[-1]
+        mod_name = name[:dot]
+        cls_name = name[dot + 1:]
         mod = _importlib.import_module(mod_name)
         return getattr(mod, cls_name)
 

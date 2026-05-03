@@ -262,6 +262,15 @@ def _emit_symbol_value(sym, ctx):
 
     v = _resolve_in_current_ns(sym)
     if v is None:
+        # Fall back to class FQN resolution: a dotted symbol like
+        # `clojure.lang.RT` or `collections.Counter` resolves via
+        # Python's import machinery. A qualified-symbol shape like
+        # `clojure.lang.RT/cons` resolves the ns part as a class and
+        # accesses the attr.
+        cls_or_member = _try_resolve_class_or_static(sym)
+        if cls_or_member is not None:
+            ctx.emit(_bc_Instr("LOAD_CONST", cls_or_member))
+            return
         raise NameError("Unable to resolve symbol: " + str(sym))
     if isinstance(v, Var):
         # LOAD_CONST <var>; LOAD_ATTR (method-form) deref; CALL 0
@@ -273,6 +282,29 @@ def _emit_symbol_value(sym, ctx):
         return
     # Class or other mapped object — just load it.
     ctx.emit(_bc_Instr("LOAD_CONST", v))
+
+
+def _try_resolve_class_or_static(sym):
+    """For symbols that didn't resolve through a Clojure namespace, try
+    Python class/module lookup:
+      - `clojure.lang.RT`        → ns=None name='clojure.lang.RT' → the class
+      - `clojure.lang.RT/cons`   → ns='clojure.lang.RT' name='cons'
+                                   → the class's `cons` attribute
+    Returns the resolved object, or None if neither shape applies."""
+    if sym.ns is None:
+        # Single dotted name (or any single name) — try as a class.
+        if "." in sym.name:
+            try:
+                return RT.class_for_name(sym.name)
+            except (ImportError, AttributeError):
+                return None
+        return None
+    # Qualified — ns part might name a class.
+    try:
+        cls = RT.class_for_name(sym.ns)
+    except (ImportError, AttributeError):
+        return None
+    return getattr(cls, sym.name, None)
 
 
 # --- macroexpansion -----------------------------------------------------
@@ -334,6 +366,19 @@ def _compile_form(form, ctx):
 
     if isinstance(form, Symbol):
         _emit_symbol_value(form, ctx)
+        return
+
+    # Collection literals: vector, map, set. Each element is compiled
+    # then handed to the collection's `create(*items)` factory at run
+    # time. (Empty collections are self-evaluating literals.)
+    if isinstance(form, IPersistentVector):
+        _compile_vector_literal(form, ctx)
+        return
+    if isinstance(form, IPersistentMap):
+        _compile_map_literal(form, ctx)
+        return
+    if isinstance(form, IPersistentSet):
+        _compile_set_literal(form, ctx)
         return
 
     # Lists / seqs are calls or special forms. An empty list evaluates to
@@ -762,6 +807,61 @@ def _compile_ctor_sugar(orig_sym, sname, args, ctx):
     # Build (new Class arg...) and delegate.
     new_args = RT.cons(cls_sym, args)
     _compile_new(new_args, ctx)
+
+
+def _compile_vector_literal(v, ctx):
+    """[a b c] — compile each element, then call PersistentVector.create
+    with all elements. Empty vector is a literal."""
+    n = v.count()
+    if n == 0:
+        ctx.emit(_bc_Instr("LOAD_CONST", v))
+        return
+    ctx.emit(
+        _bc_Instr("LOAD_CONST", PersistentVector.create),
+        _bc_Instr("PUSH_NULL"),
+    )
+    for i in range(n):
+        _compile_form(v.nth(i), ctx)
+    ctx.emit(_bc_Instr("CALL", n))
+
+
+def _compile_map_literal(m, ctx):
+    """{:a 1 :b 2} — compile each key and value, then call
+    PersistentArrayMap.create with the alternating k/v sequence."""
+    if m.count() == 0:
+        ctx.emit(_bc_Instr("LOAD_CONST", m))
+        return
+    ctx.emit(
+        _bc_Instr("LOAD_CONST", PersistentArrayMap.create),
+        _bc_Instr("PUSH_NULL"),
+    )
+    nargs = 0
+    s = m.seq()
+    while s is not None:
+        entry = s.first()
+        _compile_form(entry.key(), ctx)
+        _compile_form(entry.val(), ctx)
+        nargs += 2
+        s = s.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
+
+
+def _compile_set_literal(st, ctx):
+    """#{a b c} — compile each element, then call PersistentHashSet.create."""
+    if st.count() == 0:
+        ctx.emit(_bc_Instr("LOAD_CONST", st))
+        return
+    ctx.emit(
+        _bc_Instr("LOAD_CONST", PersistentHashSet.create),
+        _bc_Instr("PUSH_NULL"),
+    )
+    nargs = 0
+    s = st.seq()
+    while s is not None:
+        _compile_form(s.first(), ctx)
+        nargs += 1
+        s = s.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
 
 
 def _compile_method_call(method_name, args, ctx):
@@ -1250,24 +1350,54 @@ def _compile_def(args, ctx):
 
     ns = Compiler.current_ns()
     v = ns.intern(name_sym)
+
+    # Transfer metadata from the name symbol onto the Var. JVM Clojure
+    # merges :macro, :doc, :arglists, :added, :tag, :private, etc. all
+    # via the same path; we match that. Note that bind_root clears the
+    # macro flag (intentional, matches Java), so :macro must be applied
+    # AFTER bind_root at run time — handled below.
+    name_meta = name_sym.meta() if hasattr(name_sym, "meta") else None
+    is_macro_def = False
+    if name_meta is not None:
+        cur_meta = v.meta() or PersistentArrayMap.EMPTY
+        s = name_meta.seq()
+        while s is not None:
+            entry = s.first()
+            cur_meta = RT.assoc(cur_meta, entry.key(), entry.val())
+            s = s.next()
+        v.set_meta(cur_meta)
+        if name_meta.val_at(Keyword.intern(None, "macro")):
+            is_macro_def = True
+
     if docstring is not None:
         v.set_meta(RT.assoc(v.meta() or PersistentArrayMap.EMPTY,
                             Keyword.intern(None, "doc"), docstring))
 
     if has_init:
-        # Stack: leave Var on TOS at the end.
-        # Emit: var.bind_root(<init>); LOAD_CONST var
+        # Emit: var.bind_root(<init>); (if macro) var.set_macro();
+        # then LOAD_CONST var as the result.
         ctx.emit(
             _bc_Instr("LOAD_CONST", v),
             _bc_Instr("LOAD_ATTR", (True, "bind_root")),
         )
         _compile_form(init_form, ctx)
-        ctx.emit(
-            _bc_Instr("CALL", 1),
-            _bc_Instr("POP_TOP"),
-            _bc_Instr("LOAD_CONST", v),
-        )
+        ctx.emit(_bc_Instr("CALL", 1), _bc_Instr("POP_TOP"))
+        if is_macro_def:
+            ctx.emit(
+                _bc_Instr("LOAD_CONST", v),
+                _bc_Instr("LOAD_ATTR", (True, "set_macro")),
+                _bc_Instr("CALL", 0),
+                _bc_Instr("POP_TOP"),
+            )
+        ctx.emit(_bc_Instr("LOAD_CONST", v))
     else:
+        if is_macro_def:
+            ctx.emit(
+                _bc_Instr("LOAD_CONST", v),
+                _bc_Instr("LOAD_ATTR", (True, "set_macro")),
+                _bc_Instr("CALL", 0),
+                _bc_Instr("POP_TOP"),
+            )
         ctx.emit(_bc_Instr("LOAD_CONST", v))
 
 
