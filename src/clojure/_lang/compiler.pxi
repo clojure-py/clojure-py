@@ -868,6 +868,16 @@ def _compile_set_literal(st, ctx):
     ctx.emit(_bc_Instr("CALL", nargs))
 
 
+def _fallback_apply_to(f, arglist):
+    """Implements .applyTo for arbitrary callables. Our AFn / Var have
+    .apply_to natively; for plain Python callables we just splat the
+    arglist."""
+    if hasattr(f, "apply_to"):
+        return f.apply_to(arglist)
+    args = [] if arglist is None else list(arglist)
+    return f(*args)
+
+
 # Java-method name → runtime fallback that's used when Python's stdlib
 # doesn't expose the method (e.g. str has no `.concat`). Kept small and
 # targeted; the call site decides whether to special-case at compile time.
@@ -875,6 +885,10 @@ _JAVA_METHOD_FALLBACKS = {
     # Python str has no `.concat`. Fall back to `+` if the method
     # doesn't exist on the receiver.
     "concat": (lambda a, b: a.concat(b) if hasattr(a, "concat") else a + b),
+    # JVM's universal toString → Python's str() (which calls __str__).
+    "toString": (lambda x: str(x)),
+    # JVM's IFn.applyTo(arglist) → fallback that splats the arglist.
+    "applyTo": _fallback_apply_to,
 }
 
 
@@ -957,17 +971,8 @@ def _compile_dot(args, ctx):
         if member_args is not None:
             raise SyntaxError(
                 "When using (. obj (method ...)), don't pass extra args")
-        # Recompose as a method-call: receiver is `target`, args from ms.next()
-        method_name = m_name_sym.name
-        _compile_form(target, ctx)
-        ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
-        nargs = 0
-        cur = ms.next()
-        while cur is not None:
-            _compile_form(cur.first(), ctx)
-            nargs += 1
-            cur = cur.next()
-        ctx.emit(_bc_Instr("CALL", nargs))
+        # Recompose as a method-call form so JAVA_METHOD_FALLBACKS apply.
+        _compile_method_call(m_name_sym.name, RT.cons(target, ms.next()), ctx)
         return
 
     if not isinstance(member, Symbol) or member.ns is not None:
@@ -978,19 +983,10 @@ def _compile_dot(args, ctx):
         if member_args is not None:
             raise SyntaxError(
                 "Field access via (. obj -field) takes no extra args")
-        _compile_form(target, ctx)
-        ctx.emit(_bc_Instr("LOAD_ATTR", (False, name[1:])))
+        _compile_field_access(name[1:], RT.cons(target, None), ctx)
         return
     # Method call (or zero-arg)
-    _compile_form(target, ctx)
-    ctx.emit(_bc_Instr("LOAD_ATTR", (True, name)))
-    nargs = 0
-    cur = member_args
-    while cur is not None:
-        _compile_form(cur.first(), ctx)
-        nargs += 1
-        cur = cur.next()
-    ctx.emit(_bc_Instr("CALL", nargs))
+    _compile_method_call(name, RT.cons(target, member_args), ctx)
 
 
 def _parse_try_args(args):

@@ -16,6 +16,31 @@ from clojure.lang import (
 )
 
 
+class _StringBuilder:
+    """Compat shim for java.lang.StringBuilder. Mutable string buffer
+    used by clojure.core/str's variadic arity. Methods match the JVM
+    surface that core.clj reaches for (.append returns self for
+    chaining; .toString returns the joined string)."""
+
+    __slots__ = ("_parts",)
+
+    def __init__(self, s=""):
+        self._parts = [s] if s else []
+
+    def append(self, s):
+        if s is None:
+            self._parts.append("")
+        else:
+            self._parts.append(s if isinstance(s, str) else str(s))
+        return self
+
+    def __str__(self):
+        return "".join(self._parts)
+
+    def toString(self):
+        return "".join(self._parts)
+
+
 class _LazilyPersistentVector:
     """Compat shim for clojure.lang.LazilyPersistentVector. JVM Clojure
     uses the lazy variant to defer materialization; in our port we just
@@ -39,6 +64,7 @@ def _bootstrap():
     # module so `class_for_name("clojure.lang.LazilyPersistentVector")`
     # resolves it.
     setattr(_lang, "LazilyPersistentVector", _LazilyPersistentVector)
+    setattr(_lang, "StringBuilder", _StringBuilder)
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)
@@ -52,6 +78,8 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("Exception"), Exception)
     core_ns.import_class(_Symbol.intern("Boolean"), bool)
     core_ns.import_class(_Symbol.intern("ClassCastException"), TypeError)
+    core_ns.import_class(_Symbol.intern("StringBuilder"), _StringBuilder)
+    core_ns.import_class(_Symbol.intern("Object"), object)
 
     here = _os.path.dirname(_os.path.abspath(__file__))
     try:

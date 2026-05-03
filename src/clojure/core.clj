@@ -21,11 +21,22 @@
 ;;   - Java method names in (.method obj) interop are written using
 ;;     Python's snake_case (.with_meta, .get_name, .find for indexOf,
 ;;     etc.) because our port follows Python's PEP 8 naming.
+;;   - Instance-field access uses the (.-field obj) shape, never bare
+;;     (.field obj). JVM disambiguates fields/methods at compile time
+;;     via reflection; we don't, so e.g. `(.sym kw)` (JVM: read field)
+;;     is written as `(.-sym kw)` here.
+;;   - .toString, .applyTo, .concat have compiler-level fallbacks
+;;     (str(), splat-call, +) when the receiver lacks those methods —
+;;     keeps the JVM source verbatim while still working on Python
+;;     builtins.
 ;;   - Compiler$HostExpr internals (maybeSpecialTag, maybeClass) are
 ;;     stubbed on our clojure.lang.Compiler class — the JVM nested-class
 ;;     name doesn't translate to Python identifiers.
-;;   - Java exception classes (IllegalArgumentException etc.) are mapped
-;;     to Python equivalents in this same file before they're used.
+;;   - Java exception classes (IllegalArgumentException etc.) and a few
+;;     Java host classes (StringBuilder, Object, Boolean) are mapped to
+;;     Python equivalents in clojure.core before this file loads.
+;;   - LazilyPersistentVector is aliased to PersistentVector — Python
+;;     doesn't need lazy-vector materialization.
 
 (def unquote)
 (def unquote-splicing)
@@ -553,3 +564,212 @@
    :added "1.6"
    :static true}
   [x] (not (nil? x)))
+
+(defn any?
+  "Returns true given any argument."
+  {:tag Boolean
+   :added "1.9"}
+  [x] true)
+
+(defn str
+  "With no args, returns the empty string. With one arg x, returns
+  x.toString().  (str nil) returns the empty string. With more than
+  one arg, returns the concatenation of the str values of the args."
+  {:tag String
+   :added "1.0"
+   :static true}
+  (^String [] "")
+  (^String [^Object x]
+   (if (nil? x) "" (. x (toString))))
+  (^String [x & ys]
+     ((fn [^StringBuilder sb more]
+          (if more
+            (recur (. sb  (append (str (first more)))) (next more))
+            (str sb)))
+      (new StringBuilder (str x)) ys)))
+
+
+(defn symbol?
+  "Return true if x is a Symbol"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.Symbol x))
+
+(defn keyword?
+  "Return true if x is a Keyword"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.Keyword x))
+
+(defmacro cond
+  "Takes a set of test/expr pairs. It evaluates each test one at a
+  time.  If a test returns logical true, cond evaluates and returns
+  the value of the corresponding expr and doesn't evaluate any of the
+  other tests or exprs. (cond) returns nil."
+  {:added "1.0"}
+  [& clauses]
+    (when clauses
+      (list 'if (first clauses)
+            (if (next clauses)
+                (second clauses)
+                (throw (IllegalArgumentException.
+                         "cond requires an even number of forms")))
+            (cons 'clojure.core/cond (next (next clauses))))))
+
+(defn symbol
+  "Returns a Symbol with the given namespace and name. Arity-1 works
+  on strings, keywords, and vars."
+  {:tag clojure.lang.Symbol
+   :added "1.0"
+   :static true}
+  ([name]
+     (cond
+      (symbol? name) name
+      (instance? String name) (clojure.lang.Symbol/intern name)
+      (instance? clojure.lang.Var name) (.to_symbol ^clojure.lang.Var name)
+      (instance? clojure.lang.Keyword name) (.-sym ^clojure.lang.Keyword name)
+      :else (throw (IllegalArgumentException. "no conversion to symbol"))))
+  ([ns name] (clojure.lang.Symbol/intern ns name)))
+
+(defn gensym
+  "Returns a new symbol with a unique name. If a prefix string is
+  supplied, the name is prefix# where # is some unique number. If
+  prefix is not supplied, the prefix is 'G__'."
+  {:added "1.0"
+   :static true}
+  ([] (gensym "G__"))
+  ([prefix-string] (. clojure.lang.Symbol (intern (str prefix-string (str (. clojure.lang.RT (next_id))))))))
+
+
+(defn keyword
+  "Returns a Keyword with the given namespace and name.  Do not use :
+  in the keyword strings, it will be added automatically."
+  {:tag clojure.lang.Keyword
+   :added "1.0"
+   :static true}
+  ([name] (cond (keyword? name) name
+                (symbol? name) (clojure.lang.Keyword/intern ^clojure.lang.Symbol name)
+                (string? name) (clojure.lang.Keyword/intern ^String name)))
+  ([ns name] (clojure.lang.Keyword/intern ns name)))
+
+(defn find-keyword
+  "Returns a Keyword with the given namespace and name if one already
+  exists.  This function will not intern a new keyword. If the keyword
+  has not already been interned, it will return nil.  Do not use :
+  in the keyword strings, it will be added automatically."
+  {:tag clojure.lang.Keyword
+   :added "1.3"
+   :static true}
+  ([name] (cond (keyword? name) name
+                (symbol? name) (clojure.lang.Keyword/find ^clojure.lang.Symbol name)
+                (string? name) (clojure.lang.Keyword/find ^String name)))
+  ([ns name] (clojure.lang.Keyword/find ns name)))
+
+
+(defn spread
+  {:private true
+   :static true}
+  [arglist]
+  (cond
+   (nil? arglist) nil
+   (nil? (next arglist)) (seq (first arglist))
+   :else (cons (first arglist) (spread (next arglist)))))
+
+(defn list*
+  "Creates a new seq containing the items prepended to the rest, the
+  last of which will be treated as a sequence."
+  {:added "1.0"
+   :static true}
+  ([args] (seq args))
+  ([a args] (cons a args))
+  ([a b args] (cons a (cons b args)))
+  ([a b c args] (cons a (cons b (cons c args))))
+  ([a b c d & more]
+     (cons a (cons b (cons c (cons d (spread more)))))))
+
+(defn apply
+  "Applies fn f to the argument list formed by prepending intervening arguments to args."
+  {:added "1.0"
+   :static true}
+  ([^clojure.lang.IFn f args]
+     (. f (applyTo (seq args))))
+  ([^clojure.lang.IFn f x args]
+     (. f (applyTo (list* x args))))
+  ([^clojure.lang.IFn f x y args]
+     (. f (applyTo (list* x y args))))
+  ([^clojure.lang.IFn f x y z args]
+     (. f (applyTo (list* x y z args))))
+  ([^clojure.lang.IFn f a b c d & args]
+     (. f (applyTo (cons a (cons b (cons c (cons d (spread args)))))))))
+
+(defn vary-meta
+ "Returns an object of the same type and value as obj, with
+  (apply f (meta obj) args) as its metadata."
+ {:added "1.0"
+   :static true}
+ [obj f & args]
+  (with-meta obj (apply f (meta obj) args)))
+
+(defmacro lazy-seq
+  "Takes a body of expressions that returns an ISeq or nil, and yields
+  a Seqable object that will invoke the body only the first time seq
+  is called, and will cache the result and return it on all subsequent
+  seq calls. See also - realized?"
+  {:added "1.0"}
+  [& body]
+  (list 'new 'clojure.lang.LazySeq (list* '^{:once true} fn* [] body)))
+
+(defn ^:static ^clojure.lang.ChunkBuffer chunk-buffer ^clojure.lang.ChunkBuffer [capacity]
+  (clojure.lang.ChunkBuffer. capacity))
+
+(defn ^:static chunk-append [^clojure.lang.ChunkBuffer b x]
+  (.add b x))
+
+(defn ^:static ^clojure.lang.IChunk chunk [^clojure.lang.ChunkBuffer b]
+  (.chunk b))
+
+(defn ^:static  ^clojure.lang.IChunk chunk-first ^clojure.lang.IChunk [^clojure.lang.IChunkedSeq s]
+  (.chunked_first s))
+
+(defn ^:static ^clojure.lang.ISeq chunk-rest ^clojure.lang.ISeq [^clojure.lang.IChunkedSeq s]
+  (.chunked_more s))
+
+(defn ^:static ^clojure.lang.ISeq chunk-next ^clojure.lang.ISeq [^clojure.lang.IChunkedSeq s]
+  (.chunked_next s))
+
+(defn ^:static chunk-cons [chunk rest]
+  (if (clojure.lang.Numbers/is_zero (clojure.lang.RT/count chunk))
+    rest
+    (clojure.lang.ChunkedCons. chunk rest)))
+
+(defn ^:static chunked-seq? [s]
+  (instance? clojure.lang.IChunkedSeq s))
+
+(defn concat
+  "Returns a lazy seq representing the concatenation of the elements in the supplied colls."
+  {:added "1.0"
+   :static true}
+  ([] (lazy-seq nil))
+  ([x] (lazy-seq x))
+  ([x y]
+    (lazy-seq
+      (let [s (seq x)]
+        (if s
+          (if (chunked-seq? s)
+            (chunk-cons (chunk-first s) (concat (chunk-rest s) y))
+            (cons (first s) (concat (rest s) y)))
+          y))))
+  ([x y & zs]
+     (let [cat (fn cat [xys zs]
+                 (lazy-seq
+                   (let [xys (seq xys)]
+                     (if xys
+                       (if (chunked-seq? xys)
+                         (chunk-cons (chunk-first xys)
+                                     (cat (chunk-rest xys) zs))
+                         (cons (first xys) (cat (rest xys) zs)))
+                       (when zs
+                         (cat (first zs) (next zs)))))))]
+       (cat (concat x y) zs))))
+
+;;;;;;;;;;;;;;;;at this point all the support for syntax-quote exists;;;;;;;;;;;;;;;;;;;;;;
