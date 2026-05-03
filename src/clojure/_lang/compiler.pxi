@@ -334,6 +334,12 @@ def _compile_form(form, ctx):
             if sname == "recur":
                 _compile_recur(s.next(), ctx)
                 return
+            if sname == "throw":
+                _compile_throw(s.next(), ctx)
+                return
+            if sname == "try":
+                _compile_try(s.next(), ctx)
+                return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
         return
@@ -519,6 +525,202 @@ def _compile_recur(args, ctx):
     for slot in reversed(slot_names):
         ctx.emit(_bc_Instr("STORE_FAST", slot))
     ctx.emit(_bc_Instr("JUMP_BACKWARD", label))
+
+
+def _compile_throw(args, ctx):
+    """(throw expr) — evaluate expr (must be an exception) and raise."""
+    if args is None:
+        raise SyntaxError("throw requires one expression")
+    if args.next() is not None:
+        raise SyntaxError("throw takes a single expression")
+    _compile_form(args.first(), ctx)
+    ctx.emit(_bc_Instr("RAISE_VARARGS", 1))
+
+
+def _resolve_catch_class(form, ctx):
+    """Resolve a `catch` exception class symbol. Accepts a Symbol that
+    resolves to a class via the current namespace (imports/aliases),
+    or any other expression we just compile and use as a class at run
+    time. Returns a list of instructions that push the class on TOS."""
+    if isinstance(form, Symbol):
+        v = _resolve_in_current_ns(form)
+        if isinstance(v, type):
+            return [_bc_Instr("LOAD_CONST", v)]
+    # Fallback: compile the form (e.g. ClassName/StaticClass after slice
+    # B5 brings interop online); for now this'll error at runtime if it's
+    # not a class.
+    sub_ctx_instrs = []
+    saved = ctx.instrs
+    ctx.instrs = sub_ctx_instrs
+    try:
+        _compile_form(form, ctx)
+    finally:
+        ctx.instrs = saved
+    return sub_ctx_instrs
+
+
+def _parse_try_args(args):
+    """Parse a try form's arguments into (body_forms, catches, finally_forms).
+    catches: list of (class_form, binding_sym, [handler_forms])."""
+    body_forms = []
+    catches = []
+    finally_forms = None
+    cur = args
+    while cur is not None:
+        f = cur.first()
+        if isinstance(f, ISeq):
+            fs = f.seq()
+            if fs is not None and isinstance(fs.first(), Symbol):
+                head = fs.first()
+                if head.ns is None and head.name == "catch":
+                    rest1 = fs.next()
+                    if rest1 is None:
+                        raise SyntaxError("catch requires a class")
+                    cls_form = rest1.first()
+                    rest2 = rest1.next()
+                    if rest2 is None:
+                        raise SyntaxError("catch requires a binding symbol")
+                    bind_sym = rest2.first()
+                    if not isinstance(bind_sym, Symbol) or bind_sym.ns is not None:
+                        raise SyntaxError(
+                            "catch binding must be an unqualified symbol")
+                    handler = rest2.next()
+                    handler_list = []
+                    h = handler
+                    while h is not None:
+                        handler_list.append(h.first())
+                        h = h.next()
+                    catches.append((cls_form, bind_sym, handler_list))
+                    cur = cur.next()
+                    continue
+                if head.ns is None and head.name == "finally":
+                    if finally_forms is not None:
+                        raise SyntaxError("Only one finally clause allowed")
+                    fbody = []
+                    h = fs.next()
+                    while h is not None:
+                        fbody.append(h.first())
+                        h = h.next()
+                    finally_forms = fbody
+                    cur = cur.next()
+                    continue
+        if catches or finally_forms is not None:
+            raise SyntaxError(
+                "try body forms must precede catch/finally clauses")
+        body_forms.append(f)
+        cur = cur.next()
+    return body_forms, catches, finally_forms
+
+
+def _emit_try_machinery(body_forms, catches, finally_forms, ctx):
+    """Emit the actual try/catch/finally bytecode into `ctx`. The result
+    of the try is left on TOS at the end."""
+    end_label = ctx.new_label()
+
+    def emit_forms_with_pops(forms, leave_value=False):
+        """Compile each form; pop intermediate results. If leave_value is
+        True, leave the last form's result on TOS; otherwise pop it too."""
+        if not forms:
+            if leave_value:
+                ctx.emit(_bc_Instr("LOAD_CONST", None))
+            return
+        for i, f in enumerate(forms):
+            _compile_form(f, ctx)
+            if leave_value and i + 1 == len(forms):
+                pass
+            else:
+                ctx.emit(_bc_Instr("POP_TOP"))
+
+    def emit_finally():
+        emit_forms_with_pops(finally_forms or [], leave_value=False)
+
+    if not catches and not finally_forms:
+        emit_forms_with_pops(body_forms, leave_value=True)
+        ctx.emit(end_label)
+        return
+
+    # One unified handler does both catch dispatch and finally re-raise.
+    # The bytecode library disallows nested TryBegins, so we can't layer
+    # an outer protector — instead the dispatch block handles every
+    # possible exit.
+    handler = ctx.new_label()
+    tb = _bc_TryBegin(handler, push_lasti=False)
+    ctx.emit(_bc_Instr("NOP"), tb)
+    emit_forms_with_pops(body_forms, leave_value=True)
+    ctx.emit(_bc_TryEnd(tb))
+    # Success-of-body path: result on TOS, run finally, jump end.
+    if finally_forms:
+        emit_finally()
+    ctx.emit(_bc_Instr("JUMP_FORWARD", end_label))
+
+    # Handler entry — stack is [..., exc].
+    ctx.emit(handler)
+    ctx.emit(_bc_Instr("PUSH_EXC_INFO"))
+    # Try each catch in order.
+    for (cls_form, bind_sym, handler_list) in catches:
+        no_match = ctx.new_label()
+        for ins in _resolve_catch_class(cls_form, ctx):
+            ctx.emit(ins)
+        ctx.emit(_bc_Instr("CHECK_EXC_MATCH"))
+        ctx.emit(_bc_Instr("POP_JUMP_IF_FALSE", no_match))
+        slot = ctx.gensym(bind_sym.name)
+        saved_locals = dict(ctx.locals)
+        ctx.locals[bind_sym.name] = ("FAST", slot)
+        ctx.emit(_bc_Instr("STORE_FAST", slot))
+        try:
+            emit_forms_with_pops(handler_list, leave_value=True)
+        finally:
+            ctx.locals = saved_locals
+        # Stack: [..., exc_info, result] → swap+pop_except → [..., result].
+        ctx.emit(_bc_Instr("SWAP", 2))
+        ctx.emit(_bc_Instr("POP_EXCEPT"))
+        if finally_forms:
+            emit_finally()
+        ctx.emit(_bc_Instr("JUMP_FORWARD", end_label))
+        ctx.emit(no_match)
+    # No catch matched: run finally (stack still [..., exc_info, exc])
+    # then re-raise.
+    if finally_forms:
+        emit_finally()
+    ctx.emit(_bc_Instr("RERAISE", 0))
+
+    ctx.emit(end_label)
+
+
+def _compile_try(args, ctx):
+    """(try body... (catch ExcClass binding handler-body...)... (finally
+    cleanup-body...)?)
+
+    Lifts the try logic into a nested 0-arg Python function and calls
+    it. The lifting is needed because the `bytecode` library disallows
+    nested TryBegin pseudo-instructions, so each `try` gets its own
+    frame. The lifted fn closes over any captured locals normally; the
+    catch binding `e` is local to the lifted frame and never escapes."""
+    body_forms, catches, finally_forms = _parse_try_args(args)
+
+    if not catches and not finally_forms:
+        # Plain (try body...) is just (do body...) — no need to lift.
+        _compile_do(body_forms_to_seq(body_forms), ctx)
+        return
+
+    inner = _FnContext(name="__try__", argnames=[], parent=ctx)
+    _emit_try_machinery(body_forms, catches, finally_forms, inner)
+    inner.emit(_bc_Instr("RETURN_VALUE"))
+    inner_code = inner.to_code()
+    _emit_make_function(ctx, inner, inner_code)
+    ctx.emit(_bc_Instr("PUSH_NULL"))
+    ctx.emit(_bc_Instr("CALL", 0))
+
+
+def body_forms_to_seq(forms):
+    """Wrap a Python list of forms back into a Clojure ISeq for re-use
+    of _compile_do (which expects an ISeq)."""
+    if not forms:
+        return None
+    s = None
+    for f in reversed(forms):
+        s = RT.cons(f, s)
+    return s
 
 
 def _parse_fn_args(args_vec):

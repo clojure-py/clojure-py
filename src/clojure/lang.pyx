@@ -16,6 +16,8 @@ from bytecode import (
     Label as _bc_Label,
     FreeVar as _bc_FreeVar,
     CellVar as _bc_CellVar,
+    TryBegin as _bc_TryBegin,
+    TryEnd as _bc_TryEnd,
 )
 from bytecode.flags import CompilerFlags as _bc_CompilerFlags
 
