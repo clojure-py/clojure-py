@@ -275,6 +275,54 @@ def _emit_symbol_value(sym, ctx):
     ctx.emit(_bc_Instr("LOAD_CONST", v))
 
 
+# --- macroexpansion -----------------------------------------------------
+
+def _macroexpand_1(form):
+    """Single-step macroexpand. If `form` is a list whose head resolves
+    to a Var with :macro true metadata, invoke the macro with
+    (form, env=None, *args) and return the result. Otherwise return
+    `form` unchanged.
+
+    Special-form heads are skipped (they aren't macros even if a var of
+    the same name exists). Interop heads (`.method`, `.-field`, `Class.`,
+    explicit `.`) are skipped via the simple check that they don't
+    resolve to a Var."""
+    if not isinstance(form, ISeq):
+        return form
+    s = form.seq()
+    if s is None:
+        return form
+    head = s.first()
+    if not isinstance(head, Symbol):
+        return form
+    if head.ns is None and Compiler.is_special(head):
+        return form
+    if head.ns is None:
+        # Interop sugar shapes — never macros.
+        n = head.name
+        if len(n) > 1 and (n[0] == "." or n[len(n) - 1] == "."):
+            return form
+    v = _resolve_in_current_ns(head)
+    if not isinstance(v, Var) or not v.is_macro():
+        return form
+    macro_fn = v.deref()
+    args = [form, None]
+    cur = s.next()
+    while cur is not None:
+        args.append(cur.first())
+        cur = cur.next()
+    return macro_fn(*args)
+
+
+def _macroexpand(form):
+    """Repeatedly macroexpand until the form stops changing."""
+    while True:
+        expanded = _macroexpand_1(form)
+        if expanded is form:
+            return form
+        form = expanded
+
+
 # --- emitter ------------------------------------------------------------
 
 def _compile_form(form, ctx):
@@ -294,6 +342,14 @@ def _compile_form(form, ctx):
         s = form.seq()
         if s is None:
             ctx.emit(_bc_Instr("LOAD_CONST", form))
+            return
+        # Macro expansion happens before special-form dispatch and call
+        # emission. _macroexpand_1 returns the same form for non-macros
+        # (special forms, interop heads, regular fn calls), so this is
+        # zero-cost in those cases.
+        expanded = _macroexpand(form)
+        if expanded is not form:
+            _compile_form(expanded, ctx)
             return
         first = s.first()
         if isinstance(first, Symbol) and first.ns is None:
@@ -1248,3 +1304,5 @@ def _compiler_eval(form):
 
 # Wire onto Compiler (defined in runtime_support.pxi).
 Compiler.eval = staticmethod(_compiler_eval)
+Compiler.macroexpand_1 = staticmethod(_macroexpand_1)
+Compiler.macroexpand = staticmethod(_macroexpand)
