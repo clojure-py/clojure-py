@@ -109,6 +109,12 @@ class RT:
         return _empty_list if s is None else s.more()
 
     @staticmethod
+    def more(x):
+        # JVM clojure.lang.RT.more — same as our `rest`. Kept as a
+        # separate name so the 1:1 core.clj translation can use it.
+        return RT.rest(x)
+
+    @staticmethod
     def count(x):
         if x is None:
             return 0

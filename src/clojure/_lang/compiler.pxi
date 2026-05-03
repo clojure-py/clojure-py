@@ -290,15 +290,19 @@ def _try_resolve_class_or_static(sym):
       - `clojure.lang.RT`        → ns=None name='clojure.lang.RT' → the class
       - `clojure.lang.RT/cons`   → ns='clojure.lang.RT' name='cons'
                                    → the class's `cons` attribute
+      - `ValueError`             → ns=None name='ValueError' → builtin
+                                   (only if not bound elsewhere — JVM
+                                   Clojure auto-imports java.lang.*; the
+                                   builtins fallback is the same idea)
     Returns the resolved object, or None if neither shape applies."""
     if sym.ns is None:
-        # Single dotted name (or any single name) — try as a class.
         if "." in sym.name:
             try:
                 return RT.class_for_name(sym.name)
             except (ImportError, AttributeError):
                 return None
-        return None
+        # Builtins fallback
+        return getattr(_builtins, sym.name, None)
     # Qualified — ns part might name a class.
     try:
         cls = RT.class_for_name(sym.ns)
@@ -1432,7 +1436,30 @@ def _compiler_eval(form):
     return _compile_to_thunk(form)()
 
 
+def _load_string(source, source_name="<load-string>"):
+    """Read all forms from `source` and eval each in order. Returns the
+    value of the last form. Used by load_file and the core.clj
+    bootstrap."""
+    cdef object reader = reader_from_string(source)
+    cdef object EOF_SENTINEL = object()
+    last = None
+    while True:
+        form = read(reader, False, EOF_SENTINEL, False)
+        if form is EOF_SENTINEL:
+            return last
+        last = _compiler_eval(form)
+
+
+def _load_file(path):
+    """Load a .clj file: read each form and eval in sequence."""
+    with open(path, "r") as f:
+        source = f.read()
+    return _load_string(source, source_name=path)
+
+
 # Wire onto Compiler (defined in runtime_support.pxi).
 Compiler.eval = staticmethod(_compiler_eval)
 Compiler.macroexpand_1 = staticmethod(_macroexpand_1)
 Compiler.macroexpand = staticmethod(_macroexpand)
+Compiler.load_string = staticmethod(_load_string)
+Compiler.load_file = staticmethod(_load_file)

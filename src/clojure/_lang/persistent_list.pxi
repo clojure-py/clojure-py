@@ -29,6 +29,13 @@ cdef class PersistentList(ASeq):
             i -= 1
         return ret
 
+    @staticmethod
+    def creator(*items):
+        """Variadic constructor — the Python equivalent of JVM
+        PersistentList.creator (a static IFn that builds a list from
+        its varargs)."""
+        return PersistentList.create(items)
+
     def first(self):
         return self._first
 
