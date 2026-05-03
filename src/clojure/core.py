@@ -78,6 +78,24 @@ class _StringBuilder:
         return "".join(self._parts)
 
 
+class _TransformerIterator:
+    """Stub for clojure.lang.TransformerIterator. Real impl drives the
+    transducer protocol; for now, we just expose `create`/`createMulti`
+    as no-ops that raise NotImplementedError so the transducer arities
+    of `sequence` etc. can compile (their bodies aren't exercised
+    during the bootstrap)."""
+
+    @staticmethod
+    def create(xform, coll_iter):
+        raise NotImplementedError(
+            "TransformerIterator.create — transducer machinery not yet wired up")
+
+    @staticmethod
+    def createMulti(xform, iter_seq):
+        raise NotImplementedError(
+            "TransformerIterator.createMulti — transducer machinery not yet wired up")
+
+
 class _LazilyPersistentVector:
     """Compat shim for clojure.lang.LazilyPersistentVector. JVM Clojure
     uses the lazy variant to defer materialization; in our port we just
@@ -103,6 +121,7 @@ def _bootstrap():
     setattr(_lang, "LazilyPersistentVector", _LazilyPersistentVector)
     setattr(_lang, "StringBuilder", _StringBuilder)
     setattr(_lang, "Delay", _Delay)
+    setattr(_lang, "TransformerIterator", _TransformerIterator)
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)

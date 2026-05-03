@@ -2596,3 +2596,304 @@
   {:added "1.7"}
   [x]
   (instance? clojure.lang.Volatile x))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; fn stuff ;;;;;;;;;;;;;;;;
+
+
+(defn comp
+  "Takes a set of functions and returns a fn that is the composition
+  of those fns.  The returned fn takes a variable number of args,
+  applies the rightmost of fns to the args, the next
+  fn (right-to-left) to the result, etc."
+  {:added "1.0"
+   :static true}
+  ([] identity)
+  ([f] f)
+  ([f g]
+     (fn
+       ([] (f (g)))
+       ([x] (f (g x)))
+       ([x y] (f (g x y)))
+       ([x y z] (f (g x y z)))
+       ([x y z & args] (f (apply g x y z args)))))
+  ([f g & fs]
+     (reduce1 comp (list* f g fs))))
+
+(defn juxt
+  "Takes a set of functions and returns a fn that is the juxtaposition
+  of those fns.  The returned fn takes a variable number of args, and
+  returns a vector containing the result of applying each fn to the
+  args (left-to-right).
+  ((juxt a b c) x) => [(a x) (b x) (c x)]"
+  {:added "1.1"
+   :static true}
+  ([f]
+     (fn
+       ([] [(f)])
+       ([x] [(f x)])
+       ([x y] [(f x y)])
+       ([x y z] [(f x y z)])
+       ([x y z & args] [(apply f x y z args)])))
+  ([f g]
+     (fn
+       ([] [(f) (g)])
+       ([x] [(f x) (g x)])
+       ([x y] [(f x y) (g x y)])
+       ([x y z] [(f x y z) (g x y z)])
+       ([x y z & args] [(apply f x y z args) (apply g x y z args)])))
+  ([f g h]
+     (fn
+       ([] [(f) (g) (h)])
+       ([x] [(f x) (g x) (h x)])
+       ([x y] [(f x y) (g x y) (h x y)])
+       ([x y z] [(f x y z) (g x y z) (h x y z)])
+       ([x y z & args] [(apply f x y z args) (apply g x y z args) (apply h x y z args)])))
+  ([f g h & fs]
+     (let [fs (list* f g h fs)]
+       (fn
+         ([] (reduce1 #(conj %1 (%2)) [] fs))
+         ([x] (reduce1 #(conj %1 (%2 x)) [] fs))
+         ([x y] (reduce1 #(conj %1 (%2 x y)) [] fs))
+         ([x y z] (reduce1 #(conj %1 (%2 x y z)) [] fs))
+         ([x y z & args] (reduce1 #(conj %1 (apply %2 x y z args)) [] fs))))))
+
+(defn partial
+  "Takes a function f and fewer than the normal arguments to f, and
+  returns a fn that takes a variable number of additional args. When
+  called, the returned function calls f with args + additional args."
+  {:added "1.0"
+   :static true}
+  ([f] f)
+  ([f arg1]
+   (fn
+     ([] (f arg1))
+     ([x] (f arg1 x))
+     ([x y] (f arg1 x y))
+     ([x y z] (f arg1 x y z))
+     ([x y z & args] (apply f arg1 x y z args))))
+  ([f arg1 arg2]
+   (fn
+     ([] (f arg1 arg2))
+     ([x] (f arg1 arg2 x))
+     ([x y] (f arg1 arg2 x y))
+     ([x y z] (f arg1 arg2 x y z))
+     ([x y z & args] (apply f arg1 arg2 x y z args))))
+  ([f arg1 arg2 arg3]
+   (fn
+     ([] (f arg1 arg2 arg3))
+     ([x] (f arg1 arg2 arg3 x))
+     ([x y] (f arg1 arg2 arg3 x y))
+     ([x y z] (f arg1 arg2 arg3 x y z))
+     ([x y z & args] (apply f arg1 arg2 arg3 x y z args))))
+  ([f arg1 arg2 arg3 & more]
+   (fn [& args] (apply f arg1 arg2 arg3 (concat more args)))))
+
+;;;;;;;;;;;;;;;;;;; sequence fns  ;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn sequence
+  "Coerces coll to a (possibly empty) sequence, if it is not already
+  one. Will not force a lazy seq. (sequence nil) yields (), When a
+  transducer is supplied, returns a lazy sequence of applications of
+  the transform to the items in coll(s), i.e. to the set of first
+  items of each coll, followed by the set of second
+  items in each coll, until any one of the colls is exhausted.  Any
+  remaining items in other colls are ignored. The transform should accept
+  number-of-colls arguments"
+  {:added "1.0"
+   :static true}
+  ([coll]
+     (if (seq? coll) coll
+         (or (seq coll) ())))
+  ([xform coll]
+     (or (clojure.lang.RT/chunk_iterator_seq
+         (clojure.lang.TransformerIterator/create xform (clojure.lang.RT/iter coll)))
+       ()))
+  ([xform coll & colls]
+     (or (clojure.lang.RT/chunk_iterator_seq
+         (clojure.lang.TransformerIterator/createMulti
+           xform
+           (map #(clojure.lang.RT/iter %) (cons coll colls))))
+       ())))
+
+(defn every?
+  "Returns true if (pred x) is logical true for every x in coll, else
+  false."
+  {:tag Boolean
+   :added "1.0"
+   :static true}
+  [pred coll]
+  (cond
+   (nil? (seq coll)) true
+   (pred (first coll)) (recur pred (next coll))
+   :else false))
+
+(def
+ ^{:tag Boolean
+   :doc "Returns false if (pred x) is logical true for every x in
+  coll, else true."
+   :arglists '([pred coll])
+   :added "1.0"}
+ not-every? (comp not every?))
+
+(defn some
+  "Returns the first logical true value of (pred x) for any x in coll,
+  else nil.  One common idiom is to use a set as pred, for example
+  this will return :fred if :fred is in the sequence, otherwise nil:
+  (some #{:fred} coll)"
+  {:added "1.0"
+   :static true}
+  [pred coll]
+    (when-let [s (seq coll)]
+      (or (pred (first s)) (recur pred (next s)))))
+
+(def
+ ^{:tag Boolean
+   :doc "Returns false if (pred x) is logical true for any x in coll,
+  else true."
+   :arglists '([pred coll])
+   :added "1.0"}
+ not-any? (comp not some))
+
+;will be redefed later with arg checks
+(defmacro dotimes
+  "bindings => name n
+
+  Repeatedly executes body (presumably for side-effects) with name
+  bound to integers from 0 through n-1."
+  {:added "1.0"}
+  [bindings & body]
+  (let [i (first bindings)
+        n (second bindings)]
+    `(let [n# (clojure.lang.RT/long_cast ~n)]
+       (loop [~i 0]
+         (when (< ~i n#)
+           ~@body
+           (recur (unchecked-inc ~i)))))))
+
+(defn map
+  "Returns a lazy sequence consisting of the result of applying f to
+  the set of first items of each coll, followed by applying f to the
+  set of second items in each coll, until any one of the colls is
+  exhausted.  Any remaining items in other colls are ignored. Function
+  f should accept number-of-colls arguments. Returns a transducer when
+  no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([f]
+    (fn [rf]
+      (fn
+        ([] (rf))
+        ([result] (rf result))
+        ([result input]
+           (rf result (f input)))
+        ([result input & inputs]
+           (rf result (apply f input inputs))))))
+  ([f coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (if (chunked-seq? s)
+        (let [c (chunk-first s)
+              size (int (count c))
+              b (chunk-buffer size)]
+          (dotimes [i size]
+              (chunk-append b (f (.nth c i))))
+          (chunk-cons (chunk b) (map f (chunk-rest s))))
+        (cons (f (first s)) (map f (rest s)))))))
+  ([f c1 c2]
+   (lazy-seq
+    (let [s1 (seq c1) s2 (seq c2)]
+      (when (and s1 s2)
+        (cons (f (first s1) (first s2))
+              (map f (rest s1) (rest s2)))))))
+  ([f c1 c2 c3]
+   (lazy-seq
+    (let [s1 (seq c1) s2 (seq c2) s3 (seq c3)]
+      (when (and  s1 s2 s3)
+        (cons (f (first s1) (first s2) (first s3))
+              (map f (rest s1) (rest s2) (rest s3)))))))
+  ([f c1 c2 c3 & colls]
+   (let [step (fn step [cs]
+                 (lazy-seq
+                  (let [ss (map seq cs)]
+                    (when (every? identity ss)
+                      (cons (map first ss) (step (map rest ss)))))))]
+     (map #(apply f %) (step (conj colls c3 c2 c1))))))
+
+(defmacro declare
+  "defs the supplied var names with no bindings, useful for making forward declarations."
+  {:added "1.0"}
+  [& names] `(do ~@(map #(list 'def (vary-meta % assoc :declared true)) names)))
+
+(declare cat)
+
+(defn mapcat
+  "Returns the result of applying concat to the result of applying map
+  to f and colls.  Thus function f should return a collection. Returns
+  a transducer when no collections are provided"
+  {:added "1.0"
+   :static true}
+  ([f] (comp (map f) cat))
+  ([f & colls]
+     (apply concat (apply map f colls))))
+
+(defn filter
+  "Returns a lazy sequence of the items in coll for which
+  (pred item) returns logical true. pred must be free of side-effects.
+  Returns a transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([pred]
+    (fn [rf]
+      (fn
+        ([] (rf))
+        ([result] (rf result))
+        ([result input]
+           (if (pred input)
+             (rf result input)
+             result)))))
+  ([pred coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (if (chunked-seq? s)
+        (let [c (chunk-first s)
+              size (count c)
+              b (chunk-buffer size)]
+          (dotimes [i size]
+              (let [v (.nth c i)]
+                (when (pred v)
+                  (chunk-append b v))))
+          (chunk-cons (chunk b) (filter pred (chunk-rest s))))
+        (let [f (first s) r (rest s)]
+          (if (pred f)
+            (cons f (filter pred r))
+            (filter pred r))))))))
+
+
+(defn remove
+  "Returns a lazy sequence of the items in coll for which
+  (pred item) returns logical false. pred must be free of side-effects.
+  Returns a transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([pred] (filter (complement pred)))
+  ([pred coll]
+     (filter (complement pred) coll)))
+
+(defn reduced
+  "Wraps x in a way such that a reduce will terminate with the value x"
+  {:added "1.5"}
+  [x]
+  (clojure.lang.Reduced. x))
+
+(defn reduced?
+  "Returns true if x is the result of a call to reduced"
+  {:inline (fn [x] `(clojure.lang.RT/is_reduced ~x ))
+   :inline-arities #{1}
+   :added "1.5"}
+  ([x] (clojure.lang.RT/is_reduced x)))
+
+(defn ensure-reduced
+  "If x is already reduced?, returns it, else returns (reduced x)"
+  {:added "1.7"}
+  [x]
+  (if (reduced? x) x (reduced x)))

@@ -162,6 +162,32 @@ class RT:
         return Numbers.int_cast(x)
 
     @staticmethod
+    def long_cast(x):
+        return Numbers.int_cast(x)
+
+    @staticmethod
+    def iter(coll):
+        """JVM RT.iter — return a Python iterator over the collection.
+        For nil returns an empty iterator."""
+        if coll is None:
+            return iter(())
+        if hasattr(coll, "__iter__"):
+            return iter(coll)
+        # Seq protocol fallback
+        s = RT.seq(coll)
+        return iter(s) if s is not None else iter(())
+
+    @staticmethod
+    def chunk_iterator_seq(it):
+        """JVM RT.chunkIteratorSeq — wrap an iterator as a chunked seq.
+        Stub: just materialize via IteratorSeq for now (loses chunking
+        but preserves seq semantics). The transducer machinery that
+        relies on this isn't wired up yet."""
+        if it is None:
+            return None
+        return IteratorSeq.from_iterable(it)
+
+    @staticmethod
     def peek(coll):
         """Look at the first item of a list/queue or last of a vector,
         without removing. Returns nil for nil/empty."""
