@@ -28,6 +28,11 @@ cdef class PersistentHashSet:
 
     @staticmethod
     def create(*items):
+        # Mirror the JVM create(ISeq) overload: a single ISeq arg is
+        # treated as the contents seq, not a single set element.
+        if len(items) == 1 and (isinstance(items[0], (Seqable, ISeq))
+                                or items[0] is None):
+            return PersistentHashSet.from_iterable(RT.seq(items[0]) or [])
         t = _PHS_EMPTY.as_transient()
         for x in items:
             t.conj(x)

@@ -777,13 +777,32 @@ cdef class PersistentHashMap:
 
     @staticmethod
     def create(*args):
-        """PersistentHashMap.create(k1, v1, k2, v2, ...) or .create(dict)."""
-        if len(args) == 1 and isinstance(args[0], dict):
-            d = args[0]
-            t = _PHM_EMPTY.as_transient()
-            for k, v in d.items():
-                t.assoc(k, v)
-            return t.persistent()
+        """PersistentHashMap.create(k1, v1, k2, v2, ...) | .create(dict)
+        | .create(seq)  — the seq overload matches the JVM
+        create(ISeq) signature: a single sequence of alternating
+        keys/values."""
+        if len(args) == 1:
+            arg = args[0]
+            if isinstance(arg, dict):
+                d = arg
+                t = _PHM_EMPTY.as_transient()
+                for k, v in d.items():
+                    t.assoc(k, v)
+                return t.persistent()
+            if isinstance(arg, (Seqable, ISeq)) or arg is None:
+                # Single ISeq of alternating k/v
+                s = RT.seq(arg)
+                t = _PHM_EMPTY.as_transient()
+                while s is not None:
+                    k = s.first()
+                    s = s.next()
+                    if s is None:
+                        raise ValueError(
+                            "PersistentHashMap.create: odd number of items in seq")
+                    v = s.first()
+                    t.assoc(k, v)
+                    s = s.next()
+                return t.persistent()
         if len(args) % 2 != 0:
             raise ValueError("PersistentHashMap.create requires alternating key/value args")
         t = _PHM_EMPTY.as_transient()

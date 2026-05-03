@@ -16,9 +16,30 @@ from clojure.lang import (
 )
 
 
+class _LazilyPersistentVector:
+    """Compat shim for clojure.lang.LazilyPersistentVector. JVM Clojure
+    uses the lazy variant to defer materialization; in our port we just
+    build a persistent vector eagerly."""
+
+    @staticmethod
+    def create(coll):
+        from clojure.lang import PersistentVector as _PV
+        if coll is None:
+            return _PV.EMPTY
+        if isinstance(coll, _PV):
+            return coll
+        return _PV.from_iterable(coll)
+
+
 def _bootstrap():
     """Pre-create the clojure.core namespace, install Java→Python class
     aliases that the translation references, then load core.clj."""
+    import clojure.lang as _lang
+    # Register the LazilyPersistentVector shim on the clojure.lang
+    # module so `class_for_name("clojure.lang.LazilyPersistentVector")`
+    # resolves it.
+    setattr(_lang, "LazilyPersistentVector", _LazilyPersistentVector)
+
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)
 
@@ -29,6 +50,8 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("String"), str)
     core_ns.import_class(_Symbol.intern("Class"), type)
     core_ns.import_class(_Symbol.intern("Exception"), Exception)
+    core_ns.import_class(_Symbol.intern("Boolean"), bool)
+    core_ns.import_class(_Symbol.intern("ClassCastException"), TypeError)
 
     here = _os.path.dirname(_os.path.abspath(__file__))
     try:

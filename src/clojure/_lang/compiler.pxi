@@ -868,14 +868,43 @@ def _compile_set_literal(st, ctx):
     ctx.emit(_bc_Instr("CALL", nargs))
 
 
+# Java-method name → runtime fallback that's used when Python's stdlib
+# doesn't expose the method (e.g. str has no `.concat`). Kept small and
+# targeted; the call site decides whether to special-case at compile time.
+_JAVA_METHOD_FALLBACKS = {
+    # Python str has no `.concat`. Fall back to `+` if the method
+    # doesn't exist on the receiver.
+    "concat": (lambda a, b: a.concat(b) if hasattr(a, "concat") else a + b),
+}
+
+
 def _compile_method_call(method_name, args, ctx):
     """(.method obj arg1 arg2 ...) — emit obj.method(args) using the
-    LOAD_ATTR method-form so CPython's call optimization fires."""
+    LOAD_ATTR method-form so CPython's call optimization fires.
+
+    For Java-style names that some Python types lack (concat etc.), emit
+    a call through a runtime fallback helper instead — keeps the JVM
+    source verbatim while still working on Python builtins."""
     if args is None:
         raise SyntaxError(
             "Method call requires a target object: ." + method_name)
     target = args.first()
     rest = args.next()
+    fallback = _JAVA_METHOD_FALLBACKS.get(method_name)
+    if fallback is not None:
+        ctx.emit(
+            _bc_Instr("LOAD_CONST", fallback),
+            _bc_Instr("PUSH_NULL"),
+        )
+        _compile_form(target, ctx)
+        nargs = 0
+        cur = rest
+        while cur is not None:
+            _compile_form(cur.first(), ctx)
+            nargs += 1
+            cur = cur.next()
+        ctx.emit(_bc_Instr("CALL", 1 + nargs))
+        return
     _compile_form(target, ctx)
     ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
     nargs = 0

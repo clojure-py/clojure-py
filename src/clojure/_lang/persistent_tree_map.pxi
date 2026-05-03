@@ -223,7 +223,24 @@ cdef class PersistentTreeMap:
 
     @staticmethod
     def create(*args):
-        """PersistentTreeMap.create(k1, v1, k2, v2, ...) — uses default comparator."""
+        """PersistentTreeMap.create(k1, v1, k2, v2, ...) | .create(seq)
+        — uses default comparator. The seq overload matches the JVM
+        create(ISeq) signature: a single sequence of alternating
+        keys/values."""
+        if len(args) == 1 and (isinstance(args[0], (Seqable, ISeq))
+                                or args[0] is None):
+            ret = _PTM_EMPTY
+            s = RT.seq(args[0])
+            while s is not None:
+                k = s.first()
+                s = s.next()
+                if s is None:
+                    raise ValueError(
+                        "PersistentTreeMap.create: odd number of items in seq")
+                v = s.first()
+                ret = ret.assoc(k, v)
+                s = s.next()
+            return ret
         if len(args) % 2 != 0:
             raise ValueError("PersistentTreeMap.create requires alternating key/value args")
         ret = _PTM_EMPTY
@@ -234,7 +251,22 @@ cdef class PersistentTreeMap:
 
     @staticmethod
     def create_with_comparator(comp, *args):
-        """PersistentTreeMap.create_with_comparator(cmp, k1, v1, k2, v2, ...)."""
+        """PersistentTreeMap.create_with_comparator(cmp, k1, v1, k2, v2, ...)
+        | (cmp, seq)."""
+        if len(args) == 1 and (isinstance(args[0], (Seqable, ISeq))
+                                or args[0] is None):
+            ret = _make_ptm(None, comp, None, 0)
+            s = RT.seq(args[0])
+            while s is not None:
+                k = s.first()
+                s = s.next()
+                if s is None:
+                    raise ValueError(
+                        "create_with_comparator: odd number of items in seq")
+                v = s.first()
+                ret = ret.assoc(k, v)
+                s = s.next()
+            return ret
         if len(args) % 2 != 0:
             raise ValueError("create_with_comparator requires alternating key/value args after comparator")
         ret = _make_ptm(None, comp, None, 0)

@@ -25,6 +25,15 @@ cdef class PersistentTreeSet:
 
     @staticmethod
     def create(*items):
+        # Mirror JVM create(ISeq): a single seq arg is the contents.
+        if len(items) == 1 and (isinstance(items[0], (Seqable, ISeq))
+                                or items[0] is None):
+            ret = _PTS_EMPTY
+            s = RT.seq(items[0])
+            while s is not None:
+                ret = ret.cons(s.first())
+                s = s.next()
+            return ret
         ret = _PTS_EMPTY
         for x in items:
             ret = ret.cons(x)
@@ -32,6 +41,14 @@ cdef class PersistentTreeSet:
 
     @staticmethod
     def create_with_comparator(comp, *items):
+        if len(items) == 1 and (isinstance(items[0], (Seqable, ISeq))
+                                or items[0] is None):
+            ret = PersistentTreeSet._make(None, _make_ptm(None, comp, None, 0))
+            s = RT.seq(items[0])
+            while s is not None:
+                ret = ret.cons(s.first())
+                s = s.next()
+            return ret
         ret = PersistentTreeSet._make(None, _make_ptm(None, comp, None, 0))
         for x in items:
             ret = ret.cons(x)

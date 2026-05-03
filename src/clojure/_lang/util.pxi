@@ -18,6 +18,20 @@ cdef class Util:
         return a is b
 
     @staticmethod
+    def cast(c, x):
+        """Java Class.cast equivalent: returns x if it's an instance of c,
+        else raises TypeError (Python's analog of Java's
+        ClassCastException). Used by clojure.core/cast — Python's `type`
+        has no `cast` method so the call is routed here."""
+        if x is None:
+            return None
+        if isinstance(x, c):
+            return x
+        raise TypeError(
+            "Cannot cast " + type(x).__name__ + " to "
+            + getattr(c, "__name__", str(c)))
+
+    @staticmethod
     def equals(a, b):
         # Java Util.equals: identity, then null-safe a.equals(b). Python's `==`
         # is permissive (1 == 1.0, True == 1) compared to Java's per-class

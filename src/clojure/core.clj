@@ -353,3 +353,203 @@
                 (with-meta (cons `fn fdecl) {:rettag (:tag m)})))))
 
 (. (var defn) (set_macro))
+
+(defn to-array
+  "Returns an array of Objects containing the contents of coll, which
+  can be any Collection.  Maps to java.util.Collection.toArray()."
+  {:tag "[Ljava.lang.Object;"
+   :added "1.0"
+   :static true}
+  [coll] (. clojure.lang.RT (to_array coll)))
+
+(defn cast
+  "Throws a ClassCastException if x is not a c, else returns x."
+  {:added "1.0"
+   :static true}
+  [^Class c x]
+  (clojure.lang.Util/cast c x))
+
+(defn vector
+  "Creates a new vector containing the args."
+  {:added "1.0"
+   :static true}
+  ([] [])
+  ([a] [a])
+  ([a b] [a b])
+  ([a b c] [a b c])
+  ([a b c d] [a b c d])
+	([a b c d e] [a b c d e])
+	([a b c d e f] [a b c d e f])
+  ([a b c d e f & args]
+     (. clojure.lang.LazilyPersistentVector (create (cons a (cons b (cons c (cons d (cons e (cons f args))))))))))
+
+(defn vec
+  "Creates a new vector containing the contents of coll. Java arrays
+  will be aliased and should not be modified."
+  {:added "1.0"
+   :static true}
+  ([coll]
+   (if (vector? coll)
+     (if (instance? clojure.lang.IObj coll)
+       (with-meta coll nil)
+       (clojure.lang.LazilyPersistentVector/create coll))
+     (clojure.lang.LazilyPersistentVector/create coll))))
+
+(defn hash-map
+  "keyval => key val
+  Returns a new hash map with supplied mappings.  If any keys are
+  equal, they are handled as if by repeated uses of assoc."
+  {:added "1.0"
+   :static true}
+  ([] {})
+  ([& keyvals]
+   (. clojure.lang.PersistentHashMap (create keyvals))))
+
+(defn hash-set
+  "Returns a new hash set with supplied keys.  Any equal keys are
+  handled as if by repeated uses of conj."
+  {:added "1.0"
+   :static true}
+  ([] #{})
+  ([& keys]
+   (clojure.lang.PersistentHashSet/create keys)))
+
+(defn sorted-map
+  "keyval => key val
+  Returns a new sorted map with supplied mappings.  If any keys are
+  equal, they are handled as if by repeated uses of assoc."
+  {:added "1.0"
+   :static true}
+  ([& keyvals]
+   (clojure.lang.PersistentTreeMap/create keyvals)))
+
+(defn sorted-map-by
+  "keyval => key val
+  Returns a new sorted map with supplied mappings, using the supplied
+  comparator.  If any keys are equal, they are handled as if by
+  repeated uses of assoc."
+  {:added "1.0"
+   :static true}
+  ([comparator & keyvals]
+   (clojure.lang.PersistentTreeMap/create_with_comparator comparator keyvals)))
+
+(defn sorted-set
+  "Returns a new sorted set with supplied keys.  Any equal keys are
+  handled as if by repeated uses of conj."
+  {:added "1.0"
+   :static true}
+  ([& keys]
+   (clojure.lang.PersistentTreeSet/create keys)))
+
+(defn sorted-set-by
+  "Returns a new sorted set with supplied keys, using the supplied
+  comparator.  Any equal keys are handled as if by repeated uses of
+  conj."
+  {:added "1.1"
+   :static true}
+  ([comparator & keys]
+   (clojure.lang.PersistentTreeSet/create_with_comparator comparator keys)))
+
+
+;;;;;;;;;;;;;;;;;;;;
+(defn nil?
+  "Returns true if x is nil, false otherwise."
+  {:tag Boolean
+   :added "1.0"
+   :static true
+   :inline (fn [x] (list 'clojure.lang.Util/identical x nil))}
+  [x] (clojure.lang.Util/identical x nil))
+
+(def
+
+ ^{:doc "Like defn, but the resulting function name is declared as a
+  macro and will be used as a macro by the compiler when it is
+  called."
+   :arglists '([name doc-string? attr-map? [params*] body]
+                 [name doc-string? attr-map? ([params*] body)+ attr-map?])
+   :added "1.0"}
+ defmacro (fn [&form &env
+                name & args]
+             (let [prefix (loop [p (list name) args args]
+                            (let [f (first args)]
+                              (if (string? f)
+                                (recur (cons f p) (next args))
+                                (if (map? f)
+                                  (recur (cons f p) (next args))
+                                  p))))
+                   fdecl (loop [fd args]
+                           (if (string? (first fd))
+                             (recur (next fd))
+                             (if (map? (first fd))
+                               (recur (next fd))
+                               fd)))
+                   fdecl (if (vector? (first fdecl))
+                           (list fdecl)
+                           fdecl)
+                   add-implicit-args (fn [fd]
+                             (let [args (first fd)]
+                               (cons (vec (cons '&form (cons '&env args))) (next fd))))
+                   add-args (fn [acc ds]
+                              (if (nil? ds)
+                                acc
+                                (let [d (first ds)]
+                                  (if (map? d)
+                                    (conj acc d)
+                                    (recur (conj acc (add-implicit-args d)) (next ds))))))
+                   fdecl (seq (add-args [] fdecl))
+                   decl (loop [p prefix d fdecl]
+                          (if p
+                            (recur (next p) (cons (first p) d))
+                            d))]
+               (list 'do
+                     (cons `defn decl)
+                     (list '. (list 'var name) '(set_macro))
+                     (list 'var name)))))
+
+
+(. (var defmacro) (set_macro))
+
+(defmacro when
+  "Evaluates test. If logical true, evaluates body in an implicit do."
+  {:added "1.0"}
+  [test & body]
+  (list 'if test (cons 'do body)))
+
+(defmacro when-not
+  "Evaluates test. If logical false, evaluates body in an implicit do."
+  {:added "1.0"}
+  [test & body]
+    (list 'if test nil (cons 'do body)))
+
+(defn false?
+  "Returns true if x is the value false, false otherwise."
+  {:tag Boolean,
+   :added "1.0"
+   :static true}
+  [x] (clojure.lang.Util/identical x false))
+
+(defn true?
+  "Returns true if x is the value true, false otherwise."
+  {:tag Boolean,
+   :added "1.0"
+   :static true}
+  [x] (clojure.lang.Util/identical x true))
+
+(defn boolean?
+  "Return true if x is a Boolean"
+  {:added "1.9"}
+  [x] (instance? Boolean x))
+
+(defn not
+  "Returns true if x is logical false, false otherwise."
+  {:tag Boolean
+   :added "1.0"
+   :static true}
+  [x] (if x false true))
+
+(defn some?
+  "Returns true if x is not nil, false otherwise."
+  {:tag Boolean
+   :added "1.6"
+   :static true}
+  [x] (not (nil? x)))
