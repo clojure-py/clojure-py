@@ -1405,6 +1405,10 @@ def _compile_def(args, ctx):
         v.set_meta(cur_meta)
         if name_meta.val_at(Keyword.intern(None, "macro")):
             is_macro_def = True
+        # :dynamic true marks the var as thread-bindable. Unlike :macro
+        # this flag survives bind_root, so we can set it at compile time.
+        if name_meta.val_at(Keyword.intern(None, "dynamic")):
+            v.set_dynamic(True)
 
     if docstring is not None:
         v.set_meta(RT.assoc(v.meta() or PersistentArrayMap.EMPTY,

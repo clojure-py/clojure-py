@@ -278,6 +278,37 @@ cdef class Agent(ARef):
                 _AGENT_SOLO.shutdown(wait=True)
                 _AGENT_SOLO = None
 
+    # JVM-style static accessors. clojure.core uses these as
+    # `Agent/pooledExecutor` etc. — on the JVM those are public static
+    # fields that user code can `set!`. We don't have settable cdef
+    # class fields, so the get/set pair stands in.
+
+    @staticmethod
+    def get_pooled_executor():
+        return _get_pooled_executor()
+
+    @staticmethod
+    def set_pooled_executor(executor):
+        global _AGENT_POOLED
+        with _AGENT_EXEC_LOCK:
+            _AGENT_POOLED = executor
+
+    @staticmethod
+    def get_solo_executor():
+        return _get_solo_executor()
+
+    @staticmethod
+    def set_solo_executor(executor):
+        global _AGENT_SOLO
+        with _AGENT_EXEC_LOCK:
+            _AGENT_SOLO = executor
+
+    @staticmethod
+    def release_pending_sends():
+        """Static-method alias of the module-level release_pending_sends
+        so clojure.core's `Agent/release_pending_sends` resolves."""
+        return release_pending_sends()
+
     def __str__(self):
         return f"#<Agent {self._state!r}>"
 

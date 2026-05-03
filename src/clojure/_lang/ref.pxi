@@ -126,15 +126,28 @@ cdef class Ref(ARef):
         return (<LockingTransaction>LockingTransaction.get_ex())._do_set(self, val)
 
     def alter(self, fn, *args):
+        # Two call shapes are accepted: Python-style varargs (`r.alter(f, x, y)`)
+        # and JVM-style (`r.alter(f, seq)`) — used by clojure.core/alter
+        # which collects its rest args into a single seq. Detect the
+        # latter by spotting a single ISeq/Seqable arg and splatting.
+        if (len(args) == 1
+                and (isinstance(args[0], (Seqable, ISeq))
+                     or args[0] is None)
+                and not isinstance(args[0], (str, bytes))):
+            args = tuple(args[0]) if args[0] is not None else ()
         cdef LockingTransaction t = <LockingTransaction>LockingTransaction.get_ex()
         cur = t._do_get(self)
         new_val = fn(cur, *args)
         return t._do_set(self, new_val)
 
     def commute(self, fn, *args):
-        # Args are passed as a Python list/tuple here — wrap as ISeq for
-        # consistency with the rest of the LT internals (which walk via
-        # .first()/.next()).
+        # Same dual-shape handling as alter — accept either varargs or a
+        # single ISeq arg.
+        if (len(args) == 1
+                and (isinstance(args[0], (Seqable, ISeq))
+                     or args[0] is None)
+                and not isinstance(args[0], (str, bytes))):
+            args = tuple(args[0]) if args[0] is not None else ()
         cdef LockingTransaction t = <LockingTransaction>LockingTransaction.get_ex()
         if args:
             arg_seq = IteratorSeq.from_iterable(args)

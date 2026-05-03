@@ -39,21 +39,39 @@ cdef class Atom(ARef):
                 return True
             return False
 
+    @staticmethod
+    cdef tuple _splat_trailing_seq(tuple args):
+        # JVM IAtom has overloads (f), (f a), (f a b), (f a b seq).
+        # clojure.core/swap! routes 4+-arg calls into the seq-tail
+        # overload; in Python we collapse all overloads onto one
+        # varargs `swap(self, f, *args)` and detect the trailing seq.
+        cdef object last
+        if not args:
+            return args
+        last = args[len(args) - 1]
+        if (isinstance(last, (Seqable, ISeq))
+                and not isinstance(last, (str, bytes))):
+            tail = tuple(last) if last is not None else ()
+            return args[:len(args) - 1] + tail
+        return args
+
     def swap(self, f, *args):
+        cdef tuple effective = Atom._splat_trailing_seq(args)
         cdef object oldv, newv
         while True:
             oldv = self._state
-            newv = f(oldv, *args)
+            newv = f(oldv, *effective)
             self._validate(self._validator, newv)
             if self._try_cas(oldv, newv):
                 self.notify_watches(oldv, newv)
                 return newv
 
     def swap_vals(self, f, *args):
+        cdef tuple effective = Atom._splat_trailing_seq(args)
         cdef object oldv, newv
         while True:
             oldv = self._state
-            newv = f(oldv, *args)
+            newv = f(oldv, *effective)
             self._validate(self._validator, newv)
             if self._try_cas(oldv, newv):
                 self.notify_watches(oldv, newv)

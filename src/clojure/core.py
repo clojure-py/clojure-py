@@ -116,6 +116,8 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("Exception"), Exception)
     core_ns.import_class(_Symbol.intern("Boolean"), bool)
     core_ns.import_class(_Symbol.intern("ClassCastException"), TypeError)
+    core_ns.import_class(_Symbol.intern("IllegalStateException"), RuntimeError)
+    core_ns.import_class(_Symbol.intern("RuntimeException"), RuntimeError)
     core_ns.import_class(_Symbol.intern("StringBuilder"), _StringBuilder)
     core_ns.import_class(_Symbol.intern("Object"), object)
     import numbers as _numbers_mod

@@ -2104,3 +2104,495 @@
       ([x y z & args]
          (clojure.lang.Var/reset_thread_binding_frame frame)
          (apply f x y z args)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; Refs ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn ^{:private true}
+  setup-reference [^clojure.lang.ARef r options]
+  (let [opts (apply hash-map options)]
+    (when (:meta opts)
+      (.reset_meta r (:meta opts)))
+    (when (:validator opts)
+      (.set_validator r (:validator opts)))
+    r))
+
+(defn agent
+  "Creates and returns an agent with an initial value of state and
+  zero or more options (in any order):
+
+  :meta metadata-map
+
+  :validator validate-fn
+
+  :error-handler handler-fn
+
+  :error-mode mode-keyword
+
+  If metadata-map is supplied, it will become the metadata on the
+  agent. validate-fn must be nil or a side-effect-free fn of one
+  argument, which will be passed the intended new state on any state
+  change. If the new state is unacceptable, the validate-fn should
+  return false or throw an exception.  handler-fn is called if an
+  action throws an exception or if validate-fn rejects a new state --
+  see set-error-handler! for details.  The mode-keyword may be either
+  :continue (the default if an error-handler is given) or :fail (the
+  default if no error-handler is given) -- see set-error-mode! for
+  details."
+  {:added "1.0"
+   :static true
+   }
+  ([state & options]
+     (let [a (new clojure.lang.Agent state)
+           opts (apply hash-map options)]
+       (setup-reference a options)
+       (when (:error-handler opts)
+         (.set_error_handler a (:error-handler opts)))
+       (.set_error_mode a (or (:error-mode opts)
+                            (if (:error-handler opts) :continue :fail)))
+       a)))
+
+(defn set-agent-send-executor!
+  "Sets the ExecutorService to be used by send"
+  {:added "1.5"}
+  [executor]
+  (clojure.lang.Agent/set_pooled_executor executor))
+
+(defn set-agent-send-off-executor!
+  "Sets the ExecutorService to be used by send-off"
+  {:added "1.5"}
+  [executor]
+  (clojure.lang.Agent/set_solo_executor executor))
+
+;; *agent* is referenced inside send-via; JVM defines it elsewhere.
+;; Forward-declare here as a dynamic var so the body compiles.
+(def ^{:dynamic true :doc "The agent currently running an action on this thread, else nil"}
+  *agent* nil)
+
+(defn send-via
+  "Dispatch an action to an agent. Returns the agent immediately.
+  Subsequently, in a thread supplied by executor, the state of the agent
+  will be set to the value of:
+
+  (apply action-fn state-of-agent args)"
+  {:added "1.5"}
+  [executor ^clojure.lang.Agent a f & args]
+  (.dispatch a (binding [*agent* a] (binding-conveyor-fn f)) args executor))
+
+(defn send
+  "Dispatch an action to an agent. Returns the agent immediately.
+  Subsequently, in a thread from a thread pool, the state of the agent
+  will be set to the value of:
+
+  (apply action-fn state-of-agent args)"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Agent a f & args]
+  (apply send-via (clojure.lang.Agent/get_pooled_executor) a f args))
+
+(defn send-off
+  "Dispatch a potentially blocking action to an agent. Returns the
+  agent immediately. Subsequently, in a separate thread, the state of
+  the agent will be set to the value of:
+
+  (apply action-fn state-of-agent args)"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Agent a f & args]
+  (apply send-via (clojure.lang.Agent/get_solo_executor) a f args))
+
+(defn release-pending-sends
+  "Normally, actions sent directly or indirectly during another action
+  are held until the action completes (changes the agent's
+  state). This function can be used to dispatch any pending sent
+  actions immediately. This has no impact on actions sent during a
+  transaction, which are still held until commit. If no action is
+  occurring, does nothing. Returns the number of actions dispatched."
+  {:added "1.0"
+   :static true}
+  [] (clojure.lang.Agent/release_pending_sends))
+
+(defn add-watch
+  "Adds a watch function to an agent/atom/var/ref reference. The watch
+  fn must be a fn of 4 args: a key, the reference, its old-state, its
+  new-state. Whenever the reference's state might have been changed,
+  any registered watches will have their functions called. The watch fn
+  will be called synchronously, on the agent's thread if an agent,
+  before any pending sends if agent or ref. Note that an atom's or
+  ref's state may have changed again prior to the fn call, so use
+  old/new-state rather than derefing the reference. Note also that watch
+  fns may be called from multiple threads simultaneously. Var watchers
+  are triggered only by root binding changes, not thread-local
+  set!s. Keys must be unique per reference, and can be used to remove
+  the watch with remove-watch, but are otherwise considered opaque by
+  the watch mechanism."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.IRef reference key fn] (.add_watch reference key fn))
+
+(defn remove-watch
+  "Removes a watch (set by add-watch) from a reference"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.IRef reference key]
+  (.remove_watch reference key))
+
+(defn agent-error
+  "Returns the exception thrown during an asynchronous action of the
+  agent if the agent is failed.  Returns nil if the agent is not
+  failed."
+  {:added "1.2"
+   :static true}
+  [^clojure.lang.Agent a] (.get_error a))
+
+(defn restart-agent
+  "When an agent is failed, changes the agent state to new-state and
+  then un-fails the agent so that sends are allowed again.  If
+  a :clear-actions true option is given, any actions queued on the
+  agent that were being held while it was failed will be discarded,
+  otherwise those held actions will proceed.  The new-state must pass
+  the validator if any, or restart will throw an exception and the
+  agent will remain failed with its old state and error.  Watchers, if
+  any, will NOT be notified of the new state.  Throws an exception if
+  the agent is not failed."
+  {:added "1.2"
+   :static true
+   }
+  [^clojure.lang.Agent a, new-state & options]
+  (let [opts (apply hash-map options)]
+    (.restart a new-state (if (:clear-actions opts) true false))))
+
+(defn set-error-handler!
+  "Sets the error-handler of agent a to handler-fn.  If an action
+  being run by the agent throws an exception or doesn't pass the
+  validator fn, handler-fn will be called with two arguments: the
+  agent and the exception."
+  {:added "1.2"
+   :static true}
+  [^clojure.lang.Agent a, handler-fn]
+  (.set_error_handler a handler-fn))
+
+(defn error-handler
+  "Returns the error-handler of agent a, or nil if there is none.
+  See set-error-handler!"
+  {:added "1.2"
+   :static true}
+  [^clojure.lang.Agent a]
+  (.get_error_handler a))
+
+(defn set-error-mode!
+  "Sets the error-mode of agent a to mode-keyword, which must be
+  either :fail or :continue.  If an action being run by the agent
+  throws an exception or doesn't pass the validator fn, an
+  error-handler may be called (see set-error-handler!), after which,
+  if the mode is :continue, the agent will continue as if neither the
+  action that caused the error nor the error itself ever happened.
+
+  If the mode is :fail, the agent will become failed and will stop
+  accepting new 'send' and 'send-off' actions, and any previously
+  queued actions will be held until a 'restart-agent'.  Deref will
+  still work, returning the state of the agent before the error."
+  {:added "1.2"
+   :static true}
+  [^clojure.lang.Agent a, mode-keyword]
+  (.set_error_mode a mode-keyword))
+
+(defn error-mode
+  "Returns the error-mode of agent a.  See set-error-mode!"
+  {:added "1.2"
+   :static true}
+  [^clojure.lang.Agent a]
+  (.get_error_mode a))
+
+(defn agent-errors
+  "DEPRECATED: Use 'agent-error' instead.
+  Returns a sequence of the exceptions thrown during asynchronous
+  actions of the agent."
+  {:added "1.0"
+   :deprecated "1.2"}
+  [a]
+  (when-let [e (agent-error a)]
+    (list e)))
+
+(defn clear-agent-errors
+  "DEPRECATED: Use 'restart-agent' instead.
+  Clears any exceptions thrown during asynchronous actions of the
+  agent, allowing subsequent actions to occur."
+  {:added "1.0"
+   :deprecated "1.2"}
+  [^clojure.lang.Agent a] (restart-agent a (.deref a)))
+
+(defn shutdown-agents
+  "Initiates a shutdown of the thread pools that back the agent
+  system. Running actions will complete, but no new actions will be
+  accepted"
+  {:added "1.0"
+   :static true}
+  [] (. clojure.lang.Agent shutdown_executors))
+
+(defn ref
+  "Creates and returns a Ref with an initial value of x and zero or
+  more options (in any order):
+
+  :meta metadata-map
+
+  :validator validate-fn
+
+  :min-history (default 0)
+  :max-history (default 10)
+
+  If metadata-map is supplied, it will become the metadata on the
+  ref. validate-fn must be nil or a side-effect-free fn of one
+  argument, which will be passed the intended new state on any state
+  change. If the new state is unacceptable, the validate-fn should
+  return false or throw an exception. validate-fn will be called on
+  transaction commit, when all refs have their final values.
+
+  Normally refs accumulate history dynamically as needed to deal with
+  read demands. If you know in advance you will need history you can
+  set :min-history to ensure it will be available when first needed (instead
+  of after a read fault). History is limited, and the limit can be set
+  with :max-history."
+  {:added "1.0"
+   :static true
+   }
+  ([x] (new clojure.lang.Ref x))
+  ([x & options]
+   (let [r  ^clojure.lang.Ref (setup-reference (ref x) options)
+         opts (apply hash-map options)]
+    (when (:max-history opts)
+      (.set_max_history r (:max-history opts)))
+    (when (:min-history opts)
+      (.set_min_history r (:min-history opts)))
+    r)))
+
+;; The full multi-arity `deref` (with timeout and IBlockingDeref support
+;; for futures/promises) is a Java-concurrent-Future special case in
+;; JVM core.clj. Our minimal `deref` from the previous batch already
+;; handles the common case of (deref ref). Skipping the future variant
+;; until we wire up future/promise.
+
+(defn atom
+  "Creates and returns an Atom with an initial value of x and zero or
+  more options (in any order):
+
+  :meta metadata-map
+
+  :validator validate-fn
+
+  If metadata-map is supplied, it will become the metadata on the
+  atom. validate-fn must be nil or a side-effect-free fn of one
+  argument, which will be passed the intended new state on any state
+  change. If the new state is unacceptable, the validate-fn should
+  return false or throw an exception."
+  {:added "1.0"
+   :static true}
+  ([x] (new clojure.lang.Atom x))
+  ([x & options] (setup-reference (atom x) options)))
+
+(defn swap!
+  "Atomically swaps the value of atom to be:
+  (apply f current-value-of-atom args). Note that f may be called
+  multiple times, and thus should be free of side effects.  Returns
+  the value that was swapped in."
+  {:added "1.0"
+   :static true}
+  ([^clojure.lang.IAtom atom f] (.swap atom f))
+  ([^clojure.lang.IAtom atom f x] (.swap atom f x))
+  ([^clojure.lang.IAtom atom f x y] (.swap atom f x y))
+  ([^clojure.lang.IAtom atom f x y & args] (.swap atom f x y args)))
+
+(defn swap-vals!
+  "Atomically swaps the value of atom to be:
+  (apply f current-value-of-atom args). Note that f may be called
+  multiple times, and thus should be free of side effects.
+  Returns [old new], the value of the atom before and after the swap."
+  {:added "1.9"}
+  (^clojure.lang.IPersistentVector [^clojure.lang.IAtom2 atom f] (.swap_vals atom f))
+  (^clojure.lang.IPersistentVector [^clojure.lang.IAtom2 atom f x] (.swap_vals atom f x))
+  (^clojure.lang.IPersistentVector [^clojure.lang.IAtom2 atom f x y] (.swap_vals atom f x y))
+  (^clojure.lang.IPersistentVector [^clojure.lang.IAtom2 atom f x y & args] (.swap_vals atom f x y args)))
+
+(defn compare-and-set!
+  "Atomically sets the value of atom to newval if and only if the
+  current value of the atom is identical to oldval. Returns true if
+  set happened, else false"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.IAtom atom oldval newval] (.compare_and_set atom oldval newval))
+
+(defn reset!
+  "Sets the value of atom to newval without regard for the
+  current value. Returns newval."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.IAtom atom newval] (.reset atom newval))
+
+(defn reset-vals!
+  "Sets the value of atom to newval. Returns [old new], the value of the
+   atom before and after the reset."
+  {:added "1.9"}
+  ^clojure.lang.IPersistentVector [^clojure.lang.IAtom2 atom newval] (.reset_vals atom newval))
+
+(defn set-validator!
+  "Sets the validator-fn for a var/ref/agent/atom. validator-fn must be nil or a
+  side-effect-free fn of one argument, which will be passed the intended
+  new state on any state change. If the new state is unacceptable, the
+  validator-fn should return false or throw an exception. If the current state (root
+  value if var) is not acceptable to the new validator, an exception
+  will be thrown and the validator will not be changed."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.IRef iref validator-fn] (. iref (set_validator validator-fn)))
+
+(defn get-validator
+  "Gets the validator-fn for a var/ref/agent/atom."
+  {:added "1.0"
+   :static true}
+ [^clojure.lang.IRef iref] (. iref (get_validator)))
+
+(defn alter-meta!
+  "Atomically sets the metadata for a namespace/var/ref/agent/atom to be:
+
+  (apply f its-current-meta args)
+
+  f must be free of side-effects"
+  {:added "1.0"
+   :static true}
+ [^clojure.lang.IReference iref f & args] (.alter_meta iref f args))
+
+(defn reset-meta!
+  "Atomically resets the metadata for a namespace/var/ref/agent/atom"
+  {:added "1.0"
+   :static true}
+ [^clojure.lang.IReference iref metadata-map] (.reset_meta iref metadata-map))
+
+(defn commute
+  "Must be called in a transaction. Sets the in-transaction-value of
+  ref to:
+
+  (apply fun in-transaction-value-of-ref args)
+
+  and returns the in-transaction-value of ref.
+
+  At the commit point of the transaction, sets the value of ref to be:
+
+  (apply fun most-recently-committed-value-of-ref args)
+
+  Thus fun should be commutative, or, failing that, you must accept
+  last-one-in-wins behavior.  commute allows for more concurrency than
+  ref-set."
+  {:added "1.0"
+   :static true}
+
+  [^clojure.lang.Ref ref fun & args]
+    (. ref (commute fun args)))
+
+(defn alter
+  "Must be called in a transaction. Sets the in-transaction-value of
+  ref to:
+
+  (apply fun in-transaction-value-of-ref args)
+
+  and returns the in-transaction-value of ref."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Ref ref fun & args]
+    (. ref (alter fun args)))
+
+(defn ref-set
+  "Must be called in a transaction. Sets the value of ref.
+  Returns val."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Ref ref val]
+    (. ref (set val)))
+
+(defn ref-history-count
+  "Returns the history count of a ref"
+  {:added "1.1"
+   :static true}
+  [^clojure.lang.Ref ref]
+    (.get_history_count ref))
+
+(defn ref-min-history
+  "Gets the min-history of a ref, or sets it and returns the ref"
+  {:added "1.1"
+   :static true}
+  ([^clojure.lang.Ref ref]
+    (.get_min_history ref))
+  ([^clojure.lang.Ref ref n]
+    (.set_min_history ref n)))
+
+(defn ref-max-history
+  "Gets the max-history of a ref, or sets it and returns the ref"
+  {:added "1.1"
+   :static true}
+  ([^clojure.lang.Ref ref]
+    (.get_max_history ref))
+  ([^clojure.lang.Ref ref n]
+    (.set_max_history ref n)))
+
+(defn ensure
+  "Must be called in a transaction. Protects the ref from modification
+  by other transactions.  Returns the in-transaction-value of
+  ref. Allows for more concurrency than (ref-set ref @ref)"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Ref ref]
+    (. ref (touch))
+    (. ref (deref)))
+
+(defmacro sync
+  "transaction-flags => TBD, pass nil for now
+
+  Runs the exprs (in an implicit do) in a transaction that encompasses
+  exprs and any nested calls.  Starts a transaction if none is already
+  running on this thread. Any uncaught exception will abort the
+  transaction and flow out of sync. The exprs may be run more than
+  once, but any effects on Refs will be atomic."
+  {:added "1.0"}
+  [flags-ignored-for-now & body]
+  `(. clojure.lang.LockingTransaction
+      (run_in_transaction (fn [] ~@body))))
+
+
+(defmacro io!
+  "If an io! block occurs in a transaction, throws an
+  IllegalStateException, else runs body in an implicit do. If the
+  first expression in body is a literal string, will use that as the
+  exception message."
+  {:added "1.0"}
+  [& body]
+  (let [message (when (string? (first body)) (first body))
+        body (if message (next body) body)]
+    `(if (clojure.lang.LockingTransaction/is_running)
+       (throw (new IllegalStateException ~(or message "I/O in transaction")))
+       (do ~@body))))
+
+(defn volatile!
+  "Creates and returns a Volatile with an initial value of val."
+  {:added "1.7"
+   :tag clojure.lang.Volatile}
+  [val]
+  (clojure.lang.Volatile. val))
+
+(defn vreset!
+  "Sets the value of volatile to newval without regard for the
+   current value. Returns newval."
+  {:added "1.7"}
+  [^clojure.lang.Volatile vol newval]
+  (.reset vol newval))
+
+(defmacro vswap!
+  "Non-atomically swaps the value of the volatile as if:
+   (apply f current-value-of-vol args). Returns the value that
+   was swapped in."
+  {:added "1.7"}
+  [vol f & args]
+  (let [v (with-meta vol {:tag 'clojure.lang.Volatile})]
+    `(.reset ~v (~f (.deref ~v) ~@args))))
+
+(defn volatile?
+  "Returns true if x is a volatile."
+  {:added "1.7"}
+  [x]
+  (instance? clojure.lang.Volatile x))
