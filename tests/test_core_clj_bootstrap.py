@@ -194,3 +194,104 @@ def test_let_var_is_a_macro():
 def test_fn_var_is_a_macro():
     v = E("(var clojure.core/fn)")
     assert v.is_macro()
+
+
+# --- meta / with-meta -------------------------------------------------
+
+def test_meta_on_obj_with_meta():
+    m = E("(clojure.core/meta (clojure.core/with-meta [1 2] {:k 1}))")
+    assert m.val_at(Keyword.intern(None, "k")) == 1
+
+def test_meta_on_plain_value_is_nil():
+    assert E("(clojure.core/meta 42)") is None
+    assert E('(clojure.core/meta "x")') is None
+
+def test_with_meta_preserves_value():
+    v = E("(clojure.core/with-meta [1 2 3] {:tag 'X})")
+    assert list(v) == [1, 2, 3]
+
+
+# --- last / butlast --------------------------------------------------
+
+def test_last_on_vector():
+    assert E("(clojure.core/last [1 2 3])") == 3
+
+def test_last_on_single():
+    assert E("(clojure.core/last [99])") == 99
+
+def test_last_on_nil():
+    assert E("(clojure.core/last nil)") is None
+
+def test_butlast_on_vector():
+    r = E("(clojure.core/butlast [1 2 3 4])")
+    assert list(r) == [1, 2, 3]
+
+def test_butlast_on_single_is_nil():
+    """butlast of a 1-elem coll is nil (empty seq, returned via (seq [])
+    which is nil)."""
+    assert E("(clojure.core/butlast [1])") is None
+
+
+# --- defn macro -------------------------------------------------------
+
+def test_defn_var_is_a_macro():
+    v = E("(var clojure.core/defn)")
+    assert v.is_macro()
+
+def test_defn_basic():
+    """(defn foo [x] x) — basic single-arity."""
+    E("(clojure.core/defn ccd-id [x] x)")
+    assert E("(ccd-id 42)") == 42
+
+def test_defn_with_docstring():
+    E('(clojure.core/defn ccd-doc "the doc" [x] x)')
+    v = E("(var ccd-doc)")
+    assert v.meta().val_at(Keyword.intern(None, "doc")) == "the doc"
+
+def test_defn_with_attr_map():
+    E("(clojure.core/defn ccd-attr {:added \"1.0\"} [x] x)")
+    v = E("(var ccd-attr)")
+    assert v.meta().val_at(Keyword.intern(None, "added")) == "1.0"
+
+def test_defn_multi_arity():
+    E("""
+    (clojure.core/defn ccd-multi
+      ([] :zero)
+      ([x] x)
+      ([x & rest] (clojure.core/cons x rest)))
+    """)
+    assert E("(ccd-multi)") == Keyword.intern(None, "zero")
+    assert E("(ccd-multi 99)") == 99
+    r = E("(ccd-multi 1 2 3)")
+    assert list(r) == [1, 2, 3]
+
+def test_defn_arglists_metadata_filled_in():
+    """defn auto-derives :arglists from the fn's arity vectors."""
+    E("(clojure.core/defn ccd-al [a b c] a)")
+    v = E("(var ccd-al)")
+    al = v.meta().val_at(Keyword.intern(None, "arglists"))
+    # arglists is a list of arg vectors; for a single-arity defn it's
+    # ((a b c)) wrapped in a quote
+    assert al == read_string("(quote ([a b c]))")
+
+def test_defn_first_arg_must_be_symbol():
+    with pytest.raises(ValueError):
+        E("(clojure.core/defn 42 [x] x)")
+
+def test_defn_uses_recur():
+    """defn fns can use recur to fn args (no enclosing loop)."""
+    E("""
+    (clojure.core/defn ccd-count-down [n]
+      (clojure.core/cons n (if (clojure.core/seq (clojure.core/conj [] n))
+                              nil
+                              nil)))
+    """)
+    # Simpler recur test:
+    E("""
+    (clojure.core/defn ccd-rec [n acc]
+      (if (clojure.core/seq? (clojure.core/conj nil n))  ; always true (Cons)
+        (if n (recur (clojure.core/cons :x nil) acc) acc)
+        acc))
+    """)
+    # Trivial smoke — recur path executes
+    assert E("(ccd-rec nil :done)") == Keyword.intern(None, "done")

@@ -18,6 +18,12 @@
 ;;     a callable static field (e.g. PersistentList.creator) are
 ;;     rewritten as `ClassName/fieldName` — Python has no compile-time
 ;;     way to distinguish a static field from a no-arg static method.
+;;   - Java method names in (.method obj) interop are written using
+;;     Python's snake_case (.with_meta, .get_name, .find for indexOf,
+;;     etc.) because our port follows Python's PEP 8 naming.
+;;   - Compiler$HostExpr internals (maybeSpecialTag, maybeClass) are
+;;     stubbed on our clojure.lang.Compiler class — the JVM nested-class
+;;     name doesn't translate to Python identifiers.
 ;;   - Java exception classes (IllegalArgumentException etc.) are mapped
 ;;     to Python equivalents in this same file before they're used.
 
@@ -210,3 +216,140 @@
           (throw (IllegalArgumentException.
                   "assoc expects even number of arguments after map/vector, found odd number")))
         ret)))))
+
+;;;;;;;;;;;;;;;;; metadata ;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(def
+ ^{:arglists '([obj])
+   :doc "Returns the metadata of obj, returns nil if there is no metadata."
+   :added "1.0"
+   :static true}
+ meta (fn ^:static meta [x]
+        (if (instance? clojure.lang.IMeta x)
+          (. ^clojure.lang.IMeta x (meta)))))
+
+(def
+ ^{:arglists '([^clojure.lang.IObj obj m])
+   :doc "Returns an object of the same type and value as obj, with
+    map m as its metadata."
+   :added "1.0"
+   :static true}
+ with-meta (fn ^:static with-meta [^clojure.lang.IObj x m]
+             (. x (with_meta m))))
+
+(def ^{:private true :dynamic true}
+  assert-valid-fdecl (fn [fdecl]))
+
+(def
+ ^{:private true}
+ sigs
+ (fn [fdecl]
+   (assert-valid-fdecl fdecl)
+   (let [asig
+         (fn [fdecl]
+           (let [arglist (first fdecl)
+                 ;elide implicit macro args
+                 arglist (if (clojure.lang.Util/equals '&form (first arglist))
+                           (clojure.lang.RT/subvec arglist 2 (clojure.lang.RT/count arglist))
+                           arglist)
+                 body (next fdecl)]
+             (if (map? (first body))
+               (if (next body)
+                 (with-meta arglist (conj (if (meta arglist) (meta arglist) {}) (first body)))
+                 arglist)
+               arglist)))
+         resolve-tag (fn [argvec]
+                        (let [m (meta argvec)
+                              ^clojure.lang.Symbol tag (:tag m)]
+                          (if (instance? clojure.lang.Symbol tag)
+                            (if (clojure.lang.Util/equiv (.find (.get_name tag) ".") -1)
+                              (if (clojure.lang.Util/equals nil (clojure.lang.Compiler/maybe_special_tag tag))
+                                (let [c (clojure.lang.Compiler/maybe_class tag false)]
+                                  (if c
+                                    (with-meta argvec (assoc m :tag (clojure.lang.Symbol/intern (.get_name c))))
+                                    argvec))
+                                argvec)
+                              argvec)
+                            argvec)))]
+     (if (seq? (first fdecl))
+       (loop [ret [] fdecls fdecl]
+         (if fdecls
+           (recur (conj ret (resolve-tag (asig (first fdecls)))) (next fdecls))
+           (seq ret)))
+       (list (resolve-tag (asig fdecl)))))))
+
+
+(def
+ ^{:arglists '([coll])
+   :doc "Return the last item in coll, in linear time"
+   :added "1.0"
+   :static true}
+ last (fn ^:static last [s]
+        (if (next s)
+          (recur (next s))
+          (first s))))
+
+(def
+ ^{:arglists '([coll])
+   :doc "Return a seq of all but the last item in coll, in linear time"
+   :added "1.0"
+   :static true}
+ butlast (fn ^:static butlast [s]
+           (loop [ret [] s s]
+             (if (next s)
+               (recur (conj ret (first s)) (next s))
+               (seq ret)))))
+
+(def
+
+ ^{:doc "Same as (def name (fn [params* ] exprs*)) or (def
+    name (fn ([params* ] exprs*)+)) with any doc-string or attrs added
+    to the var metadata. prepost-map defines a map with optional keys
+    :pre and :post that contain collections of pre or post conditions."
+   :arglists '([name doc-string? attr-map? [params*] prepost-map? body]
+                [name doc-string? attr-map? ([params*] prepost-map? body)+ attr-map?])
+   :added "1.0"}
+ defn (fn defn [&form &env name & fdecl]
+        ;; Note: Cannot delegate this check to def because of the call to (with-meta name ..)
+        (if (instance? clojure.lang.Symbol name)
+          nil
+          (throw (IllegalArgumentException. "First argument to defn must be a symbol")))
+        (let [m (if (string? (first fdecl))
+                  {:doc (first fdecl)}
+                  {})
+              fdecl (if (string? (first fdecl))
+                      (next fdecl)
+                      fdecl)
+              m (if (map? (first fdecl))
+                  (conj m (first fdecl))
+                  m)
+              fdecl (if (map? (first fdecl))
+                      (next fdecl)
+                      fdecl)
+              fdecl (if (vector? (first fdecl))
+                      (list fdecl)
+                      fdecl)
+              m (if (map? (last fdecl))
+                  (conj m (last fdecl))
+                  m)
+              fdecl (if (map? (last fdecl))
+                      (butlast fdecl)
+                      fdecl)
+              m (conj {:arglists (list 'quote (sigs fdecl))} m)
+              m (let [inline (:inline m)
+                      ifn (first inline)
+                      iname (second inline)]
+                  ;; same as: (if (and (= 'fn ifn) (not (symbol? iname))) ...)
+                  (if (if (clojure.lang.Util/equiv 'fn ifn)
+                        (if (instance? clojure.lang.Symbol iname) false true))
+                    ;; inserts the same fn name to the inline fn if it does not have one
+                    (assoc m :inline (cons ifn (cons (clojure.lang.Symbol/intern (.concat (.get_name ^clojure.lang.Symbol name) "__inliner"))
+                                                     (next inline))))
+                    m))
+              m (conj (if (meta name) (meta name) {}) m)]
+          (list 'def (with-meta name m)
+                ;;todo - restore propagation of fn name
+                ;;must figure out how to convey primitive hints to self calls first
+                ;;(cons `fn fdecl)
+                (with-meta (cons `fn fdecl) {:rettag (:tag m)})))))
+
+(. (var defn) (set_macro))

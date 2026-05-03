@@ -115,6 +115,22 @@ class RT:
         return RT.rest(x)
 
     @staticmethod
+    def subvec(v, start, end):
+        """Slice of a vector: returns a new vector with elements
+        [start, end)."""
+        if start < 0 or end < start or end > v.count():
+            raise IndexError("subvec out of range")
+        if start == 0 and end == v.count():
+            return v
+        # Build using create on the slice.
+        items = []
+        cdef int i = start
+        while i < end:
+            items.append(v.nth(i))
+            i += 1
+        return PersistentVector.create(*items)
+
+    @staticmethod
     def count(x):
         if x is None:
             return 0
@@ -372,6 +388,31 @@ class Compiler:
         ns = Compiler.current_ns()
         cls = ns.get_mapping(Symbol.intern(sym.ns))
         return isinstance(cls, type)
+
+    @staticmethod
+    def maybe_special_tag(sym):
+        """Stub for clojure.lang.Compiler$HostExpr/maybeSpecialTag.
+        On the JVM this returns a primitive Class ref for special tags
+        like 'long' or 'int'; in our port there are no primitive type
+        hints, so always returns nil."""
+        return None
+
+    @staticmethod
+    def maybe_class(sym, string_ok):
+        """Stub for clojure.lang.Compiler$HostExpr/maybeClass — looks up
+        a tag symbol as a class, returning nil on failure. We delegate
+        to RT.class_for_name and swallow errors."""
+        if isinstance(sym, Symbol):
+            try:
+                return RT.class_for_name(sym.name)
+            except (ImportError, AttributeError):
+                return None
+        if string_ok and isinstance(sym, str):
+            try:
+                return RT.class_for_name(sym)
+            except (ImportError, AttributeError):
+                return None
+        return None
 
     @staticmethod
     def resolve_symbol(sym):
