@@ -140,6 +140,12 @@ def _is_self_eval_literal(form):
         return True
     if isinstance(form, (int, float, str, Keyword, BigInt, BigDecimal, Ratio)):
         return True
+    # A Var that lands in code (typically via `~v#` unquoting a captured
+    # Var inside a syntax-quote) evaluates to itself — the var IS the
+    # constant. The compiler emits LOAD_CONST <var>; runtime treats it
+    # exactly like reading a #'foo literal.
+    if isinstance(form, Var):
+        return True
     return False
 
 
@@ -966,18 +972,20 @@ def _compile_dot(args, ctx):
         if ms is None:
             raise SyntaxError(". member form must be (name args...)")
         m_name_sym = ms.first()
-        if not isinstance(m_name_sym, Symbol) or m_name_sym.ns is not None:
-            raise SyntaxError(". member name must be an unqualified symbol")
+        if not isinstance(m_name_sym, Symbol):
+            raise SyntaxError(". member name must be a symbol")
+        # Qualified method-name symbols arrive when a syntax-quote auto-
+        # qualifies an unquoted method name (e.g. `(. obj add_method)`
+        # inside `\``). Use just the local part.
         if member_args is not None:
             raise SyntaxError(
                 "When using (. obj (method ...)), don't pass extra args")
-        # Recompose as a method-call form so JAVA_METHOD_FALLBACKS apply.
         _compile_method_call(m_name_sym.name, RT.cons(target, ms.next()), ctx)
         return
 
-    if not isinstance(member, Symbol) or member.ns is not None:
-        raise SyntaxError(". member name must be an unqualified symbol")
-    name = member.name
+    if not isinstance(member, Symbol):
+        raise SyntaxError(". member name must be a symbol")
+    name = member.name  # use local-part even if syntax-quote qualified it
     # `-field` form
     if len(name) > 1 and name[0] == "-":
         if member_args is not None:

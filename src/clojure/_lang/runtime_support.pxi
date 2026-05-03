@@ -306,6 +306,23 @@ class RT:
             return _SetKeySeq(s)
         return None
 
+    @staticmethod
+    def vals(m):
+        if m is None: return None
+        if hasattr(m, "seq"):
+            s = m.seq()
+            if s is None: return None
+            # Walk the entry seq and yield each value. Materialize via
+            # IteratorSeq so the result is a Clojure ISeq.
+            vs = []
+            cur = s
+            while cur is not None:
+                e = cur.first()
+                vs.append(e.val())
+                cur = cur.next()
+            return IteratorSeq.from_iterable(vs)
+        return None
+
     # --- vars / namespaces ---
 
     @staticmethod
@@ -531,6 +548,19 @@ class Compiler:
             return Symbol.intern(v.ns.name.name, v.sym.name)
         if isinstance(v, type):
             return Symbol.intern(None, v.__module__ + "." + v.__name__)
+        # Dotted name (`clojure.lang.MultiFn`) — try class lookup before
+        # falling back to ns-qualifying. Skip names that aren't shaped
+        # like Java FQNs (`.`, `..`, `.method`, `Class.`, etc.).
+        n = sym.name
+        if ("." in n
+                and not n.startswith(".")
+                and not n.endswith(".")
+                and ".." not in n):
+            try:
+                RT.class_for_name(n)
+                return sym  # resolves as a class — leave as-is
+            except (ImportError, AttributeError, ValueError):
+                pass
         return Symbol.intern(ns.name.name, sym.name)
 
 

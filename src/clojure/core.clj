@@ -1598,3 +1598,297 @@
              ret)
            (next keys)))
         (with-meta ret (meta map)))))
+
+(defn keys
+  "Returns a sequence of the map's keys, in the same order as (seq map)."
+  {:added "1.0"
+   :static true}
+  [map] (. clojure.lang.RT (keys map)))
+
+(defn vals
+  "Returns a sequence of the map's values, in the same order as (seq map)."
+  {:added "1.0"
+   :static true}
+  [map] (. clojure.lang.RT (vals map)))
+
+(defn key
+  "Returns the key of the map entry."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.MapEntry e]
+    (. e (key)))
+
+(defn val
+  "Returns the value in the map entry."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.MapEntry e]
+    (. e (val)))
+
+(defn rseq
+  "Returns, in constant time, a seq of the items in rev (which
+  can be a vector or sorted-map), in reverse order. If rev is empty returns nil"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Reversible rev]
+    (. rev (rseq)))
+
+(defn name
+  "Returns the name String of a string, symbol or keyword."
+  {:tag String
+   :added "1.0"
+   :static true}
+  [x]
+  (if (string? x) x (. ^clojure.lang.Named x (get_name))))
+
+(defn namespace
+  "Returns the namespace String of a symbol or keyword, or nil if not present."
+  {:tag String
+   :added "1.0"
+   :static true}
+  [^clojure.lang.Named x]
+    (. x (get_namespace)))
+
+(defn boolean
+  "Coerce to boolean"
+  {
+   :inline (fn  [x] `(. clojure.lang.RT (boolean_cast ~x)))
+   :added "1.0"}
+  [x] (clojure.lang.RT/boolean_cast x))
+
+(defn ident?
+  "Return true if x is a symbol or keyword"
+  {:added "1.9"}
+  [x] (or (keyword? x) (symbol? x)))
+
+(defn simple-ident?
+  "Return true if x is a symbol or keyword without a namespace"
+  {:added "1.9"}
+  [x] (and (ident? x) (nil? (namespace x))))
+
+(defn qualified-ident?
+  "Return true if x is a symbol or keyword with a namespace"
+  {:added "1.9"}
+  [x] (boolean (and (ident? x) (namespace x) true)))
+
+(defn simple-symbol?
+  "Return true if x is a symbol without a namespace"
+  {:added "1.9"}
+  [x] (and (symbol? x) (nil? (namespace x))))
+
+(defn qualified-symbol?
+  "Return true if x is a symbol with a namespace"
+  {:added "1.9"}
+  [x] (boolean (and (symbol? x) (namespace x) true)))
+
+(defn simple-keyword?
+  "Return true if x is a keyword without a namespace"
+  {:added "1.9"}
+  [x] (and (keyword? x) (nil? (namespace x))))
+
+(defn qualified-keyword?
+  "Return true if x is a keyword with a namespace"
+  {:added "1.9"}
+  [x] (boolean (and (keyword? x) (namespace x) true)))
+
+(defmacro locking
+  "Executes exprs in an implicit do, while holding the monitor of x.
+  Will release the monitor of x in all circumstances."
+  {:added "1.0"}
+  [x & body]
+  `(let [lockee# ~x]
+     (try
+       (let [locklocal# lockee#]
+         (monitor-enter locklocal#)
+         (try
+           ~@body
+           (finally
+            (monitor-exit locklocal#)))))))
+
+(defmacro ..
+  "form => fieldName-symbol or (instanceMethodName-symbol args*)
+
+  Expands into a member access (.) of the first member on the first
+  argument, followed by the next member on the result, etc. For
+  instance:
+
+  (.. System (getProperties) (get \"os.name\"))
+
+  expands to:
+
+  (. (. System (getProperties)) (get \"os.name\"))
+
+  but is easier to write, read, and understand."
+  {:added "1.0"}
+  ([x form] `(. ~x ~form))
+  ([x form & more] `(.. (. ~x ~form) ~@more)))
+
+(defmacro ->
+  "Threads the expr through the forms. Inserts x as the
+  second item in the first form, making a list of it if it is not a
+  list already. If there are more forms, inserts the first form as the
+  second item in second form, etc."
+  {:added "1.0"}
+  [x & forms]
+  (loop [x x, forms forms]
+    (if forms
+      (let [form (first forms)
+            threaded (if (seq? form)
+                       (with-meta `(~(first form) ~x ~@(next form)) (meta form))
+                       (list form x))]
+        (recur threaded (next forms)))
+      x)))
+
+(defmacro ->>
+  "Threads the expr through the forms. Inserts x as the
+  last item in the first form, making a list of it if it is not a
+  list already. If there are more forms, inserts the first form as the
+  last item in second form, etc."
+  {:added "1.1"}
+  [x & forms]
+  (loop [x x, forms forms]
+    (if forms
+      (let [form (first forms)
+            threaded (if (seq? form)
+              (with-meta `(~(first form) ~@(next form)  ~x) (meta form))
+              (list form x))]
+        (recur threaded (next forms)))
+      x)))
+
+(def map)
+
+;; Minimal `deref` forward definition. JVM core.clj defines it later
+;; (around line 2310) but the defmulti macro expansion below references
+;; it by name, so it must exist as a Var before any defmulti is invoked.
+;; The full multi-arity version (with timeout) is defined in a later
+;; batch alongside the rest of the reference-type API.
+(defn deref
+  {:added "1.0"}
+  [ref] (.deref ref))
+
+(defn ^:private check-valid-options
+  "Throws an exception if the given option map contains keys not listed
+  as valid, else returns nil."
+  [options & valid-keys]
+  (when (seq (apply disj (apply hash-set (keys options)) valid-keys))
+    (throw
+      (IllegalArgumentException.
+        (apply str "Only these options are valid: "
+          (first valid-keys)
+          (map #(str ", " %) (rest valid-keys)))))))
+
+;;multimethods
+;; JVM core.clj declares global-hierarchy unbound here and initializes
+;; it later via (alter-var-root #'global-hierarchy (fn [_] (make-hierarchy))).
+;; We initialize eagerly with the same {:parents {} :descendants {} :ancestors {}}
+;; literal so defmulti calls during the rest of the bootstrap (and
+;; user code that exercises defmulti before make-hierarchy lands) have
+;; a usable hierarchy.
+(def global-hierarchy {:parents {} :descendants {} :ancestors {}})
+
+(defmacro defmulti
+  "Creates a new multimethod with the associated dispatch function.
+  The docstring and attr-map are optional.
+
+  Options are key-value pairs and may be one of:
+
+  :default
+
+  The default dispatch value, defaults to :default
+
+  :hierarchy
+
+  The value used for hierarchical dispatch (e.g. ::square is-a ::shape)
+
+  Hierarchies are type-like relationships that do not depend upon type
+  inheritance. By default Clojure's multimethods dispatch off of a
+  global hierarchy map.  However, a hierarchy relationship can be
+  created with the derive function used to augment the root ancestor
+  created with make-hierarchy.
+
+  Multimethods expect the value of the hierarchy option to be supplied as
+  a reference type e.g. a var (i.e. via the Var-quote dispatch macro #'
+  or the var special form)."
+  {:arglists '([name docstring? attr-map? dispatch-fn & options])
+   :added "1.0"}
+  [mm-name & options]
+  (let [docstring   (if (string? (first options))
+                      (first options)
+                      nil)
+        options     (if (string? (first options))
+                      (next options)
+                      options)
+        m           (if (map? (first options))
+                      (first options)
+                      {})
+        options     (if (map? (first options))
+                      (next options)
+                      options)
+        dispatch-fn (first options)
+        options     (next options)
+        m           (if docstring
+                      (assoc m :doc docstring)
+                      m)
+        m           (if (meta mm-name)
+                      (conj (meta mm-name) m)
+                      m)
+        mm-name (with-meta mm-name m)]
+    (when (= (count options) 1)
+      (throw (Exception. "The syntax for defmulti has changed. Example: (defmulti name dispatch-fn :default dispatch-value)")))
+    (let [options   (apply hash-map options)
+          default   (get options :default :default)
+          hierarchy (get options :hierarchy #'global-hierarchy)]
+      (check-valid-options options :default :hierarchy)
+      `(let [v# (def ~mm-name)]
+         (when-not (and (.has_root v#) (instance? clojure.lang.MultiFn (deref v#)))
+           (def ~mm-name
+                (new clojure.lang.MultiFn ~(name mm-name) ~dispatch-fn ~default ~hierarchy)))))))
+
+(defmacro defmethod
+  "Creates and installs a new method of multimethod associated with dispatch-value. "
+  {:added "1.0"}
+  [multifn dispatch-val & fn-tail]
+  `(. ~(with-meta multifn {:tag 'clojure.lang.MultiFn}) add_method ~dispatch-val (fn ~@fn-tail)))
+
+(defn remove-all-methods
+  "Removes all of the methods of multimethod."
+  {:added "1.2"
+   :static true}
+ [^clojure.lang.MultiFn multifn]
+ (.reset multifn))
+
+(defn remove-method
+  "Removes the method of multimethod associated with dispatch-value."
+  {:added "1.0"
+   :static true}
+ [^clojure.lang.MultiFn multifn dispatch-val]
+ (. multifn remove_method dispatch-val))
+
+(defn prefer-method
+  "Causes the multimethod to prefer matches of dispatch-val-x over dispatch-val-y
+   when there is a conflict"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.MultiFn multifn dispatch-val-x dispatch-val-y]
+  (. multifn prefer_method dispatch-val-x dispatch-val-y))
+
+(defn methods
+  "Given a multimethod, returns a map of dispatch values -> dispatch fns"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.MultiFn multifn] (.get_method_table multifn))
+
+(defn get-method
+  "Given a multimethod and a dispatch value, returns the dispatch fn
+  that would apply to that value, or nil if none apply and no default"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.MultiFn multifn dispatch-val] (.get_method multifn dispatch-val))
+
+(defn prefers
+  "Given a multimethod, returns a map of preferred value -> set of other values"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.MultiFn multifn] (.get_prefer_table multifn))
+
+;;;;;;;;; var stuff

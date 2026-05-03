@@ -839,7 +839,11 @@ cdef object _syntax_quote(form):
                     sym.name[:-1] + f"__{RT.next_id()}__auto__")
                 _gensym_env_var.set(gmap.assoc(sym, gs))
             sym = gs
-        elif sym.ns is None and sym.name.endswith("."):
+        elif (sym.ns is None
+                and sym.name.endswith(".")
+                and not sym.name.startswith(".")):
+            # `Class.` constructor-sugar — resolve `Class` as a class
+            # then re-add the trailing dot.
             csym = Symbol.intern(None, sym.name[:-1])
             if resolver is not None:
                 rc = resolver.resolveClass(csym)
@@ -848,8 +852,11 @@ cdef object _syntax_quote(form):
             else:
                 csym = Compiler.resolve_symbol(csym)
             sym = Symbol.intern(None, csym.name + ".")
-        elif sym.ns is None and sym.name.startswith("."):
-            pass    # leave method names alone
+        elif (sym.ns is None
+                and sym.name.startswith(".")
+                and len(sym.name) > 1
+                and sym.name[1] != "."):
+            pass    # leave method-name shorthand alone (.foo, .-foo)
         elif resolver is not None:
             nsym = None
             if sym.ns is not None:
