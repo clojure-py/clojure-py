@@ -340,6 +340,16 @@ def _compile_form(form, ctx):
             if sname == "try":
                 _compile_try(s.next(), ctx)
                 return
+            if sname == ".":
+                _compile_dot(s.next(), ctx)
+                return
+            # `.method` and `.-field` interop sugar.
+            if len(sname) > 1 and sname[0] == ".":
+                if sname[1] == "-" and len(sname) > 2:
+                    _compile_field_access(sname[2:], s.next(), ctx)
+                else:
+                    _compile_method_call(sname[1:], s.next(), ctx)
+                return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
         return
@@ -557,6 +567,102 @@ def _resolve_catch_class(form, ctx):
     finally:
         ctx.instrs = saved
     return sub_ctx_instrs
+
+
+def _compile_method_call(method_name, args, ctx):
+    """(.method obj arg1 arg2 ...) — emit obj.method(args) using the
+    LOAD_ATTR method-form so CPython's call optimization fires."""
+    if args is None:
+        raise SyntaxError(
+            "Method call requires a target object: ." + method_name)
+    target = args.first()
+    rest = args.next()
+    _compile_form(target, ctx)
+    ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
+    nargs = 0
+    cur = rest
+    while cur is not None:
+        _compile_form(cur.first(), ctx)
+        nargs += 1
+        cur = cur.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
+
+
+def _compile_field_access(field_name, args, ctx):
+    """(.-field obj) — emit obj.field via plain LOAD_ATTR (non-method)."""
+    if args is None:
+        raise SyntaxError(
+            "Field access requires a target object: .-" + field_name)
+    target = args.first()
+    if args.next() is not None:
+        raise SyntaxError(
+            "Field access takes a single target object: .-" + field_name)
+    _compile_form(target, ctx)
+    ctx.emit(_bc_Instr("LOAD_ATTR", (False, field_name)))
+
+
+def _compile_dot(args, ctx):
+    """Explicit dot form:
+       (. obj method-or-field arg...)
+       (. obj -field)
+       (. obj (method arg...))
+
+    Resolves to either a method call or a field access depending on
+    shape."""
+    if args is None:
+        raise SyntaxError(". requires a target object")
+    target = args.first()
+    rest = args.next()
+    if rest is None:
+        raise SyntaxError(". requires a member name after the target")
+    member = rest.first()
+    member_args = rest.next()
+
+    # (. obj (method arg...)) — member is itself a list
+    if isinstance(member, ISeq):
+        ms = member.seq()
+        if ms is None:
+            raise SyntaxError(". member form must be (name args...)")
+        m_name_sym = ms.first()
+        if not isinstance(m_name_sym, Symbol) or m_name_sym.ns is not None:
+            raise SyntaxError(". member name must be an unqualified symbol")
+        if member_args is not None:
+            raise SyntaxError(
+                "When using (. obj (method ...)), don't pass extra args")
+        # Recompose as a method-call: receiver is `target`, args from ms.next()
+        method_name = m_name_sym.name
+        _compile_form(target, ctx)
+        ctx.emit(_bc_Instr("LOAD_ATTR", (True, method_name)))
+        nargs = 0
+        cur = ms.next()
+        while cur is not None:
+            _compile_form(cur.first(), ctx)
+            nargs += 1
+            cur = cur.next()
+        ctx.emit(_bc_Instr("CALL", nargs))
+        return
+
+    if not isinstance(member, Symbol) or member.ns is not None:
+        raise SyntaxError(". member name must be an unqualified symbol")
+    name = member.name
+    # `-field` form
+    if len(name) > 1 and name[0] == "-":
+        if member_args is not None:
+            raise SyntaxError(
+                "Field access via (. obj -field) takes no extra args")
+        _compile_form(target, ctx)
+        ctx.emit(_bc_Instr("LOAD_ATTR", (False, name[1:])))
+        return
+    # Method call (or zero-arg)
+    _compile_form(target, ctx)
+    ctx.emit(_bc_Instr("LOAD_ATTR", (True, name)))
+    nargs = 0
+    cur = member_args
+    while cur is not None:
+        _compile_form(cur.first(), ctx)
+        nargs += 1
+        cur = cur.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
 
 
 def _parse_try_args(args):
