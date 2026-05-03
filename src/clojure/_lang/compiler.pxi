@@ -343,12 +343,19 @@ def _compile_form(form, ctx):
             if sname == ".":
                 _compile_dot(s.next(), ctx)
                 return
+            if sname == "new":
+                _compile_new(s.next(), ctx)
+                return
             # `.method` and `.-field` interop sugar.
             if len(sname) > 1 and sname[0] == ".":
                 if sname[1] == "-" and len(sname) > 2:
                     _compile_field_access(sname[2:], s.next(), ctx)
                 else:
                     _compile_method_call(sname[1:], s.next(), ctx)
+                return
+            # `Class.` constructor sugar (trailing dot).
+            if len(sname) > 1 and sname[len(sname) - 1] == ".":
+                _compile_ctor_sugar(first, sname, s.next(), ctx)
                 return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
@@ -567,6 +574,35 @@ def _resolve_catch_class(form, ctx):
     finally:
         ctx.instrs = saved
     return sub_ctx_instrs
+
+
+def _compile_new(args, ctx):
+    """(new Class arg...) — instantiate Class. In Python that's just a
+    regular call where the callable is the class."""
+    if args is None:
+        raise SyntaxError("new requires a class name")
+    cls_form = args.first()
+    rest = args.next()
+    _compile_form(cls_form, ctx)
+    ctx.emit(_bc_Instr("PUSH_NULL"))
+    nargs = 0
+    cur = rest
+    while cur is not None:
+        _compile_form(cur.first(), ctx)
+        nargs += 1
+        cur = cur.next()
+    ctx.emit(_bc_Instr("CALL", nargs))
+
+
+def _compile_ctor_sugar(orig_sym, sname, args, ctx):
+    """(Class. arg...) — reader sugar for (new Class arg...). The class
+    name is `sname` minus the trailing `.`, looked up in the same ns
+    that the original symbol's namespace points at (or current ns)."""
+    cls_name = sname[:len(sname) - 1]
+    cls_sym = Symbol.intern(orig_sym.ns, cls_name)
+    # Build (new Class arg...) and delegate.
+    new_args = RT.cons(cls_sym, args)
+    _compile_new(new_args, ctx)
 
 
 def _compile_method_call(method_name, args, ctx):
