@@ -241,7 +241,14 @@ def _bootstrap():
     setattr(_lang, "Math", _math_mod)
 
     # java.util.Arrays/sort — minimal shim; sorts a list in place using a
-    # comparator that returns -1/0/1. Used by clojure.core/sort.
+    # comparator. Used by clojure.core/sort.
+    #
+    # The comparator may return either a 3-way int (-1/0/1, like
+    # java.util.Comparator) or a boolean (like Clojure 2-arg predicates
+    # such as `<` or `>`). JVM's clojure.lang.AFn.compare handles both:
+    # if the call returns a Boolean, truthy means "x < y" (return -1);
+    # otherwise re-invoke with swapped args to disambiguate equal vs.
+    # greater. Mirror that here so `(sort > coll)` works.
     import functools as _functools
     class _JavaArrays:
         @staticmethod
@@ -249,7 +256,14 @@ def _bootstrap():
             if comparator is None:
                 arr.sort()
             else:
-                arr.sort(key=_functools.cmp_to_key(comparator))
+                def _cmp(a, b):
+                    r = comparator(a, b)
+                    if isinstance(r, bool):
+                        if r:
+                            return -1
+                        return 1 if comparator(b, a) else 0
+                    return int(r)
+                arr.sort(key=_functools.cmp_to_key(_cmp))
             return arr
     # Stash on the clojure.lang module under the dotted name. Our class
     # resolver handles `java.util.Arrays/sort` by importing the module

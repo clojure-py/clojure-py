@@ -3090,3 +3090,245 @@
    (if (and (int? start) (int? end) (int? step))
      (clojure.lang.LongRange/create start end step)
      (clojure.lang.Range/create start end step))))
+
+(defn merge
+  "Returns a map that consists of the rest of the maps conj-ed onto
+  the first.  If a key occurs in more than one map, the mapping from
+  the latter (left-to-right) will be the mapping in the result."
+  {:added "1.0"
+   :static true}
+  [& maps]
+  (when (some identity maps)
+    (reduce1 #(conj (or %1 {}) %2) maps)))
+
+(defn merge-with
+  "Returns a map that consists of the rest of the maps conj-ed onto
+  the first.  If a key occurs in more than one map, the mapping(s)
+  from the latter (left-to-right) will be combined with the mapping in
+  the result by calling (f val-in-result val-in-latter)."
+  {:added "1.0"
+   :static true}
+  [f & maps]
+  (when (some identity maps)
+    (let [merge-entry (fn [m e]
+			(let [k (key e) v (val e)]
+			  (if (contains? m k)
+			    (assoc m k (f (get m k) v))
+			    (assoc m k v))))
+          merge2 (fn [m1 m2]
+		   (reduce1 merge-entry (or m1 {}) (seq m2)))]
+      (reduce1 merge2 maps))))
+
+(defn comparator
+  "Returns an implementation of java.util.Comparator based upon pred."
+  {:added "1.0"
+   :static true}
+  [pred]
+    (fn [x y]
+      (cond (pred x y) -1 (pred y x) 1 :else 0)))
+
+(defn sort
+  "Returns a sorted sequence of the items in coll. If no comparator is
+  supplied, uses compare.  comparator must implement
+  java.util.Comparator.  Guaranteed to be stable: equal elements will
+  not be reordered.  If coll is a Java array, it will be modified.  To
+  avoid this, sort a copy of the array."
+  {:added "1.0"
+   :static true}
+  ([coll]
+   (sort compare coll))
+  ([^java.util.Comparator comp coll]
+   (if (seq coll)
+     (let [a (to-array coll)]
+       (. java.util.Arrays (sort a comp))
+       (with-meta (seq a) (meta coll)))
+     ())))
+
+(defn sort-by
+  "Returns a sorted sequence of the items in coll, where the sort
+  order is determined by comparing (keyfn item).  If no comparator is
+  supplied, uses compare.  comparator must implement
+  java.util.Comparator.  Guaranteed to be stable: equal elements will
+  not be reordered.  If coll is a Java array, it will be modified.  To
+  avoid this, sort a copy of the array."
+  {:added "1.0"
+   :static true}
+  ([keyfn coll]
+   (sort-by keyfn compare coll))
+  ([keyfn ^java.util.Comparator comp coll]
+   ;; JVM calls `(.compare comp ...)`; in clojure-py our `comp` argument
+   ;; is just a callable (no Comparator class), so invoke it directly.
+   ;; The Arrays/sort shim takes care of bool-vs-int return semantics.
+   (sort (fn [x y] (comp (keyfn x) (keyfn y))) coll)))
+
+(defn dorun
+  "When lazy sequences are produced via functions that have side
+  effects, any effects other than those needed to produce the first
+  element in the seq do not occur until the seq is consumed. dorun can
+  be used to force any effects. Walks through the successive nexts of
+  the seq, does not retain the head and returns nil."
+  {:added "1.0"
+   :static true}
+  ([coll]
+   (when-let [s (seq coll)]
+     (recur (next s))))
+  ([n coll]
+   (when (and (seq coll) (pos? n))
+     (recur (dec n) (next coll)))))
+
+(defn doall
+  "When lazy sequences are produced via functions that have side
+  effects, any effects other than those needed to produce the first
+  element in the seq do not occur until the seq is consumed. doall can
+  be used to force any effects. Walks through the successive nexts of
+  the seq, retains the head and returns it, thus causing the entire
+  seq to reside in memory at one time."
+  {:added "1.0"
+   :static true}
+  ([coll]
+   (dorun coll)
+   coll)
+  ([n coll]
+   (dorun n coll)
+   coll))
+
+(defn nthnext
+  "Returns the nth next of coll, (seq coll) when n is 0."
+  {:added "1.0"
+   :static true}
+  [coll n]
+  (if (instance? clojure.lang.IDrop coll)
+    (if (pos? n)
+      (.drop ^clojure.lang.IDrop coll (if (int? n) n (Math/ceil n)))
+      (seq coll))
+    (loop [n n xs (seq coll)]
+      (if (and xs (pos? n))
+        (recur (dec n) (next xs))
+        xs))))
+
+(defn nthrest
+  "Returns the nth rest of coll, coll when n is 0."
+  {:added "1.3"
+   :static true}
+  [coll n]
+  (if (pos? n)
+    (or
+      (if (instance? clojure.lang.IDrop coll)
+        (.drop ^clojure.lang.IDrop coll (if (int? n) n (Math/ceil n)))
+        (loop [n n xs coll]
+          (if-let [xs (and (pos? n) (seq xs))]
+            (recur (dec n) (rest xs))
+            (seq xs))))
+      ())
+    coll))
+
+(defn partition
+  "Returns a lazy sequence of lists of n items each, at offsets step
+  apart. If step is not supplied, defaults to n, i.e. the partitions
+  do not overlap. If a pad collection is supplied, use its elements as
+  necessary to complete last partition upto n items. In case there are
+  not enough padding elements, return a partition with less than n items."
+  {:added "1.0"
+   :static true}
+  ([n coll]
+     (partition n n coll))
+  ([n step coll]
+     (lazy-seq
+       (when-let [s (seq coll)]
+         (let [p (doall (take n s))]
+           (when (= n (count p))
+             (cons p (partition n step (nthrest s step))))))))
+  ([n step pad coll]
+     (lazy-seq
+       (when-let [s (seq coll)]
+         (let [p (doall (take n s))]
+           (if (= n (count p))
+             (cons p (partition n step pad (nthrest s step)))
+             (list (take n (concat p pad)))))))))
+
+;; evaluation
+
+(defn eval
+  "Evaluates the form data structure (not text!) and returns the result."
+  {:added "1.0"
+   :static true}
+  [form] (. clojure.lang.Compiler (eval form)))
+
+(defmacro doseq
+  "Repeatedly executes body (presumably for side-effects) with
+  bindings and filtering as provided by \"for\".  Does not retain
+  the head of the sequence. Returns nil."
+  {:added "1.0"}
+  [seq-exprs & body]
+  (assert-args
+     (vector? seq-exprs) "a vector for its binding"
+     (even? (count seq-exprs)) "an even number of forms in binding vector")
+  (let [step (fn step [recform exprs]
+               (if-not exprs
+                 [true `(do ~@body)]
+                 (let [k (first exprs)
+                       v (second exprs)]
+                   (if (keyword? k)
+                     (let [steppair (step recform (nnext exprs))
+                           needrec (steppair 0)
+                           subform (steppair 1)]
+                       (cond
+                         (= k :let) [needrec `(let ~v ~subform)]
+                         (= k :while) [false `(when ~v
+                                                ~subform
+                                                ~@(when needrec [recform]))]
+                         (= k :when) [false `(if ~v
+                                               (do
+                                                 ~subform
+                                                 ~@(when needrec [recform]))
+                                               ~recform)]))
+                     (let [seq- (gensym "seq_")
+                           chunk- (with-meta (gensym "chunk_")
+                                             {:tag 'clojure.lang.IChunk})
+                           count- (gensym "count_")
+                           i- (gensym "i_")
+                           recform `(recur (next ~seq-) nil 0 0)
+                           steppair (step recform (nnext exprs))
+                           needrec (steppair 0)
+                           subform (steppair 1)
+                           recform-chunk
+                             `(recur ~seq- ~chunk- ~count- (unchecked-inc ~i-))
+                           steppair-chunk (step recform-chunk (nnext exprs))
+                           subform-chunk (steppair-chunk 1)]
+                       [true
+                        `(loop [~seq- (seq ~v), ~chunk- nil,
+                                ~count- 0, ~i- 0]
+                           (if (< ~i- ~count-)
+                             (let [~k (.nth ~chunk- ~i-)]
+                               ~subform-chunk
+                               ~@(when needrec [recform-chunk]))
+                             (when-let [~seq- (seq ~seq-)]
+                               (if (chunked-seq? ~seq-)
+                                 (let [c# (chunk-first ~seq-)]
+                                   (recur (chunk-rest ~seq-) c#
+                                          (int (count c#)) (int 0)))
+                                 (let [~k (first ~seq-)]
+                                   ~subform
+                                   ~@(when needrec [recform]))))))])))))]
+    (nth (step nil (seq seq-exprs)) 1)))
+
+(defmacro dotimes
+  "bindings => name n
+
+  Repeatedly executes body (presumably for side-effects) with name
+  bound to integers from 0 through n-1."
+  {:added "1.0"}
+  [bindings & body]
+  (assert-args
+     (vector? bindings) "a vector for its binding"
+     (= 2 (count bindings)) "exactly 2 forms in binding vector")
+  (let [i (first bindings)
+        n (second bindings)]
+    ;; JVM uses `(long ~n)` here, which is itself defined later in core.clj
+    ;; (line ~3510). Until we port `long`, call long_cast directly — same
+    ;; semantics, just one indirection less.
+    `(let [n# (clojure.lang.RT/long_cast ~n)]
+       (loop [~i 0]
+         (when (< ~i n#)
+           ~@body
+           (recur (unchecked-inc ~i)))))))
