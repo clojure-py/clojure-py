@@ -1006,3 +1006,17 @@ cdef list _editable_tail(list tl):
 
 cdef PersistentVector _PV_EMPTY = _make_pv(0, 5, _EMPTY_NODE, [], None)
 PERSISTENT_VECTOR_EMPTY = _PV_EMPTY
+
+
+# Compat shim for clojure.lang.LazilyPersistentVector. JVM Clojure
+# uses the lazy variant to defer materialization; in our port we just
+# build a persistent vector eagerly. Same shape so JVM source's
+# (LazilyPersistentVector/create x) calls land here.
+class LazilyPersistentVector:
+    @staticmethod
+    def create(coll):
+        if coll is None:
+            return _PV_EMPTY
+        if isinstance(coll, PersistentVector):
+            return coll
+        return PersistentVector.from_iterable(coll)

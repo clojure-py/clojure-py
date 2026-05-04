@@ -38,6 +38,44 @@
 ;;   - LazilyPersistentVector is aliased to PersistentVector — Python
 ;;     doesn't need lazy-vector materialization.
 
+;; Host-class aliases. JVM Clojure auto-imports java.lang.* into every
+;; namespace; we don't have that, so we explicitly bind the names
+;; core.clj reaches for. The `py.__builtins__/X` and `py.<module>/X`
+;; resolver paths give us a clean, namespaced way to reach Python's
+;; runtime without polluting clojure.core's name space.
+;;
+;; clojure.lang.* shims (BigInt, BigDecimal, Ratio, BufferedReader,
+;; CountDownLatch, TimeUnit, System, Array, etc.) live in their own
+;; .pxi files and resolve via the dotted-name fallback — no aliasing
+;; needed.
+(def Object               py.__builtins__/object)
+(def Class                py.__builtins__/type)
+(def String               py.__builtins__/str)
+(def Character            py.__builtins__/str)
+(def Boolean              py.__builtins__/bool)
+(def Integer              py.__builtins__/int)
+(def Long                 py.__builtins__/int)
+(def Short                py.__builtins__/int)
+(def Byte                 py.__builtins__/int)
+(def Float                py.__builtins__/float)
+(def Double               py.__builtins__/float)
+(def Number               py.numbers/Number)
+(def BigInteger           clojure.lang.BigInt)
+(def Throwable            py.__builtins__/BaseException)
+(def Exception            py.__builtins__/Exception)
+(def RuntimeException     py.__builtins__/RuntimeError)
+(def IllegalStateException py.__builtins__/RuntimeError)
+(def IllegalArgumentException py.__builtins__/ValueError)
+(def ClassCastException   py.__builtins__/TypeError)
+
+;; clojure.lang shims that JVM source uses bare. The class lookup
+;; works either way (slash-form `clojure.lang.X/m` would resolve via
+;; the dotted-name fallback) but most JVM source writes the bare name,
+;; so def them here as Var aliases for direct ergonomic use.
+(def StringBuilder        clojure.lang.StringBuilder)
+(def System               clojure.lang.System)
+(def Array                clojure.lang.Array)
+
 (def unquote)
 (def unquote-splicing)
 

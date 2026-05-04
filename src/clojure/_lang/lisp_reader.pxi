@@ -264,6 +264,41 @@ def read_all_string(s, opts=None):
         out.append(form)
 
 
+# clojure.lang.LispReader — JVM exposes its reader as a class with
+# static `read` overloads. Our reader is the module-level `read`
+# function above; this static-class wrapper forwards so JVM source like
+# `(. clojure.lang.LispReader (read ...))` works verbatim.
+class LispReader:
+
+    @staticmethod
+    def read(*args):
+        # Dispatch JVM's overloads:
+        #   read(stream)
+        #   read(stream, opts)             — when 2nd arg is an IPersistentMap
+        #   read(stream, eof_err, eof_val)
+        #   read(stream, eof_err, eof_val, is_recursive)
+        if len(args) == 1:
+            return read(args[0])
+        if len(args) == 2:
+            stream, second = args
+            if isinstance(second, IPersistentMap):
+                return read(stream, opts=second)
+            return read(stream, eof_is_error=second)
+        if len(args) == 3:
+            stream, eof_err, eof_val = args
+            return read(stream,
+                        eof_is_error=eof_err,
+                        eof_value=eof_val)
+        if len(args) == 4:
+            stream, eof_err, eof_val, recursive = args
+            return read(stream,
+                        eof_is_error=eof_err,
+                        eof_value=eof_val,
+                        is_recursive=recursive)
+        raise TypeError(
+            "LispReader.read takes 1-4 args, got " + str(len(args)))
+
+
 cdef object _resolver_or_none():
     if RT.READER_RESOLVER is None:
         return None
