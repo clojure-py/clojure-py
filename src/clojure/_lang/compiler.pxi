@@ -337,7 +337,15 @@ def _macroexpand_1(form):
     head = s.first()
     if not isinstance(head, Symbol):
         return form
+    # Skip special-form heads — bare or clojure.core-qualified. JVM
+    # Clojure recognizes `clojure.core/let*` etc. as the special form
+    # because syntax-quote auto-qualifies; mirror that here so a macro
+    # whose body emits e.g. `'clojure.core/import*` doesn't get
+    # mistaken for a regular call.
     if head.ns is None and Compiler.is_special(head):
+        return form
+    if (head.ns == "clojure.core"
+            and Symbol.intern(head.name) in Compiler.SPECIAL_FORMS):
         return form
     if head.ns is None:
         # Interop sugar shapes — never macros.
@@ -407,8 +415,19 @@ def _compile_form(form, ctx):
             _compile_form(expanded, ctx)
             return
         first = s.first()
-        if isinstance(first, Symbol) and first.ns is None:
-            sname = first.name
+        # Special forms can appear either bare (`let*`) or qualified to
+        # clojure.core (`clojure.core/let*`) — JVM Clojure auto-qualifies
+        # symbols inside syntax-quotes, then strips the namespace at
+        # dispatch time. We mirror that. Interop sugar (.method, Class.)
+        # must be bare; only the special-form dispatch accepts qualified.
+        sname = None
+        if isinstance(first, Symbol):
+            if first.ns is None:
+                sname = first.name
+            elif (first.ns == "clojure.core"
+                    and Symbol.intern(first.name) in Compiler.SPECIAL_FORMS):
+                sname = first.name
+        if sname is not None:
             if sname == "quote":
                 rest = s.next()
                 if rest is None:
@@ -460,16 +479,22 @@ def _compile_form(form, ctx):
             if sname == "set!":
                 _compile_set_bang(s.next(), ctx)
                 return
+            if sname == "import*":
+                _compile_import_star(s.next(), ctx)
+                return
+        # Interop sugar — only on bare unqualified Symbol heads.
+        if isinstance(first, Symbol) and first.ns is None:
+            iname = first.name
             # `.method` and `.-field` interop sugar.
-            if len(sname) > 1 and sname[0] == ".":
-                if sname[1] == "-" and len(sname) > 2:
-                    _compile_field_access(sname[2:], s.next(), ctx)
+            if len(iname) > 1 and iname[0] == ".":
+                if iname[1] == "-" and len(iname) > 2:
+                    _compile_field_access(iname[2:], s.next(), ctx)
                 else:
-                    _compile_method_call(sname[1:], s.next(), ctx)
+                    _compile_method_call(iname[1:], s.next(), ctx)
                 return
             # `Class.` constructor sugar (trailing dot).
-            if len(sname) > 1 and sname[len(sname) - 1] == ".":
-                _compile_ctor_sugar(first, sname, s.next(), ctx)
+            if len(iname) > 1 and iname[len(iname) - 1] == ".":
+                _compile_ctor_sugar(first, iname, s.next(), ctx)
                 return
         # Function-call form: (f arg1 arg2 ...)
         _compile_call(s, ctx)
@@ -788,6 +813,35 @@ def _emit_setattr(obj_form, field, value_form, ctx):
     ctx.emit(_bc_Instr("CALL", 3))
     ctx.emit(_bc_Instr("POP_TOP"))   # discard setattr's None return
     ctx.emit(_bc_Instr("LOAD_FAST", tmp))
+
+
+def _compile_import_star(args, ctx):
+    """(import* "foo.Bar.Baz")
+
+    Resolve the dotted class name at runtime and install it under its
+    short (last-segment) name in the current namespace. Returns the
+    class — matches JVM, where `import*` evaluates to the imported
+    class. The actual work happens in Compiler.import_class_by_name;
+    here we just emit a call to it.
+
+    Runtime — not compile-time — semantics: the import takes effect
+    only when the form is evaluated, so wrapping it in `when` etc.
+    behaves like JVM."""
+    if args is None:
+        raise SyntaxError("import* requires a class-name string")
+    name_form = args.first()
+    if args.next() is not None:
+        raise SyntaxError("import* takes exactly one argument")
+    if not isinstance(name_form, str):
+        raise SyntaxError(
+            "import*'s argument must be a string literal, got: "
+            + repr(name_form))
+    ctx.emit(
+        _bc_Instr("LOAD_CONST", Compiler.import_class_by_name),
+        _bc_Instr("PUSH_NULL"),
+        _bc_Instr("LOAD_CONST", name_form),
+        _bc_Instr("CALL", 1),
+    )
 
 
 def _compile_new(args, ctx):

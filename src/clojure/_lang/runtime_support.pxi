@@ -551,6 +551,25 @@ class Compiler:
         return RT.CURRENT_NS.deref()
 
     @staticmethod
+    def import_class_by_name(class_name):
+        """Runtime helper for the `import*` special form. Resolves the
+        dotted class name, installs it under its short (last-segment)
+        name in the current namespace, and returns the class.
+
+        Mirrors clojure.lang.Compiler.maybeImportClass on the JVM."""
+        if not isinstance(class_name, str):
+            raise TypeError(
+                "import* expects a String, got: " + repr(class_name))
+        cls = RT.class_for_name(class_name)
+        ns = RT.CURRENT_NS.deref()
+        # rfind+slice instead of rsplit — same Cython 3.2 + CPython 3.14t
+        # codegen bug we documented in class_for_name.
+        cdef int dot = class_name.rfind(".")
+        cdef object short = class_name if dot < 0 else class_name[dot + 1:]
+        ns.import_class(Symbol.intern(short), cls)
+        return cls
+
+    @staticmethod
     def maybe_resolve_in(ns, sym):
         """Look up `sym` in `ns`'s mappings — returns Var, class, or None."""
         if not isinstance(sym, Symbol):
