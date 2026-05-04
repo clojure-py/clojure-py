@@ -233,6 +233,20 @@ class RT:
         return val
 
     @staticmethod
+    def object_array(size_or_seq):
+        """JVM RT.objectArray — used by clojure.core/object-array. Single
+        arity per JVM (Numbers has int/float/etc. _array; RT has the
+        Object case)."""
+        if isinstance(size_or_seq, int) and not isinstance(size_or_seq, bool):
+            return [None] * size_or_seq
+        items = []
+        s = RT.seq(size_or_seq) if size_or_seq is not None else None
+        while s is not None:
+            items.append(s.first())
+            s = s.next()
+        return items
+
+    @staticmethod
     def iter(coll):
         """JVM RT.iter — return a Python iterator over the collection.
         For nil returns an empty iterator."""

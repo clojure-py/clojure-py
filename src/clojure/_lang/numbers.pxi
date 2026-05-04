@@ -663,3 +663,105 @@ cdef class Numbers:
     @staticmethod
     def hasheq(o):
         return Numbers._hasheq(o)
+
+    # --- typed array constructors (back clojure.core's int-array etc) ---
+    #
+    # JVM's Numbers.int_array / float_array / etc. each accept either:
+    #   (size_or_seq)              — int N → zeros of length N;
+    #                                 seq    → array sized to seq.
+    #   (size, init_val_or_seq)    — int + Number → fill with value;
+    #                                 int + seq    → prefix from seq, rest 0.
+
+    @staticmethod
+    def _build_typed_array(typecode, init_default, coerce, args):
+        import array as _array_mod
+        if typecode is None:
+            empty_arr = lambda n: [init_default] * n
+            wrap = lambda items: list(items)
+        else:
+            empty_arr = lambda n: _array_mod.array(typecode, [init_default] * n)
+            wrap = lambda items: _array_mod.array(typecode, items)
+
+        if len(args) == 1:
+            x = args[0]
+            if isinstance(x, int) and not isinstance(x, bool):
+                return empty_arr(x)
+            # Treat as seq.
+            items = []
+            s = RT.seq(x) if x is not None else None
+            while s is not None:
+                items.append(coerce(s.first()))
+                s = s.next()
+            return wrap(items)
+
+        if len(args) == 2:
+            size, init = args
+            if not isinstance(size, int) or isinstance(size, bool):
+                raise TypeError(
+                    "array size must be int, got " + type(size).__name__)
+            # Single value if it's a number/str/bool-as-init; else seq.
+            if isinstance(init, bool):
+                # Bool is also int — handle first to avoid misclassification.
+                return wrap([coerce(init)] * size)
+            if isinstance(init, (int, float, Decimal, Ratio, str)):
+                return wrap([coerce(init)] * size)
+            # Treat as seq, prefix-fill, rest = init_default.
+            items = [init_default] * size
+            s = RT.seq(init) if init is not None else None
+            i = 0
+            while s is not None and i < size:
+                items[i] = coerce(s.first())
+                s = s.next()
+                i += 1
+            return wrap(items)
+
+        raise TypeError(
+            "typed array factory takes 1 or 2 args, got " + str(len(args)))
+
+    @staticmethod
+    def int_array(*args):
+        return Numbers._build_typed_array("q", 0, int, args)
+
+    @staticmethod
+    def long_array(*args):
+        return Numbers._build_typed_array("q", 0, int, args)
+
+    @staticmethod
+    def short_array(*args):
+        return Numbers._build_typed_array("h", 0, int, args)
+
+    @staticmethod
+    def byte_array(*args):
+        return Numbers._build_typed_array("b", 0, int, args)
+
+    @staticmethod
+    def float_array(*args):
+        return Numbers._build_typed_array("f", 0.0, float, args)
+
+    @staticmethod
+    def double_array(*args):
+        return Numbers._build_typed_array("d", 0.0, float, args)
+
+    @staticmethod
+    def boolean_array(*args):
+        # Python's array module has no native bool typecode; use a list.
+        return Numbers._build_typed_array(None, False, bool, args)
+
+    @staticmethod
+    def char_array(*args):
+        # Python char = 1-char str. Coerce int → chr, 1-char str → as-is.
+        def _coerce_char(v):
+            if isinstance(v, str):
+                if len(v) != 1:
+                    raise ValueError(
+                        "char_array element must be 1-char str, got len "
+                        + str(len(v)))
+                return v
+            if isinstance(v, bool):
+                raise TypeError("char_array: cannot coerce bool")
+            if isinstance(v, int):
+                return chr(v)
+            raise TypeError(
+                "char_array: cannot coerce " + type(v).__name__)
+        # Use a list — Python's 'u' typecode is deprecated as of 3.16.
+        return Numbers._build_typed_array(None, "\x00", _coerce_char, args)
