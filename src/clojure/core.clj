@@ -5469,3 +5469,98 @@
    :added "1.0"}
   ([size-or-seq] (. clojure.lang.Numbers long_array size-or-seq))
   ([size init-val-or-seq] (. clojure.lang.Numbers long_array size init-val-or-seq)))
+
+;; JVM 5405-5443 defines a `definline` for booleans / bytes / chars /
+;; shorts / floats / ints / doubles / longs — Object[]→typed-array
+;; casts. They depend on Numbers.X (the typecast method) and on
+;; definline (which uses an expansion-time eval). Skipped for now.
+
+;; bytes? (5445) skipped — JVM checks
+;;   (= Byte/TYPE (.getComponentType (class x))). Python has no
+;; primitive Byte type; we'd return true for array.array typecode 'b'
+;; or for Python bytes/bytearray. Add when a use case arises.
+
+;; (import '(java.util.concurrent BlockingQueue LinkedBlockingQueue))
+;; and (defn seque ...) both skipped — seque is rarely used, and
+;; bringing it in needs a real BlockingQueue shim plus careful
+;; agent + send-off coordination. Will revisit.
+
+(defn class?
+  "Returns true if x is an instance of Class"
+  {:added "1.0"
+   :static true}
+  [x] (instance? Class x))
+
+;; The annotation block (is-annotation? / is-runtime-annotation? /
+;; descriptor / add-annotation / process-annotation / add-annotations)
+;; is JVM-specific (clojure.asm + java.lang.annotation) — skipped.
+
+(defn alter-var-root
+  "Atomically alters the root binding of var v by applying f to its
+  current value plus any args"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Var v f & args]
+  ;; JVM: .alterRoot — snake_case in clojure-py.
+  (.alter_root v f args))
+
+(defn bound?
+  "Returns true if all of the vars provided as arguments have any bound value, root or thread-local.
+   Implies that deref'ing the provided vars will succeed. Returns true if no vars are provided."
+  {:added "1.2"
+   :static true}
+  [& vars]
+  ;; JVM: .isBound — snake_case in clojure-py.
+  (every? #(.is_bound ^clojure.lang.Var %) vars))
+
+(defn thread-bound?
+  "Returns true if all of the vars provided as arguments have thread-local bindings.
+   Implies that set!'ing the provided vars will succeed.  Returns true if no vars are provided."
+  {:added "1.2"
+   :static true}
+  [& vars]
+  ;; JVM: .getThreadBinding — snake_case in clojure-py.
+  (every? #(.get_thread_binding ^clojure.lang.Var %) vars))
+
+(defn make-hierarchy
+  "Creates a hierarchy object for use with derive, isa? etc."
+  {:added "1.0"
+   :static true}
+  [] {:parents {} :descendants {} :ancestors {}})
+
+(def ^{:private true}
+     global-hierarchy (make-hierarchy))
+
+(defn not-empty
+  "If coll is empty, returns nil, else coll"
+  {:added "1.0"
+   :static true}
+  [coll] (when (seq coll) coll))
+
+(defn bases
+  "Returns the immediate superclass and direct interfaces of c, if any"
+  {:added "1.0"
+   :static true}
+  [^Class c]
+  ;; JVM walks .getInterfaces and .getSuperclass. Python's class has
+  ;; __bases__ which is the unified list of immediate parents (Python
+  ;; has multiple inheritance, so there's no separate "interface"
+  ;; vs "superclass" distinction). Use that.
+  (when c
+    (let [bs (seq (.-__bases__ ^Class c))]
+      ;; Drop `object` from the list to match JVM behavior more
+      ;; closely — Python has every class implicitly inheriting object,
+      ;; which would clutter results. JVM's getSuperclass returns null
+      ;; for Object, so it's elided naturally.
+      (seq (remove #(= % Object) bs)))))
+
+(defn supers
+  "Returns the immediate and indirect superclasses and interfaces of c, if any"
+  {:added "1.0"
+   :static true}
+  [^Class class]
+  (loop [ret (set (bases class)) cs ret]
+    (if (seq cs)
+      (let [c (first cs) bs (bases c)]
+        (recur (into1 ret bs) (into1 (disj cs c) bs)))
+      (not-empty ret))))
