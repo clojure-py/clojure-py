@@ -5611,3 +5611,201 @@
       (let [c (first cs) bs (bases c)]
         (recur (into1 ret bs) (into1 (disj cs c) bs)))
       (not-empty ret))))
+
+(defn isa?
+  "Returns true if (= child parent), or child is directly or indirectly derived from
+  parent, either via a Java type inheritance relationship or a
+  relationship established via derive. h must be a hierarchy obtained
+  from make-hierarchy, if not supplied defaults to the global
+  hierarchy"
+  {:added "1.0"}
+  ([child parent] (isa? global-hierarchy child parent))
+  ([h child parent]
+   (or (= child parent)
+       (and (class? parent) (class? child)
+            ;; JVM: (.isAssignableFrom parent child) — Python's
+            ;; equivalent is issubclass(child, parent).
+            (py.__builtins__/issubclass child parent))
+       (contains? ((:ancestors h) child) parent)
+       (and (class? child) (some #(contains? ((:ancestors h) %) parent) (supers child)))
+       (and (vector? parent) (vector? child)
+            (= (count parent) (count child))
+            (loop [ret true i 0]
+              (if (or (not ret) (= i (count parent)))
+                ret
+                (recur (isa? h (child i) (parent i)) (inc i))))))))
+
+(defn parents
+  "Returns the immediate parents of tag, either via a Java type
+  inheritance relationship or a relationship established via derive. h
+  must be a hierarchy obtained from make-hierarchy, if not supplied
+  defaults to the global hierarchy"
+  {:added "1.0"}
+  ([tag] (parents global-hierarchy tag))
+  ([h tag] (not-empty
+            (let [tp (get (:parents h) tag)]
+              (if (class? tag)
+                (into1 (set (bases tag)) tp)
+                tp)))))
+
+(defn ancestors
+  "Returns the immediate and indirect parents of tag, either via a Java type
+  inheritance relationship or a relationship established via derive. h
+  must be a hierarchy obtained from make-hierarchy, if not supplied
+  defaults to the global hierarchy"
+  {:added "1.0"}
+  ([tag] (ancestors global-hierarchy tag))
+  ([h tag] (not-empty
+            (let [ta (get (:ancestors h) tag)]
+              (if (class? tag)
+                (let [superclasses (set (supers tag))]
+                  (reduce1 into1 superclasses
+                    (cons ta
+                          (map #(get (:ancestors h) %) superclasses))))
+                ta)))))
+
+(defn descendants
+  "Returns the immediate and indirect children of tag, through a
+  relationship established via derive. h must be a hierarchy obtained
+  from make-hierarchy, if not supplied defaults to the global
+  hierarchy. Note: does not work on Java type inheritance
+  relationships."
+  {:added "1.0"}
+  ([tag] (descendants global-hierarchy tag))
+  ([h tag] (if (class? tag)
+             (throw (RuntimeException. "Can't get descendants of classes"))
+             (not-empty (get (:descendants h) tag)))))
+
+(defn derive
+  "Establishes a parent/child relationship between parent and
+  tag. Parent must be a namespace-qualified symbol or keyword and
+  child can be either a namespace-qualified symbol or keyword or a
+  class. h must be a hierarchy obtained from make-hierarchy, if not
+  supplied defaults to, and modifies, the global hierarchy."
+  {:added "1.0"}
+  ([tag parent]
+   (assert (namespace parent))
+   (assert (or (class? tag) (and (instance? clojure.lang.Named tag) (namespace tag))))
+
+   (alter-var-root #'global-hierarchy derive tag parent) nil)
+  ([h tag parent]
+   (assert (not= tag parent))
+   (assert (or (class? tag) (instance? clojure.lang.Named tag)))
+   (assert (instance? clojure.lang.Named parent))
+
+   (let [tp (:parents h)
+         td (:descendants h)
+         ta (:ancestors h)
+         tf (fn [m source sources target targets]
+              (reduce1 (fn [ret k]
+                        (assoc ret k
+                               (reduce1 conj (get targets k #{}) (cons target (targets target)))))
+                      m (cons source (sources source))))]
+     (or
+      (when-not (contains? (tp tag) parent)
+        (when (contains? (ta tag) parent)
+          (throw (Exception. (print-str tag "already has" parent "as ancestor"))))
+        (when (contains? (ta parent) tag)
+          (throw (Exception. (print-str "Cyclic derivation:" parent "has" tag "as ancestor"))))
+        {:parents (assoc (:parents h) tag (conj (get tp tag #{}) parent))
+         :ancestors (tf (:ancestors h) tag td parent ta)
+         :descendants (tf (:descendants h) parent ta tag td)})
+      h))))
+
+;; sequential? and flatten land at JVM lines 6310 and 7288
+;; respectively. We pull them up here so underive (which calls
+;; flatten via syntax-quote) actually works when invoked. The forward
+;; declaration on the next line matches JVM verbatim; we just ensure
+;; the real definition exists by the time underive is evaluated.
+
+(defn sequential?
+  "Returns true if coll implements Sequential"
+  {:added "1.0"
+   :static true}
+  [coll] (instance? clojure.lang.Sequential coll))
+
+(defn flatten
+  "Takes any nested combination of sequential things (lists, vectors,
+  etc.) and returns their contents as a single, flat lazy sequence.
+  (flatten nil) returns an empty sequence."
+  {:added "1.2"
+   :static true}
+  [x]
+  (filter (complement sequential?)
+          (rest (tree-seq sequential? seq x))))
+
+(declare flatten)
+
+(defn underive
+  "Removes a parent/child relationship between parent and
+  tag. h must be a hierarchy obtained from make-hierarchy, if not
+  supplied defaults to, and modifies, the global hierarchy."
+  {:added "1.0"}
+  ([tag parent] (alter-var-root #'global-hierarchy underive tag parent) nil)
+  ([h tag parent]
+    (let [parentMap (:parents h)
+	  childsParents (if (parentMap tag)
+			  (disj (parentMap tag) parent) #{})
+	  newParents (if (not-empty childsParents)
+		       (assoc parentMap tag childsParents)
+		       (dissoc parentMap tag))
+	  deriv-seq (flatten (map #(cons (key %) (interpose (key %) (val %)))
+				       (seq newParents)))]
+      (if (contains? (parentMap tag) parent)
+	(reduce1 #(apply derive %1 %2) (make-hierarchy)
+		(partition 2 deriv-seq))
+	h))))
+
+
+(defn distinct?
+  "Returns true if no two of the arguments are ="
+  {:tag Boolean
+   :added "1.0"
+   :static true}
+  ([x] true)
+  ([x y] (not (= x y)))
+  ([x y & more]
+   (if (not= x y)
+     (loop [s #{x y} [x & etc :as xs] more]
+       (if xs
+         (if (contains? s x)
+           false
+           (recur (conj s x) etc))
+         true))
+     false)))
+
+;; resultset-seq deferred — needs java.sql.ResultSet machinery.
+
+(defn iterator-seq
+  "Returns a seq on a java.util.Iterator. Note that most collections
+  providing iterators implement Iterable and thus support seq directly.
+  Seqs cache values, thus iterator-seq should not be used on any
+  iterator that repeatedly returns the same mutable object."
+  {:added "1.0"
+   :static true}
+  [iter]
+  ;; JVM: chunkIteratorSeq — snake_case in clojure-py.
+  (clojure.lang.RT/chunk_iterator_seq iter))
+
+;; enumeration-seq deferred — needs an EnumerationSeq class to wrap
+;; java.util.Enumeration. Python iterators serve the same role; users
+;; can wrap directly via iterator-seq.
+
+(defn format
+  "Formats a string using java.lang.String.format, see java.util.Formatter for format
+  string syntax"
+  {:added "1.0"
+   :static true}
+  ^String [fmt & args]
+  ;; JVM: (String/format fmt (to-array args)). Python's `%` operator
+  ;; handles most Java format strings (%s, %d, %f, ...) compatibly;
+  ;; edge cases like %n (newline) and %b (boolean) differ. Use the
+  ;; RT.format helper which delegates to `fmt % tuple(args)`.
+  (clojure.lang.RT/format fmt args))
+
+(defn printf
+  "Prints formatted output, as per format"
+  {:added "1.0"
+   :static true}
+  [fmt & args]
+  (print (apply format fmt args)))

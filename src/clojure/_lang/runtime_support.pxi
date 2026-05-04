@@ -233,6 +233,16 @@ class RT:
         return val
 
     @staticmethod
+    def format(fmt, args):
+        """Python-side format using the % operator. Java format
+        strings (%s, %d, %f, etc.) are mostly compatible — different
+        on edge cases like %n (newline) and %b (boolean) which Python
+        doesn't support."""
+        if args is None:
+            return fmt
+        return fmt % tuple(args)
+
+    @staticmethod
     def object_array(size_or_seq):
         """JVM RT.objectArray — used by clojure.core/object-array. Single
         arity per JVM (Numbers has int/float/etc. _array; RT has the
