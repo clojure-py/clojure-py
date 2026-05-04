@@ -46,6 +46,81 @@ class System:
         return int(_time_mod.time() * 1000)
 
 
+# --- JavaMatcher --------------------------------------------------
+
+import re as _re_mod
+
+
+class JavaMatcher:
+    """clojure.lang.JavaMatcher — counterpart to JVM
+    java.util.regex.Matcher. JVM Matcher is stateful (tracks position
+    across .find() calls); Python's re.Match is stateless. This
+    wrapper bridges the gap by holding (pattern, string, pos,
+    last_match) and exposing the JVM Matcher API surface that
+    core.clj's re-* fns reach for: find, matches, group, groupCount."""
+
+    __slots__ = ("_pattern", "_string", "_pos", "_last_match")
+
+    def __init__(self, pattern, string):
+        self._pattern = pattern
+        self._string = string
+        self._pos = 0
+        self._last_match = None
+
+    def find(self):
+        """Advance past the last match and find the next. Returns True
+        if a match is found, False at the end of the string. JVM
+        Matcher.find avoids re-finding zero-length matches at the same
+        position by advancing past them."""
+        start = self._pos
+        if self._last_match is not None:
+            # If the previous match was zero-length, force advance by 1
+            # to avoid an infinite loop.
+            if self._last_match.start() == self._last_match.end():
+                start = self._last_match.end() + 1
+            else:
+                start = self._last_match.end()
+        if start > len(self._string):
+            self._last_match = None
+            return False
+        m = self._pattern.search(self._string, start)
+        if m is None:
+            self._last_match = None
+            return False
+        self._last_match = m
+        self._pos = m.end()
+        return True
+
+    def matches(self):
+        """Try to match the entire input string."""
+        m = self._pattern.fullmatch(self._string)
+        if m is None:
+            self._last_match = None
+            return False
+        self._last_match = m
+        return True
+
+    def group(self, *args):
+        """No args → the full matched text. One int arg → the indexed
+        capture group (0 = full match, 1+ = nested groups)."""
+        if self._last_match is None:
+            raise IllegalStateError("No match available")
+        if len(args) == 0:
+            return self._last_match.group()
+        return self._last_match.group(args[0])
+
+    def groupCount(self):
+        """Number of capture groups in the pattern (excluding group 0,
+        the full match) — matches JVM."""
+        return self._pattern.groups
+
+
+class IllegalStateError(RuntimeError):
+    """Raised when a Matcher operation is called before a match has
+    been established. Mirrors JVM's IllegalStateException."""
+    pass
+
+
 # --- ExceptionInfo ------------------------------------------------
 
 class ExceptionInfo(Exception):

@@ -133,12 +133,19 @@ class _FnContext:
 
 # --- form classification ------------------------------------------------
 
+import re as _re_for_pattern_check
+
+
 def _is_self_eval_literal(form):
     """True if `form` evaluates to itself with no further work — direct
     LOAD_CONST suffices."""
     if form is None or form is True or form is False:
         return True
     if isinstance(form, (int, float, str, Keyword, BigInt, BigDecimal, Ratio)):
+        return True
+    # Regex literals from #"..." land in code as re.Pattern objects;
+    # treat them as self-evaluating constants.
+    if isinstance(form, _re_for_pattern_check.Pattern):
         return True
     # A Var that lands in code (typically via `~v#` unquoting a captured
     # Var inside a syntax-quote) evaluates to itself — the var IS the

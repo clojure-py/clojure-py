@@ -5050,11 +5050,87 @@
         (do (f) :ok)
         :no-test)))
 
-;; JVM defines re-pattern / re-matcher / re-groups / re-seq /
-;; re-matches / re-find here (lines 4896-4966). Python's re module
-;; uses a stateless Match instead of a stateful Matcher; bridging the
-;; two takes a JavaMatcher-style wrapper. Skipped for now — saved for
-;; the regex batch.
+;; Regex aliases. JVM uses java.util.regex.{Pattern,Matcher}; we use
+;; Python's re.Pattern (for compiled patterns) and our own
+;; clojure.lang.JavaMatcher shim (a stateful wrapper since Python's
+;; re.Match is stateless).
+(def Pattern py.re/Pattern)
+(def Matcher clojure.lang.JavaMatcher)
+
+(defn re-pattern
+  "Returns an instance of java.util.regex.Pattern, for use, e.g. in
+  re-matcher."
+  {:tag java.util.regex.Pattern
+   :added "1.0"
+   :static true}
+  [s] (if (instance? Pattern s)
+        s
+        (py.re/compile s)))
+
+(defn re-matcher
+  "Returns an instance of java.util.regex.Matcher, for use, e.g. in
+  re-find."
+  {:tag java.util.regex.Matcher
+   :added "1.0"
+   :static true}
+  [^java.util.regex.Pattern re s]
+    ;; JVM: `(. re (matcher s))`. Python's re.Pattern has no .matcher
+    ;; method (re.Match is stateless); construct our JavaMatcher
+    ;; wrapper directly.
+    (Matcher. re s))
+
+(defn re-groups
+  "Returns the groups from the most recent match/find. If there are no
+  nested groups, returns a string of the entire match. If there are
+  nested groups, returns a vector of the groups, the first element
+  being the entire match."
+  {:added "1.0"
+   :static true}
+  [^java.util.regex.Matcher m]
+    (let [gc  (. m (groupCount))]
+      (if (zero? gc)
+        (. m (group))
+        (loop [ret [] c 0]
+          (if (<= c gc)
+            (recur (conj ret (. m (group c))) (inc c))
+            ret)))))
+
+(defn re-seq
+  "Returns a lazy sequence of successive matches of pattern in string,
+  using java.util.regex.Matcher.find(), each such match processed with
+  re-groups."
+  {:added "1.0"
+   :static true}
+  [^java.util.regex.Pattern re s]
+  (let [m (re-matcher re s)]
+    ((fn step []
+       (when (. m (find))
+         (cons (re-groups m) (lazy-seq (step))))))))
+
+(defn re-matches
+  "Returns the match, if any, of string to pattern, using
+  java.util.regex.Matcher.matches().  Uses re-groups to return the
+  groups."
+  {:added "1.0"
+   :static true}
+  [^java.util.regex.Pattern re s]
+    (let [m (re-matcher re s)]
+      (when (. m (matches))
+        (re-groups m))))
+
+
+(defn re-find
+  "Returns the next regex match, if any, of string to pattern, using
+  java.util.regex.Matcher.find().  Uses re-groups to return the
+  groups."
+  {:added "1.0"
+   :static true}
+  ([^java.util.regex.Matcher m]
+   (when (. m (find))
+     (re-groups m)))
+  ([^java.util.regex.Pattern re s]
+   (let [m (re-matcher re s)]
+     (re-find m))))
 
 (defn rand
   "Returns a random floating point number between 0 (inclusive) and
