@@ -453,14 +453,31 @@ class RT:
 
     @staticmethod
     def class_for_name(name):
-        """Resolve a dotted Python name to a class. 'collections.Counter' →
-        the class, 'int' → builtins.int. For non-dotted names, also
-        checks the clojure.lang module so installed shims (Math,
-        StringBuilder, LongRange etc.) resolve.
+        """Resolve a dotted Python name to a class. Examples:
+            'collections.Counter'        → the class
+            'int'                        → builtins.int
+            'clojure.lang.PersistentVector' → the Cython class
+            'py.__builtins__/int' is parsed by the caller into ns/name;
+                this method only sees 'py.__builtins__' here, and
+                returns Python's builtins module.
+            'py.sys'                     → sys module
+            'py.os.path'                 → os.path module
+
+        The `py.` prefix routes through Python's import system /
+        builtins module, giving clojure code an explicit, namespaced
+        path to anything in Python's runtime without polluting
+        clojure.core. Mirrors how JVM Clojure scopes Java types
+        under `java.X`.
+
+        For non-dotted names, also checks the clojure.lang module so
+        installed shims (Math, StringBuilder, LongRange etc.) resolve.
 
         Uses rfind+slice rather than str.rsplit/split — the latter
         segfault under Cython 3.2 + CPython 3.14t (free-threading
         codegen bug)."""
+        # `py.X.Y...` — explicit Python-runtime path.
+        if name == "py" or name.startswith("py."):
+            return RT._py_resolve(name[3:] if name.startswith("py.") else "")
         cdef int dot = name.rfind(".")
         if dot < 0:
             import clojure.lang as _lang
@@ -472,6 +489,48 @@ class RT:
         cls_name = name[dot + 1:]
         mod = _importlib.import_module(mod_name)
         return getattr(mod, cls_name)
+
+    @staticmethod
+    def _py_resolve(path):
+        """Resolve `py.<path>` references. Walks the dotted path,
+        importing modules where possible and getattr'ing through.
+        `__builtins__` as the first segment is special-cased to mean
+        the builtins module."""
+        if path == "":
+            # Bare `py` — return the builtins module as a sensible default.
+            import builtins as _bi
+            return _bi
+        cdef int dot = path.find(".")
+        head = path if dot < 0 else path[:dot]
+        rest = "" if dot < 0 else path[dot + 1:]
+
+        if head == "__builtins__":
+            import builtins as _bi
+            obj = _bi
+        else:
+            try:
+                obj = _importlib.import_module(head)
+            except ImportError:
+                raise ImportError(
+                    "py-resolve: no Python module '" + head + "'")
+
+        # Walk remaining segments. For each, try attribute access first;
+        # if that fails, try importing as a submodule (`os.path` style).
+        while rest:
+            dot = rest.find(".")
+            seg = rest if dot < 0 else rest[:dot]
+            rest = "" if dot < 0 else rest[dot + 1:]
+            try:
+                obj = getattr(obj, seg)
+            except AttributeError:
+                # Maybe a submodule that needs explicit import.
+                try:
+                    obj = _importlib.import_module(obj.__name__ + "." + seg)
+                except (ImportError, AttributeError):
+                    raise AttributeError(
+                        "py-resolve: '" + seg + "' not found on "
+                        + repr(obj))
+        return obj
 
     @staticmethod
     def class_for_name_non_loading(name):
