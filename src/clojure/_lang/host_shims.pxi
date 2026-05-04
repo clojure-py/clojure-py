@@ -121,6 +121,72 @@ class IllegalStateError(RuntimeError):
     pass
 
 
+# --- BlockingQueue / LinkedBlockingQueue --------------------------
+
+import queue as _queue_mod
+from abc import ABC as _BQ_ABC
+
+
+class BlockingQueue(_BQ_ABC):
+    """Marker ABC — counterpart to java.util.concurrent.BlockingQueue.
+    Tagging interface used by clojure.core/seque to distinguish a
+    pre-built queue from a buffer-size argument."""
+
+
+class LinkedBlockingQueue:
+    """Counterpart to java.util.concurrent.LinkedBlockingQueue. Wraps
+    Python's queue.Queue and presents the JVM BlockingQueue surface
+    that clojure.core/seque reaches for: offer / take / put / poll."""
+
+    __slots__ = ("_q",)
+
+    def __init__(self, capacity=0):
+        # JVM LBQ default is unbounded; queue.Queue(maxsize=0) is too.
+        cap = capacity if capacity is not None else 0
+        if cap < 0:
+            cap = 0
+        self._q = _queue_mod.Queue(maxsize=cap)
+
+    def offer(self, item, timeout=None):
+        """Try to add item; return True on success, False if the queue
+        is full (or the timeout expires). Mirrors JVM BlockingQueue.offer."""
+        try:
+            if timeout is None or timeout <= 0:
+                self._q.put_nowait(item)
+            else:
+                self._q.put(item, timeout=timeout)
+            return True
+        except _queue_mod.Full:
+            return False
+
+    def take(self):
+        """Block until an item is available, then return it."""
+        return self._q.get()
+
+    def put(self, item):
+        """Block until the item can be added."""
+        self._q.put(item)
+
+    def poll(self, timeout=None):
+        """Take with optional timeout. Returns None if empty (after
+        any timeout) — JVM returns null for the same case."""
+        try:
+            if timeout is None:
+                return self._q.get_nowait()
+            return self._q.get(timeout=timeout)
+        except _queue_mod.Empty:
+            return None
+
+    def size(self):
+        return self._q.qsize()
+
+    def __len__(self):
+        return self._q.qsize()
+
+
+BlockingQueue.register(LinkedBlockingQueue)
+
+
 # --- ExceptionInfo ------------------------------------------------
 
 class ExceptionInfo(Exception):
