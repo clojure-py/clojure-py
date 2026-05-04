@@ -404,6 +404,69 @@ cdef class Numbers:
     def unchecked_int_cast(x):
         return Numbers.int_cast(x)
 
+    # JVM has Long/Int/Short/Byte as separate fixed-width primitive types.
+    # Python's int is arbitrary-precision, so all integer casts collapse to
+    # int_cast. The named methods exist so the JVM source's
+    # `RT/<X>Cast` lookups all resolve.
+    @staticmethod
+    def short_cast(x): return Numbers.int_cast(x)
+
+    @staticmethod
+    def byte_cast(x): return Numbers.int_cast(x)
+
+    @staticmethod
+    def unchecked_short_cast(x): return Numbers.int_cast(x)
+
+    @staticmethod
+    def unchecked_byte_cast(x): return Numbers.int_cast(x)
+
+    @staticmethod
+    def float_cast(x):
+        """Coerce to Python float. JVM has Float (32-bit) and Double
+        (64-bit) as distinct types; Python collapses both to float."""
+        if isinstance(x, bool):
+            return 1.0 if x else 0.0
+        return float(x)
+
+    @staticmethod
+    def double_cast(x): return Numbers.float_cast(x)
+
+    @staticmethod
+    def unchecked_float_cast(x): return Numbers.float_cast(x)
+
+    @staticmethod
+    def unchecked_double_cast(x): return Numbers.float_cast(x)
+
+    @staticmethod
+    def char_cast(x):
+        """Coerce to a 1-char Python str — Python's analog of JVM char.
+        int input is treated as a Unicode codepoint."""
+        if isinstance(x, str):
+            if len(x) != 1:
+                raise ValueError(
+                    "char_cast: str must have length 1, got " + str(len(x)))
+            return x
+        if isinstance(x, bool):
+            raise TypeError("char_cast: cannot coerce bool")
+        if isinstance(x, int):
+            return chr(x)
+        raise TypeError(
+            "char_cast: cannot coerce " + type(x).__name__)
+
+    @staticmethod
+    def unchecked_char_cast(x): return Numbers.char_cast(x)
+
+    @staticmethod
+    def num(x):
+        """JVM Numbers.num — validate that x is a Number and return as-is.
+        JVM treats Boolean as not-a-Number; we match that."""
+        if isinstance(x, bool):
+            raise TypeError("num: cannot coerce bool to Number")
+        if Numbers._is_number(x):
+            return x
+        raise TypeError(
+            "num: not a Number: " + type(x).__name__)
+
     # JVM has separate int (32-bit) variants of unchecked ops. Python
     # ints don't overflow so they all behave identically — keep the
     # JVM-named entry points so the 1:1 translation finds them.

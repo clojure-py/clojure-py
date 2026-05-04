@@ -3377,10 +3377,7 @@
      (= 2 (count bindings)) "exactly 2 forms in binding vector")
   (let [i (first bindings)
         n (second bindings)]
-    ;; JVM uses `(long ~n)` here, which is itself defined later in core.clj
-    ;; (line ~3510). Until we port `long`, call long_cast directly — same
-    ;; semantics, just one indirection less.
-    `(let [n# (clojure.lang.RT/long_cast ~n)]
+    `(let [n# (long ~n)]
        (loop [~i 0]
          (when (< ~i n#)
            ~@body
@@ -3537,3 +3534,209 @@
                             (let [p (first spec) cs (rest spec)]
                               (into1 v (map #(str p "." %) cs)))))
                         [] specs)))))
+
+(defn num
+  "Coerce to Number"
+  {:tag Number
+   :inline (fn  [x] `(. clojure.lang.Numbers (num ~x)))
+   :added "1.0"}
+  [x] (. clojure.lang.Numbers (num x)))
+
+(defn long
+  "Coerce to long"
+  {:inline (fn  [x] `(. clojure.lang.RT (long_cast ~x)))
+   :added "1.0"}
+  [^Number x] (clojure.lang.RT/long_cast x))
+
+(defn float
+  "Coerce to float"
+  {:inline (fn  [x] `(. clojure.lang.RT (~(if *unchecked-math* 'unchecked_float_cast 'float_cast) ~x)))
+   :added "1.0"}
+  [^Number x] (clojure.lang.RT/float_cast x))
+
+(defn double
+  "Coerce to double"
+  {:inline (fn  [x] `(. clojure.lang.RT (double_cast ~x)))
+   :added "1.0"}
+  [^Number x] (clojure.lang.RT/double_cast x))
+
+(defn short
+  "Coerce to short"
+  {:inline (fn  [x] `(. clojure.lang.RT (~(if *unchecked-math* 'unchecked_short_cast 'short_cast) ~x)))
+   :added "1.0"}
+  [^Number x] (clojure.lang.RT/short_cast x))
+
+(defn byte
+  "Coerce to byte"
+  {:inline (fn  [x] `(. clojure.lang.RT (~(if *unchecked-math* 'unchecked_byte_cast 'byte_cast) ~x)))
+   :added "1.0"}
+  [^Number x] (clojure.lang.RT/byte_cast x))
+
+(defn char
+  "Coerce to char"
+  {:inline (fn  [x] `(. clojure.lang.RT (~(if *unchecked-math* 'unchecked_char_cast 'char_cast) ~x)))
+   :added "1.1"}
+  [x] (. clojure.lang.RT (char_cast x)))
+
+(defn unchecked-byte
+  "Coerce to byte. Subject to rounding or truncation."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_byte_cast ~x)))
+   :added "1.3"}
+  [^Number x] (clojure.lang.RT/unchecked_byte_cast x))
+
+(defn unchecked-short
+  "Coerce to short. Subject to rounding or truncation."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_short_cast ~x)))
+   :added "1.3"}
+  [^Number x] (clojure.lang.RT/unchecked_short_cast x))
+
+(defn unchecked-char
+  "Coerce to char. Subject to rounding or truncation."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_char_cast ~x)))
+   :added "1.3"}
+  [x] (. clojure.lang.RT (unchecked_char_cast x)))
+
+(defn unchecked-int
+  "Coerce to int. Subject to rounding or truncation."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_int_cast ~x)))
+   :added "1.3"}
+  [^Number x] (clojure.lang.RT/unchecked_int_cast x))
+
+(defn unchecked-long
+  "Coerce to long. Subject to rounding or truncation."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_long_cast ~x)))
+   :added "1.3"}
+  [^Number x] (clojure.lang.RT/unchecked_long_cast x))
+
+(defn unchecked-float
+  "Coerce to float. Subject to rounding."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_float_cast ~x)))
+   :added "1.3"}
+  [^Number x] (clojure.lang.RT/unchecked_float_cast x))
+
+(defn unchecked-double
+  "Coerce to double. Subject to rounding."
+  {:inline (fn  [x] `(. clojure.lang.RT (unchecked_double_cast ~x)))
+   :added "1.3"}
+  [^Number x] (clojure.lang.RT/unchecked_double_cast x))
+
+
+(defn number?
+  "Returns true if x is a Number"
+  {:added "1.0"
+   :static true}
+  [x]
+  ;; JVM body is `(instance? Number x)`. Python's numbers.Number ABC
+  ;; includes bool (since bool is an int subclass), but JVM's Number
+  ;; does NOT include Boolean. Numbers/is_number excludes bool to
+  ;; match — same intent, slightly different mechanism.
+  (clojure.lang.Numbers/is_number x))
+
+(defn mod
+  "Modulus of num and div. Truncates toward negative infinity."
+  {:added "1.0"
+   :static true}
+  [num div]
+  (let [m (rem num div)]
+    (if (or (zero? m) (= (pos? num) (pos? div)))
+      m
+      (+ m div))))
+
+(defn ratio?
+  "Returns true if n is a Ratio"
+  {:added "1.0"
+   :static true}
+  [n] (instance? clojure.lang.Ratio n))
+
+(defn numerator
+  "Returns the numerator part of a Ratio."
+  {:tag BigInteger
+   :added "1.2"
+   :static true}
+  [r]
+  ;; JVM: `(.numerator ^Ratio r)` — public field. Our Ratio exposes it
+  ;; the same way; (.-numerator r) is the field-access form.
+  (.-numerator ^clojure.lang.Ratio r))
+
+(defn denominator
+  "Returns the denominator part of a Ratio."
+  {:tag BigInteger
+   :added "1.2"
+   :static true}
+  [r]
+  (.-denominator ^clojure.lang.Ratio r))
+
+(defn decimal?
+  "Returns true if n is a BigDecimal"
+  {:added "1.0"
+   :static true}
+  [n] (instance? clojure.lang.BigDecimal n))
+
+(defn float?
+  "Returns true if n is a floating point number"
+  {:added "1.0"
+   :static true}
+  [n]
+  ;; JVM: (or (instance? Double n) (instance? Float n)). Python collapses
+  ;; both into one float type — keep the `or` for source-shape parity.
+  (or (instance? Double n)
+      (instance? Float n)))
+
+(defn rational?
+  "Returns true if n is a rational number"
+  {:added "1.0"
+   :static true}
+  [n]
+  (or (integer? n) (ratio? n) (decimal? n)))
+
+(defn bigint
+  "Coerce to BigInt"
+  {:tag clojure.lang.BigInt
+   :static true
+   :added "1.3"}
+  [x] (cond
+       (instance? clojure.lang.BigInt x) x
+       ;; JVM has separate (instance? BigInteger x) and per-type Java
+       ;; method calls (.toBigInteger, BigDecimal/valueOf,
+       ;; .bigIntegerValue). All four collapse in Python: a Number can
+       ;; be truncated to a Python int via long, then wrapped as BigInt.
+       (number? x) (clojure.lang.BigInt. (long x))
+       :else (clojure.lang.BigInt. x)))                ;; JVM: (BigInteger. x) — string ctor
+
+(defn biginteger
+  "Coerce to BigInteger"
+  {:tag BigInteger
+   :added "1.0"
+   :static true}
+  [x] (cond
+       (instance? BigInteger x) x
+       ;; clojure-py aliases BigInteger to BigInt itself, so this and
+       ;; the BigInt branch are effectively the same. Same collapse as
+       ;; bigint: number → long-truncate → BigInt.
+       (number? x) (clojure.lang.BigInt. (long x))
+       :else (clojure.lang.BigInt. x)))
+
+(defn bigdec
+  "Coerce to BigDecimal"
+  {:tag BigDecimal
+   :added "1.0"
+   :static true}
+  [x] (cond
+       (decimal? x) x
+       ;; JVM: (/ (BigDecimal. numerator) (BigDecimal. denominator))
+       ;; — exact-precision throws on non-terminating expansions like 1/3.
+       ;; We use Python Decimal division which uses the default precision
+       ;; context (28 digits) and won't throw — slight semantic deviation,
+       ;; documented here. Wrap in BigDecimal because Decimal/Decimal in
+       ;; Python returns a plain Decimal (preserves the base class).
+       (ratio? x) (clojure.lang.BigDecimal.
+                    (clojure.core// (clojure.lang.BigDecimal. (.-numerator ^clojure.lang.Ratio x))
+                                    (clojure.lang.BigDecimal. (.-denominator ^clojure.lang.Ratio x))))
+       ;; For floats, go via str so the BigDecimal matches what JVM's
+       ;; BigDecimal.valueOf(double) does (decimal-string round-trip)
+       ;; rather than using the float's exact binary value.
+       (float? x) (clojure.lang.BigDecimal. (str x))
+       (instance? clojure.lang.BigInt x) (clojure.lang.BigDecimal. x)
+       (instance? BigInteger x) (clojure.lang.BigDecimal. x)
+       (number? x) (clojure.lang.BigDecimal. (long x))
+       :else (clojure.lang.BigDecimal. x)))

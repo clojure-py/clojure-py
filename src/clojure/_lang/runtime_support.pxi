@@ -166,6 +166,36 @@ class RT:
         return Numbers.int_cast(x)
 
     @staticmethod
+    def short_cast(x): return Numbers.short_cast(x)
+
+    @staticmethod
+    def byte_cast(x): return Numbers.byte_cast(x)
+
+    @staticmethod
+    def unchecked_short_cast(x): return Numbers.unchecked_short_cast(x)
+
+    @staticmethod
+    def unchecked_byte_cast(x): return Numbers.unchecked_byte_cast(x)
+
+    @staticmethod
+    def float_cast(x): return Numbers.float_cast(x)
+
+    @staticmethod
+    def double_cast(x): return Numbers.double_cast(x)
+
+    @staticmethod
+    def unchecked_float_cast(x): return Numbers.unchecked_float_cast(x)
+
+    @staticmethod
+    def unchecked_double_cast(x): return Numbers.unchecked_double_cast(x)
+
+    @staticmethod
+    def char_cast(x): return Numbers.char_cast(x)
+
+    @staticmethod
+    def unchecked_char_cast(x): return Numbers.unchecked_char_cast(x)
+
+    @staticmethod
     def iter(coll):
         """JVM RT.iter — return a Python iterator over the collection.
         For nil returns an empty iterator."""
