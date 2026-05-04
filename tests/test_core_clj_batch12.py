@@ -1,4 +1,4 @@
-"""Tests for core.clj batch 12 (lines 3069-3351, omitting line-seq + await*):
+"""Tests for core.clj batch 12 (lines 3069-3351, pure-data forms):
 
 merge, merge-with,
 comparator, sort, sort-by,
@@ -7,11 +7,10 @@ nthnext, nthrest, partition,
 eval,
 doseq (macro), dotimes (macro re-def with assert-args)
 
-Skipped (need IO / concurrency shims, deferred):
-  line-seq    — needs a BufferedReader-shaped reader.
-  await,
-  await1,
-  await-for   — need a CountDownLatch shim.
+The IO/concurrency forms from this same JVM range — line-seq, await,
+await1, await-for — live in test_core_clj_batch12_io.py alongside the
+java.io.BufferedReader / java.util.concurrent.CountDownLatch /
+java.util.concurrent.TimeUnit shims they depend on.
 """
 
 import pytest

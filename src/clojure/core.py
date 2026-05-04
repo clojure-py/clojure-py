@@ -240,6 +240,157 @@ def _bootstrap():
     import math as _math_mod
     setattr(_lang, "Math", _math_mod)
 
+    # java.io.BufferedReader — wraps any object with .read() returning a
+    # str (Python text files, io.StringIO, etc.). readLine matches Java's
+    # contract: returns the next line *without* its terminator (\n, \r,
+    # or \r\n, all three recognized) and returns None at EOF. We read
+    # chars from an internal block buffer rather than relying on the
+    # source's readline() so \r-only line breaks (e.g. in StringIO with
+    # default newline) are split correctly.
+    class _BufferedReader:
+        __slots__ = ("_source", "_buf", "_pos", "_eof")
+
+        _CHUNK = 4096
+
+        def __init__(self, source):
+            self._source = source
+            self._buf = ""
+            self._pos = 0
+            self._eof = False
+
+        def _refill_if_needed(self):
+            if self._pos < len(self._buf):
+                return True
+            if self._eof:
+                return False
+            data = self._source.read(self._CHUNK)
+            if not data:
+                self._eof = True
+                self._buf = ""
+                self._pos = 0
+                return False
+            self._buf = data
+            self._pos = 0
+            return True
+
+        def readLine(self):
+            line_parts = []
+            while True:
+                if not self._refill_if_needed():
+                    if line_parts:
+                        return "".join(line_parts)
+                    return None
+                # Scan the current buffer for the next terminator.
+                buf = self._buf
+                pos = self._pos
+                end = len(buf)
+                start = pos
+                while pos < end:
+                    ch = buf[pos]
+                    if ch == "\n":
+                        line_parts.append(buf[start:pos])
+                        self._pos = pos + 1
+                        return "".join(line_parts)
+                    if ch == "\r":
+                        line_parts.append(buf[start:pos])
+                        self._pos = pos + 1
+                        # Look ahead for a paired \n (which we consume).
+                        if self._refill_if_needed() and self._buf[self._pos] == "\n":
+                            self._pos += 1
+                        return "".join(line_parts)
+                    pos += 1
+                # No terminator in this chunk — append and refill.
+                line_parts.append(buf[start:end])
+                self._pos = end
+
+        def close(self):
+            close = getattr(self._source, "close", None)
+            if close is not None:
+                close()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    # java.util.concurrent.TimeUnit — only the constants are used. Each
+    # one converts a unit-quantity into seconds for Python's threading
+    # primitives. Just the SI ladder; matches the JVM enum members.
+    class _TimeUnit:
+        __slots__ = ("_secs_per_unit", "_name")
+
+        def __init__(self, secs_per_unit, name):
+            self._secs_per_unit = secs_per_unit
+            self._name = name
+
+        def to_seconds(self, amount):
+            return amount * self._secs_per_unit
+
+        def __repr__(self):
+            return f"<TimeUnit {self._name}>"
+
+    _TimeUnit.NANOSECONDS  = _TimeUnit(1e-9,    "NANOSECONDS")
+    _TimeUnit.MICROSECONDS = _TimeUnit(1e-6,    "MICROSECONDS")
+    _TimeUnit.MILLISECONDS = _TimeUnit(1e-3,    "MILLISECONDS")
+    _TimeUnit.SECONDS      = _TimeUnit(1.0,     "SECONDS")
+    _TimeUnit.MINUTES      = _TimeUnit(60.0,    "MINUTES")
+    _TimeUnit.HOURS        = _TimeUnit(3600.0,  "HOURS")
+    _TimeUnit.DAYS         = _TimeUnit(86400.0, "DAYS")
+
+    # java.util.concurrent.CountDownLatch — backs clojure.core/await
+    # and friends. countDown decrements; await blocks until zero.
+    # Note: Python forbids `def await(self):` at source level, but
+    # bytecode-level LOAD_ATTR "await" works fine — we install via
+    # setattr below.
+    import threading as _threading_mod
+    import time as _time_mod
+    class _CountDownLatch:
+        __slots__ = ("_count", "_cond")
+
+        def __init__(self, count):
+            if count < 0:
+                raise ValueError(
+                    "CountDownLatch count must be non-negative")
+            self._count = count
+            self._cond = _threading_mod.Condition()
+
+        def countDown(self):
+            with self._cond:
+                if self._count > 0:
+                    self._count -= 1
+                    if self._count == 0:
+                        self._cond.notify_all()
+
+        def getCount(self):
+            with self._cond:
+                return self._count
+
+        def _await_impl(self, *args):
+            if len(args) == 0:
+                with self._cond:
+                    while self._count > 0:
+                        self._cond.wait()
+                return None
+            if len(args) == 2:
+                timeout, unit = args
+                secs = unit.to_seconds(timeout)
+                with self._cond:
+                    if self._count == 0:
+                        return True
+                    deadline = _time_mod.monotonic() + secs
+                    while self._count > 0:
+                        remaining = deadline - _time_mod.monotonic()
+                        if remaining <= 0:
+                            return False
+                        self._cond.wait(remaining)
+                    return True
+            raise TypeError(
+                f"CountDownLatch.await takes 0 or 2 args, got {len(args)}")
+
+    setattr(_CountDownLatch, "await", _CountDownLatch._await_impl)
+
     # java.util.Arrays/sort — minimal shim; sorts a list in place using a
     # comparator. Used by clojure.core/sort.
     #
@@ -275,17 +426,29 @@ def _bootstrap():
     # segment, we synthesize a `java.util` package in sys.modules.
     import types as _types_mod
     import sys as _sys_mod
-    if "java" not in _sys_mod.modules:
-        java_pkg = _types_mod.ModuleType("java")
-        java_util_pkg = _types_mod.ModuleType("java.util")
-        java_util_pkg.Arrays = _JavaArrays
-        java_pkg.util = java_util_pkg
-        _sys_mod.modules["java"] = java_pkg
-        _sys_mod.modules["java.util"] = java_util_pkg
-    else:
-        _sys_mod.modules.setdefault("java.util",
-                                     _types_mod.ModuleType("java.util"))
-        _sys_mod.modules["java.util"].Arrays = _JavaArrays
+
+    def _ensure_pkg(dotted):
+        """Ensure sys.modules has a synthetic package for `dotted` and
+        every ancestor, wiring each as an attribute of its parent.
+        Returns the leaf module."""
+        parts = dotted.split(".")
+        parent = None
+        for i in range(len(parts)):
+            name = ".".join(parts[: i + 1])
+            mod = _sys_mod.modules.get(name)
+            if mod is None:
+                mod = _types_mod.ModuleType(name)
+                _sys_mod.modules[name] = mod
+            if parent is not None:
+                setattr(parent, parts[i], mod)
+            parent = mod
+        return parent
+
+    _ensure_pkg("java.util").Arrays = _JavaArrays
+    _ensure_pkg("java.io").BufferedReader = _BufferedReader
+    _juc = _ensure_pkg("java.util.concurrent")
+    _juc.CountDownLatch = _CountDownLatch
+    _juc.TimeUnit = _TimeUnit
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)

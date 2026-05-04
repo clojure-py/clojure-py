@@ -3119,6 +3119,15 @@
 		   (reduce1 merge-entry (or m1 {}) (seq m2)))]
       (reduce1 merge2 maps))))
 
+(defn line-seq
+  "Returns the lines of text from rdr as a lazy sequence of strings.
+  rdr must implement java.io.BufferedReader."
+  {:added "1.0"
+   :static true}
+  [^java.io.BufferedReader rdr]
+  (when-let [line (.readLine rdr)]
+    (cons line (lazy-seq (line-seq rdr)))))
+
 (defn comparator
   "Returns an implementation of java.util.Comparator based upon pred."
   {:added "1.0"
@@ -3311,6 +3320,49 @@
                                    ~subform
                                    ~@(when needrec [recform]))))))])))))]
     (nth (step nil (seq seq-exprs)) 1)))
+
+(defn await
+  "Blocks the current thread (indefinitely!) until all actions
+  dispatched thus far, from this thread or agent, to the agent(s) have
+  occurred.  Will block on failed agents.  Will never return if
+  a failed agent is restarted with :clear-actions true or shutdown-agents was called."
+  {:added "1.0"
+   :static true}
+  [& agents]
+  (io! "await in transaction"
+    (when *agent*
+      (throw (new Exception "Can't await in agent action")))
+    (let [latch (new java.util.concurrent.CountDownLatch (count agents))
+          count-down (fn [agent] (. latch (countDown)) agent)]
+      (doseq [agent agents]
+        (send agent count-down))
+      (. latch (await)))))
+
+(defn ^:static await1 [^clojure.lang.Agent a]
+  (when (pos? (.get_queue_count a))
+    (await a))
+    a)
+
+(defn await-for
+  "Blocks the current thread until all actions dispatched thus
+  far (from this thread or agent) to the agents have occurred, or the
+  timeout (in milliseconds) has elapsed. Returns logical false if
+  returning due to timeout, logical true otherwise."
+  {:added "1.0"
+   :static true}
+  [timeout-ms & agents]
+    (io! "await-for in transaction"
+     (when *agent*
+       (throw (new Exception "Can't await in agent action")))
+     (let [latch (new java.util.concurrent.CountDownLatch (count agents))
+           count-down (fn [agent] (. latch (countDown)) agent)]
+       (doseq [agent agents]
+           (send agent count-down))
+       ;; JVM source: `(. java.util.concurrent.TimeUnit MILLISECONDS)`
+       ;; — a static field access. Our compiler treats `(. Cls name)`
+       ;; as a method call, so use the slash form per the file-header
+       ;; convention for static fields.
+       (. latch (await timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)))))
 
 (defmacro dotimes
   "bindings => name n
