@@ -164,9 +164,13 @@ def test_loop_macro_expands_to_loop_star():
     assert expanded == read_string("(loop* [n 0] n)")
 
 def test_fn_macro_expands_to_fn_star():
+    """The destructure-aware fn redefinition normalizes single-arity
+    into the multi-arity-list shape `(fn* ([params] body...))` —
+    matches JVM. The bootstrap fn used to emit `(fn* [params] body...)`
+    directly; test expectation updated when batch 24 landed."""
     expanded = Compiler.macroexpand_1(
         read_string("(clojure.core/fn [x] x)"))
-    assert expanded == read_string("(fn* [x] x)")
+    assert expanded == read_string("(fn* ([x] x))")
 
 def test_fn_macro_creates_callable():
     f = E("(clojure.core/fn [x] (clojure.core/cons x nil))")
