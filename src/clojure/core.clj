@@ -3740,3 +3740,121 @@
        (instance? BigInteger x) (clojure.lang.BigDecimal. x)
        (number? x) (clojure.lang.BigDecimal. (long x))
        :else (clojure.lang.BigDecimal. x)))
+
+;; Print-related dynamic vars. *out* is pre-bound by core.py to
+;; sys.stdout — define it here without a value so we don't override
+;; the bootstrap binding. *flush-on-newline* and *print-readably*
+;; live in JVM core_print.clj; we define them here since the print
+;; functions in this file depend on them.
+(def ^:dynamic *flush-on-newline*
+  "When set to logical false, output of newline will not flush the output stream.
+  Defaults to true."
+  true)
+
+(def ^:dynamic *print-readably*
+  "When set to logical false, strings and characters will be printed with
+  non-alphanumeric characters converted to the appropriate escape sequences.
+
+  Defaults to true."
+  true)
+
+(def ^:dynamic ^{:private true} print-initialized false)
+
+(defmulti print-method (fn [x writer]
+                         (let [t (get (meta x) :type)]
+                           (if (keyword? t) t (class x)))))
+(defmulti print-dup (fn [x writer] (class x)))
+
+;; Bare-bones :default print-method until we port core_print.clj. Most
+;; of our types' Python __str__ already produces JVM-compatible output
+;; (vectors, maps, keywords, symbols, ratios). Cases that don't:
+;;   - nil  → Python str gives "None"; want "nil"
+;;   - bool → "True"/"False"; want "true"/"false"
+;;   - str  → no quoting; want \"...\" when *print-readably* is true.
+(defmethod print-method :default [x w]
+  (cond
+    (nil? x)     (.append w "nil")
+    (true? x)    (.append w "true")
+    (false? x)   (.append w "false")
+    (string? x)  (if *print-readably*
+                   (do (.append w "\"")
+                       (.append w x)        ; TODO: escape special chars
+                       (.append w "\""))
+                   (.append w x))
+    :else        (.append w (str x))))
+
+(defmethod print-dup :default [x w]
+  (print-method x w))
+
+(defn pr-on
+  {:private true
+   :static true}
+  [x w]
+  (if *print-dup*
+    (print-dup x w)
+    (print-method x w))
+  nil)
+
+(defn pr
+  "Prints the object(s) to the output stream that is the current value
+  of *out*.  Prints the object(s), separated by spaces if there is
+  more than one.  By default, pr and prn print in a way that objects
+  can be read by the reader"
+  {:dynamic true
+   :added "1.0"}
+  ([] nil)
+  ([x]
+     (pr-on x *out*))
+  ([x & more]
+   (pr x)
+   (. *out* (append \space))
+   (if-let [nmore (next more)]
+     (recur (first more) nmore)
+     (apply pr more))))
+
+(def ^:private ^String system-newline
+     (System/getProperty "line.separator"))
+
+(defn newline
+  "Writes a platform-specific newline to *out*"
+  {:added "1.0"
+   :static true}
+  []
+    (. *out* (append system-newline))
+    nil)
+
+(defn flush
+  "Flushes the output stream that is the current value of
+  *out*"
+  {:added "1.0"
+   :static true}
+  []
+    (. *out* (flush))
+    nil)
+
+(defn prn
+  "Same as pr followed by (newline). Observes *flush-on-newline*"
+  {:added "1.0"
+   :static true}
+  [& more]
+    (apply pr more)
+    (newline)
+    (when *flush-on-newline*
+      (flush)))
+
+(defn print
+  "Prints the object(s) to the output stream that is the current value
+  of *out*.  print and println produce output for human consumption."
+  {:added "1.0"
+   :static true}
+  [& more]
+    (binding [*print-readably* nil]
+      (apply pr more)))
+
+(defn println
+  "Same as print followed by (newline)"
+  {:added "1.0"
+   :static true}
+  [& more]
+    (binding [*print-readably* nil]
+      (apply prn more)))

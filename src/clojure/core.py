@@ -420,6 +420,21 @@ def _bootstrap():
                 arr.sort(key=_functools.cmp_to_key(_cmp))
             return arr
 
+    # clojure.lang.System — a tiny stand-in for java.lang.System. Only
+    # getProperty is implemented, since core.clj uses it just to read
+    # "line.separator". Add more keys here if the translation grows new
+    # callers; map each to a Python-side equivalent.
+    class _System:
+        _props = {
+            "line.separator": _os.linesep,
+            "file.separator": _os.sep,
+            "path.separator": _os.pathsep,
+        }
+
+        @staticmethod
+        def getProperty(name, default=None):
+            return _System._props.get(name, default)
+
     # All Python-side shims live under clojure.lang. They aren't real
     # Java classes — putting them here makes that explicit and keeps
     # RT.class_for_name's lookup path short (getattr on clojure.lang
@@ -427,6 +442,7 @@ def _bootstrap():
     setattr(_lang, "Arrays", _Arrays)
     setattr(_lang, "BufferedReader", _BufferedReader)
     setattr(_lang, "CountDownLatch", _CountDownLatch)
+    setattr(_lang, "System", _System)
     setattr(_lang, "TimeUnit", _TimeUnit)
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
@@ -460,6 +476,7 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("BigInteger"), _BigInt)
     core_ns.import_class(_Symbol.intern("Double"), float)
     core_ns.import_class(_Symbol.intern("Float"), float)
+    core_ns.import_class(_Symbol.intern("System"), _System)
 
     # Pre-intern dynamic vars that core.clj references before they're
     # otherwise defined. *unchecked-math* is read inside :inline fn
@@ -468,6 +485,14 @@ def _bootstrap():
     _Var.intern(core_ns,
                 _Symbol.intern("*unchecked-math*"),
                 False).set_dynamic()
+
+    # Print machinery dynamic vars — bind the initial value of *out*
+    # to sys.stdout. core.clj defines the rest (*flush-on-newline*,
+    # *print-readably*) since they don't need a Python-side default.
+    import sys as _sys
+    _Var.intern(core_ns,
+                _Symbol.intern("*out*"),
+                _sys.stdout).set_dynamic()
 
     here = _os.path.dirname(_os.path.abspath(__file__))
     try:

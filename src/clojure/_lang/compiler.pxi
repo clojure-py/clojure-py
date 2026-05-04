@@ -941,6 +941,16 @@ def _fallback_apply_to(f, arglist):
 # Java-method name → runtime fallback that's used when Python's stdlib
 # doesn't expose the method (e.g. str has no `.concat`). Kept small and
 # targeted; the call site decides whether to special-case at compile time.
+def _fallback_append(obj, x):
+    """JVM Writer.append(charOrCS) writes x and returns the writer (so
+    .append calls chain). Python file objects have .write but not
+    .append. Forward to whichever exists, returning obj for chainability."""
+    if hasattr(obj, "append"):
+        return obj.append(x)
+    obj.write(str(x))
+    return obj
+
+
 _JAVA_METHOD_FALLBACKS = {
     # Python str has no `.concat`. Fall back to `+` if the method
     # doesn't exist on the receiver.
@@ -949,6 +959,8 @@ _JAVA_METHOD_FALLBACKS = {
     "toString": (lambda x: str(x)),
     # JVM's IFn.applyTo(arglist) → fallback that splats the arglist.
     "applyTo": _fallback_apply_to,
+    # JVM Writer.append → write+return on Python file-likes.
+    "append": _fallback_append,
 }
 
 
