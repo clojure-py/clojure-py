@@ -1560,9 +1560,22 @@ def _load_file(path):
     return _load_string(source, source_name=path)
 
 
+def _load_reader(rdr):
+    """Read and eval all forms from a PushbackReader-shaped stream.
+    Backs clojure.core/load-reader. JVM has Compiler.load(Reader)."""
+    EOF_SENTINEL = object()
+    last = None
+    while True:
+        form = read(rdr, eof_is_error=False, eof_value=EOF_SENTINEL)
+        if form is EOF_SENTINEL:
+            return last
+        last = _compiler_eval(form)
+
+
 # Wire onto Compiler (defined in runtime_support.pxi).
 Compiler.eval = staticmethod(_compiler_eval)
 Compiler.macroexpand_1 = staticmethod(_macroexpand_1)
 Compiler.macroexpand = staticmethod(_macroexpand)
 Compiler.load_string = staticmethod(_load_string)
 Compiler.load_file = staticmethod(_load_file)
+Compiler.load = staticmethod(_load_reader)

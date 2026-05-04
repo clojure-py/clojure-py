@@ -4193,3 +4193,131 @@
           (aset ret i (to-array (first xs)))
           (recur (inc i) (next xs))))
       ret))
+
+(defn macroexpand-1
+  "If form represents a macro form, returns its expansion,
+  else returns form."
+  {:added "1.0"
+   :static true}
+  [form]
+    ;; JVM has `(. Compiler (macroexpand1 form))` (camelCase). We expose
+    ;; it as `macroexpand_1` per the snake_case interop convention.
+    (. clojure.lang.Compiler (macroexpand_1 form)))
+
+(defn macroexpand
+  "Repeatedly calls macroexpand-1 on form until it no longer
+  represents a macro form, then returns it.  Note neither
+  macroexpand-1 nor macroexpand expand macros in subforms."
+  {:added "1.0"
+   :static true}
+  [form]
+    (let [ex (macroexpand-1 form)]
+      (if (identical? ex form)
+        form
+        (macroexpand ex))))
+
+;; JVM defines create-struct / defstruct / struct-map / struct /
+;; accessor here (lines 4068-4110). They depend on
+;; clojure.lang.PersistentStructMap, which isn't ported yet —
+;; structmaps are a deprecated 1.0-era feature and rarely used in
+;; modern Clojure. Skipped for now; revisit if needed.
+
+(defn load-reader
+  "Sequentially read and evaluate the set of forms contained in the
+  stream/file"
+  {:added "1.0"
+   :static true}
+  [rdr] (. clojure.lang.Compiler (load rdr)))
+
+(defn load-string
+  "Sequentially read and evaluate the set of forms contained in the
+  string"
+  {:added "1.0"
+   :static true}
+  [s]
+  ;; JVM source uses `(java.io.StringReader. s)` — Python's analog is
+  ;; io.StringIO, reached via the py.X path.
+  (let [rdr (-> (py.io/StringIO s)
+                (clojure.lang.LineNumberingPushbackReader.))]
+    (load-reader rdr)))
+
+(defn set?
+  "Returns true if x implements IPersistentSet"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.IPersistentSet x))
+
+(defn set
+  "Returns a set of the distinct elements of coll."
+  {:added "1.0"
+   :static true}
+  [coll]
+  (if (set? coll)
+    (with-meta coll nil)
+    (if (instance? clojure.lang.IReduceInit coll)
+      (persistent! (.reduce ^clojure.lang.IReduceInit coll conj! (transient #{})))
+      (persistent! (reduce1 conj! (transient #{}) coll)))))
+
+(defn ^{:private true
+   :static true}
+  filter-key [keyfn pred amap]
+    (loop [ret {} es (seq amap)]
+      (if es
+        (if (pred (keyfn (first es)))
+          (recur (assoc ret (key (first es)) (val (first es))) (next es))
+          (recur ret (next es)))
+        ret)))
+
+(defn find-ns
+  "Returns the namespace named by the symbol or nil if it doesn't exist."
+  {:added "1.0"
+   :static true}
+  [sym] (clojure.lang.Namespace/find sym))
+
+(defn create-ns
+  "Create a new namespace named by the symbol if one doesn't already
+  exist, returns it or the already-existing namespace of the same
+  name."
+  {:added "1.0"
+   :static true}
+  ;; JVM: `Namespace/findOrCreate` — snake_case in clojure-py.
+  [sym] (clojure.lang.Namespace/find_or_create sym))
+
+(defn remove-ns
+  "Removes the namespace named by the symbol. Use with caution.
+  Cannot be used to remove the clojure namespace."
+  {:added "1.0"
+   :static true}
+  [sym] (clojure.lang.Namespace/remove sym))
+
+(defn all-ns
+  "Returns a sequence of all namespaces."
+  {:added "1.0"
+   :static true}
+  [] (clojure.lang.Namespace/all))
+
+(defn the-ns
+  "If passed a namespace, returns it. Else, when passed a symbol,
+  returns the namespace named by it, throwing an exception if not
+  found."
+  {:added "1.0"
+   :static true}
+  ^clojure.lang.Namespace [x]
+  (if (instance? clojure.lang.Namespace x)
+    x
+    (or (find-ns x) (throw (Exception. (str "No namespace: " x " found"))))))
+
+(defn ns-name
+  "Returns the name of the namespace, a symbol."
+  {:added "1.0"
+   :static true}
+  [ns]
+  ;; JVM: `.getName` — snake_case in clojure-py.
+  (.get_name (the-ns ns)))
+
+(defn ns-map
+  "Returns a map of all the mappings for the namespace."
+  {:added "1.0"
+   :static true}
+  [ns]
+  (.get_mappings (the-ns ns)))
