@@ -4019,3 +4019,139 @@
          ret# ~expr]
      (prn (str "Elapsed time: " (/ (double (- (. System (nanoTime)) start#)) 1000000.0) " msecs"))
      ret#))
+
+
+
+;; JVM has `(import '(java.lang.reflect Array))` here. We don't have
+;; java.lang.reflect; clojure-py's Array shim is pre-imported into
+;; clojure.core by core.py's bootstrap, providing the same API surface
+;; (newInstance, get, set, getLength, plus typed setInt/setLong/etc.).
+
+(defn alength
+  "Returns the length of the Java array. Works on arrays of all
+  types."
+  {:inline (fn [a] `(. clojure.lang.RT (alength ~a)))
+   :added "1.0"}
+  [array] (. clojure.lang.RT (alength array)))
+
+(defn aclone
+  "Returns a clone of the Java array. Works on arrays of known
+  types."
+  {:inline (fn [a] `(. clojure.lang.RT (aclone ~a)))
+   :added "1.0"}
+  [array] (. clojure.lang.RT (aclone array)))
+
+(defn aget
+  "Returns the value at the index/indices. Works on Java arrays of all
+  types."
+  {:inline (fn [a i] `(. clojure.lang.RT (aget ~a (int ~i))))
+   :inline-arities #{2}
+   :added "1.0"}
+  ([array idx]
+   ;; JVM body wraps the result via Reflector/prepRet to box primitive
+   ;; returns. Python doesn't distinguish primitive vs boxed types, so
+   ;; we just return what Array/get gives us.
+   (. Array (get array idx)))
+  ([array idx & idxs]
+   (apply aget (aget array idx) idxs)))
+
+(defn aset
+  "Sets the value at the index/indices. Works on Java arrays of
+  reference types. Returns val."
+  {:inline (fn [a i v] `(. clojure.lang.RT (aset ~a (int ~i) ~v)))
+   :inline-arities #{3}
+   :added "1.0"}
+  ([array idx val]
+   (. Array (set array idx val))
+   val)
+  ([array idx idx2 & idxv]
+   (apply aset (aget array idx) idx2 idxv)))
+
+(defmacro
+  ^{:private true}
+  def-aset [name method coerce]
+    `(defn ~name
+       {:arglists '([~'array ~'idx ~'val] [~'array ~'idx ~'idx2 & ~'idxv])}
+       ([array# idx# val#]
+        (. Array (~method array# idx# (~coerce val#)))
+        val#)
+       ([array# idx# idx2# & idxv#]
+        (apply ~name (aget array# idx#) idx2# idxv#))))
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of int. Returns val."
+    :added "1.0"}
+  aset-int setInt int)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of long. Returns val."
+    :added "1.0"}
+  aset-long setLong long)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of boolean. Returns val."
+    :added "1.0"}
+  aset-boolean setBoolean boolean)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of float. Returns val."
+    :added "1.0"}
+  aset-float setFloat float)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of double. Returns val."
+    :added "1.0"}
+  aset-double setDouble double)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of short. Returns val."
+    :added "1.0"}
+  aset-short setShort short)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of byte. Returns val."
+    :added "1.0"}
+  aset-byte setByte byte)
+
+(def-aset
+  ^{:doc "Sets the value at the index/indices. Works on arrays of char. Returns val."
+    :added "1.0"}
+  aset-char setChar char)
+
+(defn make-array
+  "Creates and returns an array of instances of the specified class of
+  the specified dimension(s).  Note that a class object is required.
+  Class objects can be obtained by using their imported or
+  fully-qualified name.  Class objects for the primitive types can be
+  obtained using, e.g., Integer/TYPE."
+  {:added "1.0"
+   :static true}
+  ([^Class type len]
+   (. Array (newInstance type (int len))))
+  ([^Class type dim & more-dims]
+   (let [dims (cons dim more-dims)
+         ;; JVM uses (. Integer TYPE) for primitive int. Python int IS
+         ;; the primitive int equivalent — pass it directly.
+         dimarray (make-array Integer (count dims))]
+     (dotimes [i (alength dimarray)]
+       (aset-int dimarray i (nth dims i)))
+     (. Array (newInstance type dimarray)))))
+
+(defn to-array-2d
+  "Returns a (potentially-ragged) 2-dimensional array of Objects
+  containing the contents of coll, which can be any Collection of any
+  Collection."
+  {:tag "[[Ljava.lang.Object;"
+   :added "1.0"
+   :static true}
+  [^java.util.Collection coll]
+    ;; JVM source uses (. Class (forName "[Ljava.lang.Object;")) to
+    ;; obtain the Object[][] class. Python has no analog and we don't
+    ;; track typed-array classes anyway — Object handles both 1D and 2D
+    ;; the same way for our list-backed Object arrays.
+    (let [ret (make-array Object (count coll))]
+      (loop [i 0 xs (seq coll)]
+        (when xs
+          (aset ret i (to-array (first xs)))
+          (recur (inc i) (next xs))))
+      ret))

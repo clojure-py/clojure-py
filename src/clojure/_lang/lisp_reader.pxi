@@ -829,7 +829,12 @@ cdef object _syntax_quote(form):
     elif isinstance(form, Symbol):
         sym = form
         resolver = _resolver_or_none()
-        if sym.ns is None and sym.name.endswith("#"):
+        # `&` (rest-args separator) is treated as already-resolved inside
+        # syntax-quote; auto-qualifying it would break fn* arg parsing on
+        # any macro that emits `[args & rest]` — def-aset is one such.
+        if sym.ns is None and sym.name == "&":
+            ret = RT.list(Compiler.QUOTE, sym)
+        elif sym.ns is None and sym.name.endswith("#"):
             gmap = _gensym_env_var.deref()
             if gmap is None:
                 raise RuntimeError("Gensym literal not in syntax-quote")

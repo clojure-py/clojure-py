@@ -425,6 +425,90 @@ def _bootstrap():
                 arr.sort(key=_functools.cmp_to_key(_cmp))
             return arr
 
+    # clojure.lang.Array — counterpart to java.lang.reflect.Array. Backs
+    # alength / aclone / aget / aset / aset-X / make-array.
+    #
+    # JVM has fixed-width primitive arrays (int[], double[], etc.) that
+    # are distinct from Object[]. Python's `array.array` gives us
+    # equivalent fixed-width homogeneous storage for the numeric types;
+    # for Object arrays we use plain lists. The `newInstance` dispatch
+    # picks one based on the Class arg:
+    #
+    #   int    → array.array('q')   (signed 64-bit, the widest typecode)
+    #   float  → array.array('d')   (double, 64-bit)
+    #   bool   → list                (no native bool typecode; list handles)
+    #   str    → list                (Python's char story is messy; list)
+    #   else   → list                (Object[] equivalent)
+    import array as _stdlib_array
+    _ARRAY_TYPE_CODES = {
+        int:   "q",
+        float: "d",
+    }
+
+    def _new_array_1d(type, size):
+        code = _ARRAY_TYPE_CODES.get(type)
+        if code is not None:
+            return _stdlib_array.array(code, [0] * size)
+        return [None] * size
+
+    def _new_array_multidim(type, dims):
+        if len(dims) == 1:
+            return _new_array_1d(type, dims[0])
+        return [_new_array_multidim(type, dims[1:]) for _ in range(dims[0])]
+
+    class Array:
+        @staticmethod
+        def newInstance(type, size_or_dimarray):
+            # JVM has overloads: newInstance(Class, int) and
+            # newInstance(Class, int[]). Dispatch on the second arg.
+            if isinstance(size_or_dimarray, int) and not isinstance(size_or_dimarray, bool):
+                return _new_array_1d(type, size_or_dimarray)
+            # Anything iterable (list, array.array, tuple) → multi-dim path.
+            return _new_array_multidim(type, list(size_or_dimarray))
+
+        @staticmethod
+        def getLength(arr):
+            return len(arr)
+
+        @staticmethod
+        def get(arr, idx):
+            return arr[idx]
+
+        @staticmethod
+        def set(arr, idx, val):
+            arr[idx] = val
+            return val
+
+        # Typed setters — coerce, then set. array.array auto-validates the
+        # value type on assignment, so passing a string to setInt against
+        # an int-typed array.array raises TypeError just like JVM's
+        # ArrayStoreException.
+        @staticmethod
+        def setInt(arr, idx, val):     arr[idx] = int(val);   return val
+        @staticmethod
+        def setLong(arr, idx, val):    arr[idx] = int(val);   return val
+        @staticmethod
+        def setShort(arr, idx, val):   arr[idx] = int(val);   return val
+        @staticmethod
+        def setByte(arr, idx, val):    arr[idx] = int(val);   return val
+        @staticmethod
+        def setFloat(arr, idx, val):   arr[idx] = float(val); return val
+        @staticmethod
+        def setDouble(arr, idx, val):  arr[idx] = float(val); return val
+        @staticmethod
+        def setBoolean(arr, idx, val): arr[idx] = bool(val);  return val
+        @staticmethod
+        def setChar(arr, idx, val):
+            # JVM char is a 16-bit code unit; we use 1-char Python str.
+            if isinstance(val, int):
+                val = chr(val)
+            elif isinstance(val, str) and len(val) == 1:
+                pass
+            else:
+                raise TypeError("setChar: expected int or 1-char str")
+            arr[idx] = val
+            return val
+
     # clojure.lang.LispReader — JVM exposes its reader as a class with
     # static `read` overloads. Our reader is the module-level
     # `clojure.lang.read` function; this thin static class wraps it so
@@ -507,6 +591,7 @@ def _bootstrap():
     # "clojure.core._bootstrap.<locals>" which are unreachable.
     for _shim, _alias in (
         (_Arrays, "Arrays"),
+        (Array, "Array"),
         (_BufferedReader, "BufferedReader"),
         (_CountDownLatch, "CountDownLatch"),
         (_LispReader, "LispReader"),
@@ -554,6 +639,10 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("Double"), float)
     core_ns.import_class(_Symbol.intern("Float"), float)
     core_ns.import_class(_Symbol.intern("System"), System)
+    # JVM has `(import '(java.lang.reflect Array))` near alength/aget;
+    # we don't have java.lang.reflect, so pre-import our Array shim
+    # under the same short name. Replaces that import* form in the port.
+    core_ns.import_class(_Symbol.intern("Array"), Array)
 
     # Pre-intern dynamic vars that core.clj references before they're
     # otherwise defined. *unchecked-math* is read inside :inline fn

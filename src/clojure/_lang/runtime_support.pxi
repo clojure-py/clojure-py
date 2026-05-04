@@ -208,6 +208,30 @@ class RT:
         raise TypeError(
             "RT.read_string takes 1 or 2 args, got " + str(len(args)))
 
+    # --- array operations (alength / aclone / aget / aset) ---
+    # Backs clojure.core/alength, aclone, aget, aset. Works uniformly on
+    # Python lists (Object[] equivalent) and array.array (primitive).
+
+    @staticmethod
+    def alength(arr):
+        return len(arr)
+
+    @staticmethod
+    def aclone(arr):
+        import array as _array
+        if isinstance(arr, _array.array):
+            return _array.array(arr.typecode, arr)
+        return list(arr)
+
+    @staticmethod
+    def aget(arr, idx):
+        return arr[idx]
+
+    @staticmethod
+    def aset(arr, idx, val):
+        arr[idx] = val
+        return val
+
     @staticmethod
     def iter(coll):
         """JVM RT.iter — return a Python iterator over the collection.
