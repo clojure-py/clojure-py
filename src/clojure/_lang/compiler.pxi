@@ -989,6 +989,20 @@ def _fallback_get_cause(e):
     return getattr(e, "__cause__", None)
 
 
+def _fallback_substring(s, *args):
+    """Python str has no .substring method — use slicing instead.
+    JVM String.substring(start) → s[start:];
+    JVM String.substring(start, end) → s[start:end]."""
+    if hasattr(s, "substring"):
+        return s.substring(*args)
+    if len(args) == 1:
+        return s[args[0]:]
+    if len(args) == 2:
+        return s[args[0]:args[1]]
+    raise TypeError(
+        "substring takes 1 or 2 args, got " + str(len(args)))
+
+
 _JAVA_METHOD_FALLBACKS = {
     # Python str has no `.concat`. Fall back to `+` if the method
     # doesn't exist on the receiver.
@@ -1003,6 +1017,8 @@ _JAVA_METHOD_FALLBACKS = {
     # Throwable for ex-message / ex-cause / catch handlers.
     "getMessage": _fallback_get_message,
     "getCause": _fallback_get_cause,
+    # JVM String.substring → Python slicing.
+    "substring": _fallback_substring,
 }
 
 

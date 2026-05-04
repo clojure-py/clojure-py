@@ -667,6 +667,9 @@ class Compiler:
         Symbol.intern("monitor-enter"), Symbol.intern("monitor-exit"),
         Symbol.intern("catch"), Symbol.intern("finally"), Symbol.intern("new"),
     ])
+    # JVM-style alias: clojure.core/special-symbol? does
+    # `(contains? (. Compiler specials) s)`.
+    specials = SPECIAL_FORMS
 
     @staticmethod
     def is_special(form):

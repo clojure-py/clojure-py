@@ -5171,3 +5171,202 @@
                   (when (branch? node)
                     (mapcat walk (children node))))))]
      (walk root)))
+
+;; JVM defines file-seq here (5005-5013) — needs java.io.File. Skipped;
+;; will revisit when we port the IO story. xml-seq is straight-shot.
+(defn xml-seq
+  "A tree seq on the xml elements as per xml/parse"
+  {:added "1.0"
+   :static true}
+  [root]
+    (tree-seq
+     (complement string?)
+     (comp seq :content)
+     root))
+
+(defn special-symbol?
+  "Returns true if s names a special form"
+  {:added "1.0"
+   :static true}
+  [s]
+    ;; JVM: `(. Compiler specials)` — static-field access. Our compiler
+    ;; treats `(. Cls name)` as a method call, so use the slash form.
+    (contains? clojure.lang.Compiler/specials s))
+
+(defn var?
+  "Returns true if v is of type clojure.lang.Var"
+  {:added "1.0"
+   :static true}
+  [v] (instance? clojure.lang.Var v))
+
+(defn subs
+  "Returns the substring of s beginning at start inclusive, and ending
+  at end (defaults to length of string), exclusive."
+  {:added "1.0"
+   :static true}
+  ;; JVM uses s.substring(start[, end]). Python str has no
+  ;; .substring; the JAVA_METHOD_FALLBACKS table forwards .substring
+  ;; to slicing.
+  (^String [^String s start] (. s (substring start)))
+  (^String [^String s start end] (. s (substring start end))))
+
+(defn max-key
+  "Returns the x for which (k x), a number, is greatest.
+
+  If there are multiple such xs, the last one is returned."
+  {:added "1.0"
+   :static true}
+  ([k x] x)
+  ([k x y] (if (> (k x) (k y)) x y))
+  ([k x y & more]
+   (let [kx (k x) ky (k y)
+         [v kv] (if (> kx ky) [x kx] [y ky])]
+     (loop [v v kv kv more more]
+       (if more
+         (let [w (first more)
+               kw (k w)]
+           (if (>= kw kv)
+             (recur w kw (next more))
+             (recur v kv (next more))))
+         v)))))
+
+(defn min-key
+  "Returns the x for which (k x), a number, is least.
+
+  If there are multiple such xs, the last one is returned."
+  {:added "1.0"
+   :static true}
+  ([k x] x)
+  ([k x y] (if (< (k x) (k y)) x y))
+  ([k x y & more]
+   (let [kx (k x) ky (k y)
+         [v kv] (if (< kx ky) [x kx] [y ky])]
+     (loop [v v kv kv more more]
+       (if more
+         (let [w (first more)
+               kw (k w)]
+           (if (<= kw kv)
+             (recur w kw (next more))
+             (recur v kv (next more))))
+         v)))))
+
+(defn distinct
+  "Returns a lazy sequence of the elements of coll with duplicates removed.
+  Returns a stateful transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([]
+   (fn [rf]
+     (let [seen (volatile! #{})]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (if (contains? @seen input)
+            result
+            (do (vswap! seen conj input)
+                (rf result input))))))))
+  ([coll]
+   (let [step (fn step [xs seen]
+                (lazy-seq
+                  ((fn [[f :as xs] seen]
+                     (when-let [s (seq xs)]
+                       (if (contains? seen f)
+                         (recur (rest s) seen)
+                         (cons f (step (rest s) (conj seen f))))))
+                   xs seen)))]
+     (step coll #{}))))
+
+(defn replace
+  "Given a map of replacement pairs and a vector/collection, returns a
+  vector/seq with any elements = a key in smap replaced with the
+  corresponding val in smap.  Returns a transducer when no collection
+  is provided."
+  {:added "1.0"
+   :static true}
+  ([smap]
+     (map #(if-let [e (find smap %)] (val e) %)))
+  ([smap coll]
+     (if (vector? coll)
+       (reduce1 (fn [v i]
+                  (if-let [e (find smap (nth v i))]
+                    (assoc v i (val e))
+                    v))
+                coll (range (count coll)))
+       (map #(if-let [e (find smap %)] (val e) %) coll))))
+
+(defmacro dosync
+  "Runs the exprs (in an implicit do) in a transaction that encompasses
+  exprs and any nested calls.  Starts a transaction if none is already
+  running on this thread. Any uncaught exception will abort the
+  transaction and flow out of dosync. The exprs may be run more than
+  once, but any effects on Refs will be atomic."
+  {:added "1.0"}
+  [& exprs]
+  `(sync nil ~@exprs))
+
+;; with-precision deferred — JVM's java.math.MathContext / RoundingMode
+;; story doesn't have a clean Python analog and the form is rarely used.
+
+;; mk-bound-fn / subseq / rsubseq deferred — they need
+;; clojure.lang.Sorted.{seqFrom,entryKey,comparator} to be exposed on
+;; our PersistentTreeMap/PersistentTreeSet. Worth a follow-up batch.
+
+(defn repeatedly
+  "Takes a function of no args, presumably with side effects, and
+  returns an infinite (or length n if supplied) lazy sequence of calls
+  to it"
+  {:added "1.0"
+   :static true}
+  ([f] (lazy-seq (cons (f) (repeatedly f))))
+  ([n f] (take n (repeatedly f))))
+
+;; add-classpath deferred (DEPRECATED in JVM 1.1; rarely used).
+
+(defn hash
+  "Returns the hash code of its argument. Note this is the hash code
+  consistent with =, and thus is different than .hashCode for Integer,
+  Short, Byte and Clojure collections."
+
+  {:added "1.0"
+   :static true}
+  [x] (. clojure.lang.Util (hasheq x)))
+
+;; mix-collection-hash / hash-ordered-coll / hash-unordered-coll
+;; deferred — they expose Murmur3 helpers; revisit alongside the rest
+;; of the hash machinery.
+
+(defn interpose
+  "Returns a lazy seq of the elements of coll separated by sep.
+  Returns a stateful transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([sep]
+   (fn [rf]
+     (let [started (volatile! false)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (if @started
+            (let [sepr (rf result sep)]
+              (if (reduced? sepr)
+                sepr
+                (rf sepr input)))
+            (do
+              (vreset! started true)
+              (rf result input))))))))
+  ([sep coll]
+   (drop 1 (interleave (repeat sep) coll))))
+
+;; definline deferred — it uses (eval (list `fn args expr)) at macro-
+;; expansion time, which is a meta-circular eval that needs careful
+;; thought about how it interacts with our compiler.
+
+(defn empty
+  "Returns an empty collection of the same category as coll, or nil"
+  {:added "1.0"
+   :static true}
+  [coll]
+  (when (instance? clojure.lang.IPersistentCollection coll)
+    (.empty ^clojure.lang.IPersistentCollection coll)))
