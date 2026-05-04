@@ -68,6 +68,7 @@
 (def IllegalArgumentException py.__builtins__/ValueError)
 (def ClassCastException   py.__builtins__/TypeError)
 (def IllegalAccessError   py.__builtins__/RuntimeError)
+(def AssertionError       py.__builtins__/AssertionError)
 
 ;; clojure.lang shims that JVM source uses bare. The class lookup
 ;; works either way (slash-form `clojure.lang.X/m` would resolve via
@@ -4944,3 +4945,107 @@
   [& xs]
   (with-out-str
    (apply prn xs)))
+
+(defn print-str
+  "print to a string, returning it"
+  {:tag String
+   :added "1.0"
+   :static true}
+  [& xs]
+    (with-out-str
+     (apply print xs)))
+
+(defn println-str
+  "println to a string, returning it"
+  {:tag String
+   :added "1.0"
+   :static true}
+  [& xs]
+    (with-out-str
+     (apply println xs)))
+
+;; JVM imports clojure.lang.ExceptionInfo / IExceptionInfo here and
+;; defines elide-top-frames + the ex-info/ex-data/ex-message/ex-cause
+;; quartet (lines 4825-4868). Skipped for now — needs an
+;; ExceptionInfo Python class and Throwable-stack-trace machinery.
+;; Will land in a focused follow-up batch.
+
+(def ^:dynamic *assert*
+  "When set to false, assert calls compile to nil — elision is at
+  *expansion time*, so wrapping production code in
+  (binding [*assert* false] ...) doesn't disable already-loaded
+  asserts. Set this *before* loading the code you want to skip
+  asserts in."
+  true)
+
+(defmacro assert
+  "Evaluates expression x and throws an AssertionError with optional
+  message if x does not evaluate to logical true.
+
+  Assertion checks are omitted from compiled code if '*assert*' is
+  false."
+  {:added "1.0"}
+  ([x]
+     (when *assert*
+       `(when-not ~x
+          (throw (new AssertionError (str "Assert failed: " (pr-str '~x)))))))
+  ([x message]
+     (when *assert*
+       `(when-not ~x
+          (throw (new AssertionError (str "Assert failed: " ~message "\n" (pr-str '~x))))))))
+
+(defn test
+  "test [v] finds fn at key :test in var metadata and calls it,
+  presuming failure will throw exception"
+  {:added "1.0"}
+  [v]
+    (let [f (:test (meta v))]
+      (if f
+        (do (f) :ok)
+        :no-test)))
+
+;; JVM defines re-pattern / re-matcher / re-groups / re-seq /
+;; re-matches / re-find here (lines 4896-4966). Python's re module
+;; uses a stateless Match instead of a stateful Matcher; bridging the
+;; two takes a JavaMatcher-style wrapper. Skipped for now — saved for
+;; the regex batch.
+
+(defn rand
+  "Returns a random floating point number between 0 (inclusive) and
+  n (default 1) (exclusive)."
+  {:added "1.0"
+   :static true}
+  ;; JVM: `(. Math (random))`. Python's `math` module has no `random`
+  ;; attribute (random is its own module), so reach for it via the
+  ;; py.X path.
+  ([] (py.random/random))
+  ([n] (* n (rand))))
+
+(defn rand-int
+  "Returns a random integer between 0 (inclusive) and n (exclusive)."
+  {:added "1.0"
+   :static true}
+  [n] (int (rand n)))
+
+(defmacro defn-
+  "same as defn, yielding non-public def"
+  {:added "1.0"}
+  [name & decls]
+    (list* `defn (with-meta name (assoc (meta name) :private true)) decls))
+
+(defn tree-seq
+  "Returns a lazy sequence of the nodes in a tree, via a depth-first walk.
+   branch? must be a fn of one arg that returns true if passed a node
+   that can have children (but may not).  children must be a fn of one
+   arg that returns a sequence of the children. Will only be called on
+   nodes for which branch? returns true. Root is the root node of the
+  tree."
+  {:added "1.0"
+   :static true}
+   [branch? children root]
+   (let [walk (fn walk [node]
+                (lazy-seq
+                 (cons node
+                  (when (branch? node)
+                    (mapcat walk (children node))))))]
+     (walk root)))
