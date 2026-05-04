@@ -394,8 +394,8 @@ def _bootstrap():
 
     setattr(_CountDownLatch, "await", _CountDownLatch._await_impl)
 
-    # java.util.Arrays/sort — minimal shim; sorts a list in place using a
-    # comparator. Used by clojure.core/sort.
+    # clojure.lang.Arrays — counterpart to JVM's java.util.Arrays;
+    # exposes the single static method clojure.core/sort needs.
     #
     # The comparator may return either a 3-way int (-1/0/1, like
     # java.util.Comparator) or a boolean (like Clojure 2-arg predicates
@@ -404,7 +404,7 @@ def _bootstrap():
     # otherwise re-invoke with swapped args to disambiguate equal vs.
     # greater. Mirror that here so `(sort > coll)` works.
     import functools as _functools
-    class _JavaArrays:
+    class _Arrays:
         @staticmethod
         def sort(arr, comparator=None):
             if comparator is None:
@@ -419,40 +419,12 @@ def _bootstrap():
                     return int(r)
                 arr.sort(key=_functools.cmp_to_key(_cmp))
             return arr
-    # Stash on the clojure.lang module under the dotted name. Our class
-    # resolver handles `java.util.Arrays/sort` by importing the module
-    # `java.util` and looking up Arrays — we don't have that. Easier:
-    # register `java.util.Arrays` as a class attr on a fake module or
-    # just install it where class_for_name finds it. The simplest is to
-    # create a module-level attribute on a sub-package. Since
-    # class_for_name does importlib.import_module on the leading
-    # segment, we synthesize a `java.util` package in sys.modules.
-    import types as _types_mod
-    import sys as _sys_mod
 
-    def _ensure_pkg(dotted):
-        """Ensure sys.modules has a synthetic package for `dotted` and
-        every ancestor, wiring each as an attribute of its parent.
-        Returns the leaf module."""
-        parts = dotted.split(".")
-        parent = None
-        for i in range(len(parts)):
-            name = ".".join(parts[: i + 1])
-            mod = _sys_mod.modules.get(name)
-            if mod is None:
-                mod = _types_mod.ModuleType(name)
-                _sys_mod.modules[name] = mod
-            if parent is not None:
-                setattr(parent, parts[i], mod)
-            parent = mod
-        return parent
-
-    _ensure_pkg("java.util").Arrays = _JavaArrays
-
-    # IO/concurrency shims live under clojure.lang rather than under
-    # synthesized java.io / java.util.concurrent packages. They aren't
-    # real Java classes — putting them on clojure.lang makes that
-    # explicit and keeps RT.class_for_name's lookup path short.
+    # All Python-side shims live under clojure.lang. They aren't real
+    # Java classes — putting them here makes that explicit and keeps
+    # RT.class_for_name's lookup path short (getattr on clojure.lang
+    # vs. import_module of a synthesized java.* package).
+    setattr(_lang, "Arrays", _Arrays)
     setattr(_lang, "BufferedReader", _BufferedReader)
     setattr(_lang, "CountDownLatch", _CountDownLatch)
     setattr(_lang, "TimeUnit", _TimeUnit)

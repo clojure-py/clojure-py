@@ -3149,7 +3149,7 @@
   ([^java.util.Comparator comp coll]
    (if (seq coll)
      (let [a (to-array coll)]
-       (. java.util.Arrays (sort a comp))
+       (. clojure.lang.Arrays (sort a comp))
        (with-meta (seq a) (meta coll)))
      ())))
 
