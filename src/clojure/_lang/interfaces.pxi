@@ -390,3 +390,10 @@ class ITransientVector(ITransientAssociative, Indexed):
 class IEditableCollection(ABC):
     @abstractmethod
     def as_transient(self): ...
+
+
+class IExceptionInfo(ABC):
+    """Marker interface for exceptions that carry a data map."""
+
+    @abstractmethod
+    def getData(self): ...

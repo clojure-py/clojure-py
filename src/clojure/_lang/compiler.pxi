@@ -960,6 +960,28 @@ def _fallback_append(obj, x):
     return obj
 
 
+def _fallback_get_message(e):
+    """JVM Throwable.getMessage on a Python exception → str of args[0]
+    when the exception has args, else None. Matches the nil-on-empty
+    convention ex-message expects."""
+    if hasattr(e, "getMessage"):
+        return e.getMessage()
+    args = getattr(e, "args", None)
+    if args:
+        a0 = args[0]
+        return a0 if isinstance(a0, str) else str(a0)
+    return None
+
+
+def _fallback_get_cause(e):
+    """JVM Throwable.getCause on a Python exception → __cause__ (the
+    explicit `raise X from Y` chain). __context__ is left alone — it's
+    the implicit-while-handling context, closer to JVM addSuppressed."""
+    if hasattr(e, "getCause"):
+        return e.getCause()
+    return getattr(e, "__cause__", None)
+
+
 _JAVA_METHOD_FALLBACKS = {
     # Python str has no `.concat`. Fall back to `+` if the method
     # doesn't exist on the receiver.
@@ -970,6 +992,10 @@ _JAVA_METHOD_FALLBACKS = {
     "applyTo": _fallback_apply_to,
     # JVM Writer.append → write+return on Python file-likes.
     "append": _fallback_append,
+    # Throwable accessors — let any Python exception look like a JVM
+    # Throwable for ex-message / ex-cause / catch handlers.
+    "getMessage": _fallback_get_message,
+    "getCause": _fallback_get_cause,
 }
 
 

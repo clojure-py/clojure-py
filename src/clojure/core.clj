@@ -4964,11 +4964,57 @@
     (with-out-str
      (apply println xs)))
 
-;; JVM imports clojure.lang.ExceptionInfo / IExceptionInfo here and
-;; defines elide-top-frames + the ex-info/ex-data/ex-message/ex-cause
-;; quartet (lines 4825-4868). Skipped for now — needs an
-;; ExceptionInfo Python class and Throwable-stack-trace machinery.
-;; Will land in a focused follow-up batch.
+;; JVM source: `(import clojure.lang.ExceptionInfo clojure.lang.IExceptionInfo)`.
+;; Our import* installs class mappings that aren't referred into `user`
+;; by the bootstrap (only Vars are). Use def aliases instead so the
+;; bare names resolve everywhere — consistent with the other host-class
+;; aliases in core.clj's header.
+(def ExceptionInfo  clojure.lang.ExceptionInfo)
+(def IExceptionInfo clojure.lang.IExceptionInfo)
+
+(defn ^:private elide-top-frames
+  [^Throwable ex class-name]
+  ;; JVM rewrites the stack trace, dropping the top frames whose
+  ;; ClassName matches the helper. Python tracebacks are different
+  ;; (linked lists pointed to by __traceback__, no class names per
+  ;; frame) and there's no easy way to drop frames safely. We return
+  ;; the exception unchanged — matches JVM functionally for ex-info's
+  ;; only callers (which discard the return after rewriting).
+  ex)
+
+(defn ex-info
+  "Create an instance of ExceptionInfo, a RuntimeException subclass
+   that carries a map of additional data."
+  {:added "1.4"}
+  ([msg map]
+    (elide-top-frames (ExceptionInfo. msg map) "clojure.core$ex_info"))
+  ([msg map cause]
+    (elide-top-frames (ExceptionInfo. msg map cause) "clojure.core$ex_info")))
+
+(defn ex-data
+  "Returns exception data (a map) if ex is an IExceptionInfo.
+   Otherwise returns nil."
+  {:added "1.4"}
+  [ex]
+  (when (instance? IExceptionInfo ex)
+    (.getData ^IExceptionInfo ex)))
+
+(defn ex-message
+  "Returns the message attached to ex if ex is a Throwable.
+  Otherwise returns nil."
+  {:added "1.10"}
+  [ex]
+  (when (instance? Throwable ex)
+    (.getMessage ^Throwable ex)))
+
+(defn ex-cause
+  "Returns the cause of ex if ex is a Throwable.
+  Otherwise returns nil."
+  {:tag Throwable
+   :added "1.10"}
+  [ex]
+  (when (instance? Throwable ex)
+    (.getCause ^Throwable ex)))
 
 (def ^:dynamic *assert*
   "When set to false, assert calls compile to nil — elision is at

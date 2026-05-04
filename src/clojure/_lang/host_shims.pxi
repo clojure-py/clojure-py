@@ -46,6 +46,42 @@ class System:
         return int(_time_mod.time() * 1000)
 
 
+# --- ExceptionInfo ------------------------------------------------
+
+class ExceptionInfo(Exception):
+    """clojure.lang.ExceptionInfo — RuntimeException subclass that
+    carries a map of additional data. JVM extends RuntimeException and
+    implements IExceptionInfo; we extend Python's Exception (the
+    closest equivalent) and register IExceptionInfo on the class."""
+
+    def __init__(self, msg, data, cause=None):
+        super().__init__(msg)
+        self._data = data
+        if cause is not None:
+            self.__cause__ = cause
+
+    def getData(self):
+        """JVM-style accessor matching IExceptionInfo."""
+        return self._data
+
+    def get_data(self):
+        return self._data
+
+    def getMessage(self):
+        return self.args[0] if self.args else None
+
+    def getCause(self):
+        return self.__cause__
+
+    def __repr__(self):
+        return ("ExceptionInfo("
+                + repr(self.args[0] if self.args else None)
+                + ", " + repr(self._data) + ")")
+
+
+IExceptionInfo.register(ExceptionInfo)
+
+
 # --- StringWriter -------------------------------------------------
 
 class StringWriter:
