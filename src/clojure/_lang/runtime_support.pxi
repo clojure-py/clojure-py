@@ -179,14 +179,32 @@ class RT:
 
     @staticmethod
     def chunk_iterator_seq(it):
-        """JVM RT.chunkIteratorSeq — wrap an iterator as a (lazy) seq.
-        We currently materialize via IteratorSeq, which preserves seq
-        semantics but loses the chunking optimization. The transducer
-        callers (sequence, etc.) work correctly; only bulk-throughput
-        of long pipelines suffers."""
+        """JVM RT.chunkIteratorSeq — wrap a Python iterator as a real
+        chunked seq (ChunkedCons over ArrayChunk). Pulls up to 32 items
+        eagerly per chunk; the tail is a LazySeq that re-enters this
+        function on demand, so consumers that don't walk the whole seq
+        only pay for the chunks they touch."""
         if it is None:
             return None
-        return IteratorSeq.from_iterable(it)
+        cdef Py_ssize_t i
+        cdef list items = []
+        for i in range(32):
+            try:
+                items.append(next(it))
+            except StopIteration:
+                break
+        if not items:
+            return None
+        cdef object chunk = ArrayChunk(items, 0, len(items))
+
+        # Late-bound `it` — using a def (not lambda) so Cython doesn't
+        # inline-fold the free variable (a known 3.2 / 3.14t codegen
+        # quirk; see Cython pitfalls memory).
+        def _get_rest():
+            return RT.chunk_iterator_seq(it)
+
+        cdef object rest = LazySeq(_get_rest)
+        return ChunkedCons(chunk, rest)
 
     @staticmethod
     def peek(coll):
