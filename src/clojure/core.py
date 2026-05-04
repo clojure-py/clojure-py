@@ -467,7 +467,13 @@ def _bootstrap():
     # getProperty is implemented, since core.clj uses it just to read
     # "line.separator". Add more keys here if the translation grows new
     # callers; map each to a Python-side equivalent.
-    class _System:
+    # Name this class `System` (not `System`) and set __module__ to
+    # clojure.lang so syntax-quote's resolve_symbol builds a FQN like
+    # "clojure.lang.System" — which RT.class_for_name then resolves
+    # back via getattr on the clojure.lang module. Without this, the
+    # resolver would build a path like "clojure.core.<locals>.System"
+    # which is unreachable at runtime.
+    class System:
         _props = {
             "line.separator": _os.linesep,
             "file.separator": _os.sep,
@@ -476,18 +482,41 @@ def _bootstrap():
 
         @staticmethod
         def getProperty(name, default=None):
-            return _System._props.get(name, default)
+            return System._props.get(name, default)
+
+        @staticmethod
+        def nanoTime():
+            """JVM System.nanoTime — monotonic high-resolution timer in
+            nanoseconds. Used by clojure.core/time."""
+            import time as _time
+            return _time.monotonic_ns()
+
+        @staticmethod
+        def currentTimeMillis():
+            import time as _time
+            return int(_time.time() * 1000)
 
     # All Python-side shims live under clojure.lang. They aren't real
     # Java classes — putting them here makes that explicit and keeps
     # RT.class_for_name's lookup path short (getattr on clojure.lang
     # vs. import_module of a synthesized java.* package).
-    setattr(_lang, "Arrays", _Arrays)
-    setattr(_lang, "BufferedReader", _BufferedReader)
-    setattr(_lang, "CountDownLatch", _CountDownLatch)
-    setattr(_lang, "LispReader", _LispReader)
-    setattr(_lang, "System", _System)
-    setattr(_lang, "TimeUnit", _TimeUnit)
+    # Set __module__ to clojure.lang on every shim so syntax-quote's
+    # resolve_symbol — which qualifies by `cls.__module__ + "." + cls.__name__`
+    # — produces a FQN that RT.class_for_name can resolve back. Without
+    # this the closure-defined classes get module names like
+    # "clojure.core._bootstrap.<locals>" which are unreachable.
+    for _shim, _alias in (
+        (_Arrays, "Arrays"),
+        (_BufferedReader, "BufferedReader"),
+        (_CountDownLatch, "CountDownLatch"),
+        (_LispReader, "LispReader"),
+        (System, "System"),
+        (_TimeUnit, "TimeUnit"),
+    ):
+        _shim.__module__ = "clojure.lang"
+        _shim.__name__ = _alias
+        _shim.__qualname__ = _alias
+        setattr(_lang, _alias, _shim)
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)
@@ -524,7 +553,7 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("BigInteger"), _BigInt)
     core_ns.import_class(_Symbol.intern("Double"), float)
     core_ns.import_class(_Symbol.intern("Float"), float)
-    core_ns.import_class(_Symbol.intern("System"), _System)
+    core_ns.import_class(_Symbol.intern("System"), System)
 
     # Pre-intern dynamic vars that core.clj references before they're
     # otherwise defined. *unchecked-math* is read inside :inline fn

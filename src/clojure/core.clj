@@ -3937,3 +3937,85 @@
    :static true}
   ([s] (clojure.lang.RT/read_string s))
   ([opts s] (clojure.lang.RT/read_string s opts)))
+
+(defn subvec
+  "Returns a persistent vector of the items in vector from
+  start (inclusive) to end (exclusive).  If end is not supplied,
+  defaults to (count vector). This operation is O(1) and very fast, as
+  the resulting vector shares structure with the original and no
+  trimming is done."
+  {:added "1.0"
+   :static true}
+  ([v start]
+   (subvec v start (count v)))
+  ([v start end]
+   ;; Note: clojure-py's RT.subvec is O(n) (rebuilds via create) rather
+   ;; than JVM's O(1) tree slicing — same return value, slower for big
+   ;; vectors. Worth optimizing if it shows up in profiles.
+   (. clojure.lang.RT (subvec v start end))))
+
+(defmacro with-open
+  "bindings => [name init ...]
+
+  Evaluates body in a try expression with names bound to the values
+  of the inits, and a finally clause that calls (.close name) on each
+  name in reverse order.
+
+  Works with anything that has a .close method — our BufferedReader,
+  Python file objects from open(), io.StringIO, sockets, etc."
+  {:added "1.0"}
+  [bindings & body]
+  (assert-args
+     (vector? bindings) "a vector for its binding"
+     (even? (count bindings)) "an even number of forms in binding vector")
+  (cond
+    (= (count bindings) 0) `(do ~@body)
+    (symbol? (bindings 0)) `(let ~(subvec bindings 0 2)
+                              (try
+                                (with-open ~(subvec bindings 2) ~@body)
+                                (finally
+                                  (. ~(bindings 0) ~'close))))
+    :else (throw (IllegalArgumentException.
+                   "with-open only allows Symbols in bindings"))))
+
+(defmacro doto
+  "Evaluates x then calls all of the methods and functions with the
+  value of x supplied at the front of the given arguments.  The forms
+  are evaluated in order.  Returns x.
+
+  (doto (new java.util.HashMap) (.put \"a\" 1) (.put \"b\" 2))"
+  {:added "1.0"}
+  [x & forms]
+    (let [gx (gensym)]
+      `(let [~gx ~x]
+         ~@(map (fn [f]
+                  (with-meta
+                    (if (seq? f)
+                      `(~(first f) ~gx ~@(next f))
+                      `(~f ~gx))
+                    (meta f)))
+                forms)
+         ~gx)))
+
+(defmacro memfn
+  "Expands into code that creates a fn that expects to be passed an
+  object and any args and calls the named instance method on the
+  object passing the args. Use when you want to treat a Java method as
+  a first-class fn. name may be type-hinted with the method receiver's
+  type in order to avoid reflective calls."
+  {:added "1.0"}
+  [name & args]
+  (let [t (with-meta (gensym "target")
+            (meta name))]
+    `(fn [~t ~@args]
+       (. ~t (~name ~@args)))))
+
+(defmacro time
+  "Evaluates expr and prints the time it took.  Returns the value of
+ expr."
+  {:added "1.0"}
+  [expr]
+  `(let [start# (. System (nanoTime))
+         ret# ~expr]
+     (prn (str "Elapsed time: " (/ (double (- (. System (nanoTime)) start#)) 1000000.0) " msecs"))
+     ret#))
