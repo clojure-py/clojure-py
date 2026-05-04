@@ -67,9 +67,18 @@ def _bootstrap():
     try:
         _Compiler.load_file(_os.path.join(here, "core.clj"))
     finally:
-        # Restore *ns* to the user namespace so REPL / tests that assume
-        # the user ns aren't disrupted by the bootstrap.
+        # Restore *ns* to the user namespace and refer all of clojure.core's
+        # public Vars into it — JVM Clojure does this automatically for any
+        # ns created without an explicit ns form. Without this, bare names
+        # like `..`, `let`, `defn` etc. don't resolve from the REPL.
         user_ns = _Namespace.find_or_create(_Symbol.intern("user"))
+        for entry in core_ns.get_mappings():
+            sym = entry.key()
+            v = entry.val()
+            if (isinstance(v, _Var)
+                    and v.ns is core_ns
+                    and v.is_public()):
+                user_ns.refer(sym, v)
         _RT.CURRENT_NS.bind_root(user_ns)
 
 

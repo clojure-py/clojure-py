@@ -37,14 +37,14 @@ def test_to_array_on_nil():
 # --- cast -------------------------------------------------------------
 
 def test_cast_passes_through_when_isinstance():
-    assert E("(clojure.core/cast int 42)") == 42
+    assert E("(clojure.core/cast Integer 42)") == 42
 
 def test_cast_raises_on_mismatch():
     with pytest.raises(TypeError):
-        E('(clojure.core/cast int "x")')
+        E('(clojure.core/cast Integer "x")')
 
 def test_cast_nil_passes_through():
-    assert E("(clojure.core/cast int nil)") is None
+    assert E("(clojure.core/cast Integer nil)") is None
 
 
 # --- vector / vec -----------------------------------------------------

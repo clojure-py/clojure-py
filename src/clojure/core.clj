@@ -67,6 +67,7 @@
 (def IllegalStateException py.__builtins__/RuntimeError)
 (def IllegalArgumentException py.__builtins__/ValueError)
 (def ClassCastException   py.__builtins__/TypeError)
+(def IllegalAccessError   py.__builtins__/RuntimeError)
 
 ;; clojure.lang shims that JVM source uses bare. The class lookup
 ;; works either way (slash-form `clojure.lang.X/m` would resolve via
@@ -209,7 +210,12 @@
    :doc "Evaluates x and tests if it is an instance of the class
     c. Returns true or false"
    :added "1.0"}
- instance? (fn instance? [^Class c x] (. c (__instancecheck__ x))))
+ instance? (fn instance? [^Class c x]
+             ;; Python's isinstance handles metaclass cases (e.g.
+             ;; isinstance(x, type)) correctly; calling c.__instancecheck__
+             ;; directly fails when c is `type` itself because the
+             ;; descriptor is then unbound.
+             (py.__builtins__/isinstance x c)))
 
 (def
  ^{:arglists '([x])
@@ -4321,3 +4327,209 @@
    :static true}
   [ns]
   (.get_mappings (the-ns ns)))
+
+(defn ns-unmap
+  "Removes the mappings for the symbol from the namespace."
+  {:added "1.0"
+   :static true}
+  [ns sym]
+  (.unmap (the-ns ns) sym))
+
+;(defn export [syms]
+;  (doseq [sym syms]
+;   (.. *ns* (intern sym) (setExported true))))
+
+(defn ns-publics
+  "Returns a map of the public intern mappings for the namespace."
+  {:added "1.0"
+   :static true}
+  [ns]
+  (let [ns (the-ns ns)]
+    (filter-key val (fn [^clojure.lang.Var v] (and (instance? clojure.lang.Var v)
+                                 ;; .ns is a field on Var; use field-access form.
+                                 (= ns (.-ns v))
+                                 (.is_public v)))
+                (ns-map ns))))
+
+(defn ns-imports
+  "Returns a map of the import mappings for the namespace."
+  {:added "1.0"
+   :static true}
+  [ns]
+  (filter-key val (partial instance? Class) (ns-map ns)))
+
+(defn ns-interns
+  "Returns a map of the intern mappings for the namespace."
+  {:added "1.0"
+   :static true}
+  [ns]
+  (let [ns (the-ns ns)]
+    (filter-key val (fn [^clojure.lang.Var v] (and (instance? clojure.lang.Var v)
+                                 (= ns (.-ns v))))
+                (ns-map ns))))
+
+(defn refer
+  "refers to all public vars of ns, subject to filters.
+  filters can include at most one each of:
+
+  :exclude list-of-symbols
+  :only list-of-symbols
+  :rename map-of-fromsymbol-tosymbol
+
+  For each public interned var in the namespace named by the symbol,
+  adds a mapping from the name of the var to the var to the current
+  namespace.  Throws an exception if name is already mapped to
+  something else in the current namespace. Filters can be used to
+  select a subset, via inclusion or exclusion, or to provide a mapping
+  to a symbol different from the var's name, in order to prevent
+  clashes. Use :use in the ns macro in preference to calling this directly."
+  {:added "1.0"}
+  [ns-sym & filters]
+    (let [ns (or (find-ns ns-sym) (throw (new Exception (str "No namespace: " ns-sym))))
+          fs (apply hash-map filters)
+          nspublics (ns-publics ns)
+          rename (or (:rename fs) {})
+          exclude (set (:exclude fs))
+          to-do (if (= :all (:refer fs))
+                  (keys nspublics)
+                  (or (:refer fs) (:only fs) (keys nspublics)))]
+      (when (and to-do (not (instance? clojure.lang.Sequential to-do)))
+        (throw (new Exception ":only/:refer value must be a sequential collection of symbols")))
+      (doseq [sym to-do]
+        (when-not (exclude sym)
+          (let [v (nspublics sym)]
+            (when-not v
+              (throw (new IllegalAccessError
+                          (if (get (ns-interns ns) sym)
+                            (str sym " is not public")
+                            (str sym " does not exist")))))
+            (. *ns* (refer (or (rename sym) sym) v)))))))
+
+(defn ns-refers
+  "Returns a map of the refer mappings for the namespace."
+  {:added "1.0"
+   :static true}
+  [ns]
+  (let [ns (the-ns ns)]
+    (filter-key val (fn [^clojure.lang.Var v] (and (instance? clojure.lang.Var v)
+                                 (not= ns (.-ns v))))
+                (ns-map ns))))
+
+(defn alias
+  "Add an alias in the current namespace to another
+  namespace. Arguments are two symbols: the alias to be used, and
+  the symbolic name of the target namespace. Use :as in the ns macro in preference
+  to calling this directly."
+  {:added "1.0"
+   :static true}
+  [alias namespace-sym]
+  ;; JVM: .addAlias — snake_case in clojure-py.
+  (.add_alias *ns* alias (the-ns namespace-sym)))
+
+(defn ns-aliases
+  "Returns a map of the aliases for the namespace."
+  {:added "1.0"
+   :static true}
+  [ns]
+  (.get_aliases (the-ns ns)))
+
+(defn ns-unalias
+  "Removes the alias for the symbol from the namespace."
+  {:added "1.0"
+   :static true}
+  [ns sym]
+  (.remove_alias (the-ns ns) sym))
+
+(defn take-nth
+  "Returns a lazy seq of every nth item in coll.  Returns a stateful
+  transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([n]
+     (fn [rf]
+       (let [iv (volatile! -1)]
+         (fn
+           ([] (rf))
+           ([result] (rf result))
+           ([result input]
+              (let [i (vswap! iv inc)]
+                (if (zero? (rem i n))
+                  (rf result input)
+                  result)))))))
+  ([n coll]
+     (lazy-seq
+      (when-let [s (seq coll)]
+        (cons (first s) (take-nth n (drop n s)))))))
+
+(defn interleave
+  "Returns a lazy seq of the first item in each coll, then the second etc."
+  {:added "1.0"
+   :static true}
+  ([] ())
+  ([c1] (lazy-seq c1))
+  ([c1 c2]
+     (lazy-seq
+      (let [s1 (seq c1) s2 (seq c2)]
+        (when (and s1 s2)
+          (cons (first s1) (cons (first s2)
+                                 (interleave (rest s1) (rest s2))))))))
+  ([c1 c2 & colls]
+     (lazy-seq
+      (let [ss (map seq (conj colls c2 c1))]
+        (when (every? identity ss)
+          (concat (map first ss) (apply interleave (map rest ss))))))))
+
+(defn var-get
+  "Gets the value in the var object"
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Var x] (. x (get)))
+
+(defn var-set
+  "Sets the value in the var object to val. The var must be
+ thread-locally bound."
+  {:added "1.0"
+   :static true}
+  [^clojure.lang.Var x val] (. x (set val)))
+
+(defmacro with-local-vars
+  "varbinding=> symbol init-expr
+
+  Executes the exprs in a context in which the symbols are bound to
+  vars with per-thread bindings to the init-exprs.  The symbols refer
+  to the var objects themselves, and must be accessed with var-get and
+  var-set"
+  {:added "1.0"}
+  [name-vals-vec & body]
+  (assert-args
+     (vector? name-vals-vec) "a vector for its binding"
+     (even? (count name-vals-vec)) "an even number of forms in binding vector")
+  ;; JVM: (.. Var create setDynamic) and Var/{push,pop}ThreadBindings.
+  ;; clojure-py uses snake_case for these.
+  `(let [~@(interleave (take-nth 2 name-vals-vec)
+                       (repeat '(.. clojure.lang.Var create set_dynamic)))]
+     (. clojure.lang.Var (push_thread_bindings (hash-map ~@name-vals-vec)))
+     (try
+      ~@body
+      (finally (. clojure.lang.Var (pop_thread_bindings))))))
+
+(defn ns-resolve
+  "Returns the var or Class to which a symbol will be resolved in the
+  namespace (unless found in the environment), else nil.  Note that
+  if the symbol is fully qualified, the var/Class to which it resolves
+  need not be present in the namespace."
+  {:added "1.0"
+   :static true}
+  ([ns sym]
+    (ns-resolve ns nil sym))
+  ([ns env sym]
+    (when-not (contains? env sym)
+      ;; JVM: Compiler/maybeResolveIn — snake_case in clojure-py.
+      (clojure.lang.Compiler/maybe_resolve_in (the-ns ns) sym))))
+
+(defn resolve
+  "same as (ns-resolve *ns* symbol) or (ns-resolve *ns* &env symbol)"
+  {:added "1.0"
+   :static true}
+  ([sym] (ns-resolve *ns* sym))
+  ([env sym] (ns-resolve *ns* env sym)))

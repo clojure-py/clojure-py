@@ -99,14 +99,14 @@ def test_array_get_length_uniform_across_types():
 # --- alength ------------------------------------------------------
 
 def test_alength_int_array():
-    assert E("(clojure.core/alength (clojure.core/make-array int 5))") == 5
+    assert E("(clojure.core/alength (clojure.core/make-array Integer 5))") == 5
 
 def test_alength_object_array():
-    assert E("(clojure.core/alength (clojure.core/make-array object 3))") == 3
+    assert E("(clojure.core/alength (clojure.core/make-array Object 3))") == 3
 
 def test_alength_multidim():
     """alength returns the outer dimension."""
-    assert E("(clojure.core/alength (clojure.core/make-array int 4 7))") == 4
+    assert E("(clojure.core/alength (clojure.core/make-array Integer 4 7))") == 4
 
 
 # --- aclone -------------------------------------------------------
@@ -225,24 +225,24 @@ def test_aset_char():
 # --- make-array ---------------------------------------------------
 
 def test_make_array_int_initializes_zeros():
-    arr = E("(clojure.core/make-array int 5)")
+    arr = E("(clojure.core/make-array Integer 5)")
     assert list(arr) == [0, 0, 0, 0, 0]
 
 def test_make_array_float_initializes_zeros():
-    arr = E("(clojure.core/make-array float 3)")
+    arr = E("(clojure.core/make-array Float 3)")
     assert list(arr) == [0.0, 0.0, 0.0]
 
 def test_make_array_object_initializes_nones():
-    arr = E("(clojure.core/make-array object 4)")
+    arr = E("(clojure.core/make-array Object 4)")
     assert arr == [None, None, None, None]
 
 def test_make_array_two_dim():
-    arr = E("(clojure.core/make-array int 2 3)")
+    arr = E("(clojure.core/make-array Integer 2 3)")
     assert len(arr) == 2
     assert [list(r) for r in arr] == [[0, 0, 0], [0, 0, 0]]
 
 def test_make_array_three_dim():
-    arr = E("(clojure.core/make-array int 2 2 2)")
+    arr = E("(clojure.core/make-array Integer 2 2 2)")
     assert len(arr) == 2
     assert all(len(r) == 2 for r in arr)
     assert all(list(c) == [0, 0] for r in arr for c in r)

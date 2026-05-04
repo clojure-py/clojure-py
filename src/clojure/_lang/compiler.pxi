@@ -349,9 +349,15 @@ def _macroexpand_1(form):
         return form
     if head.ns is None:
         # Interop sugar shapes — never macros.
+        # `.method` / `.-field`: leading `.` followed by a non-`.` char
+        #   (so `..`, the threading macro, is NOT interop sugar).
+        # `Class.`: trailing `.` preceded by a non-`.` char.
         n = head.name
-        if len(n) > 1 and (n[0] == "." or n[len(n) - 1] == "."):
-            return form
+        if len(n) > 1:
+            if n[0] == "." and n[1] != ".":
+                return form
+            if n[len(n) - 1] == "." and n[len(n) - 2] != ".":
+                return form
     v = _resolve_in_current_ns(head)
     if not isinstance(v, Var) or not v.is_macro():
         return form
@@ -483,17 +489,20 @@ def _compile_form(form, ctx):
                 _compile_import_star(s.next(), ctx)
                 return
         # Interop sugar — only on bare unqualified Symbol heads.
+        # `.method` / `.-field` requires `.` followed by a non-`.` char
+        # so the `..` threading macro doesn't get caught here.
         if isinstance(first, Symbol) and first.ns is None:
             iname = first.name
-            # `.method` and `.-field` interop sugar.
-            if len(iname) > 1 and iname[0] == ".":
+            if len(iname) > 1 and iname[0] == "." and iname[1] != ".":
                 if iname[1] == "-" and len(iname) > 2:
                     _compile_field_access(iname[2:], s.next(), ctx)
                 else:
                     _compile_method_call(iname[1:], s.next(), ctx)
                 return
-            # `Class.` constructor sugar (trailing dot).
-            if len(iname) > 1 and iname[len(iname) - 1] == ".":
+            # `Class.` constructor sugar — trailing `.` preceded by non-`.`.
+            if (len(iname) > 1
+                    and iname[len(iname) - 1] == "."
+                    and iname[len(iname) - 2] != "."):
                 _compile_ctor_sugar(first, iname, s.next(), ctx)
                 return
         # Function-call form: (f arg1 arg2 ...)

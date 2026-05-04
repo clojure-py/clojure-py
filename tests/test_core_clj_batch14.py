@@ -81,19 +81,19 @@ def test_into_array_from_seq():
     assert out == [0, 1, 2, 3, 4]
 
 def test_into_array_with_type_str():
-    out = E('(clojure.core/into-array str ["a" "b" "c"])')
+    out = E('(clojure.core/into-array String ["a" "b" "c"])')
     assert out == ["a", "b", "c"]
 
 def test_into_array_with_type_int():
-    out = E("(clojure.core/into-array int [1 2 3])")
+    out = E("(clojure.core/into-array Integer [1 2 3])")
     assert out == [1, 2, 3]
 
 def test_into_array_with_type_rejects_mismatch():
     with pytest.raises(TypeError, match="not an instance of"):
-        E('(clojure.core/into-array str ["a" 1])')
+        E('(clojure.core/into-array String ["a" 1])')
 
 def test_into_array_with_type_allows_nil():
-    out = E('(clojure.core/into-array str ["a" nil "b"])')
+    out = E('(clojure.core/into-array String ["a" nil "b"])')
     assert out == ["a", None, "b"]
 
 
