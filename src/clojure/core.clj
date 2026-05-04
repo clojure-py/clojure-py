@@ -3858,3 +3858,82 @@
   [& more]
     (binding [*print-readably* nil]
       (apply prn more)))
+
+(defn read
+  "Reads the next object from stream, which must be an instance of
+  java.io.PushbackReader or some derivee.  stream defaults to the
+  current value of *in*.
+
+  Opts is a persistent map with valid keys:
+    :read-cond - :allow to process reader conditionals, or
+                 :preserve to keep all branches
+    :features - persistent set of feature keywords for reader conditionals
+    :eof - on eof, return value unless :eofthrow, then throw.
+           if not specified, will throw
+
+  Note that read can execute code (controlled by *read-eval*),
+  and as such should be used only with trusted sources.
+
+  For data structure interop use clojure.edn/read"
+  {:added "1.0"
+   :static true}
+  ([]
+   (read *in*))
+  ([stream]
+   (read stream true nil))
+  ([stream eof-error? eof-value]
+   (read stream eof-error? eof-value false))
+  ([stream eof-error? eof-value recursive?]
+   (. clojure.lang.LispReader (read stream (boolean eof-error?) eof-value recursive?)))
+  ([opts stream]
+   (. clojure.lang.LispReader (read stream opts))))
+
+(defn read+string
+  "Like read, and taking the same args. stream must be a LineNumberingPushbackReader.
+  Returns a vector containing the object read and the (whitespace-trimmed) string read."
+  {:added "1.10"}
+  ([] (read+string *in*))
+  ([stream] (read+string stream true nil))
+  ([stream eof-error? eof-value] (read+string stream eof-error? eof-value false))
+  ([^clojure.lang.LineNumberingPushbackReader stream eof-error? eof-value recursive?]
+   (try
+     ;; JVM uses .captureString / .getString (camelCase). Our
+     ;; LineNumberingPushbackReader exposes them as snake_case.
+     (.capture_string stream)
+     (let [o (read stream eof-error? eof-value recursive?)
+           s (.strip (.get_string stream))]
+       [o s])
+     (catch Throwable ex
+       (.get_string stream)
+       (throw ex))))
+  ([opts ^clojure.lang.LineNumberingPushbackReader stream]
+   (try
+     (.capture_string stream)
+     (let [o (read opts stream)
+           s (.strip (.get_string stream))]
+       [o s])
+     (catch Throwable ex
+       (.get_string stream)
+       (throw ex)))))
+
+(defn read-line
+  "Reads the next line from stream that is the current value of *in* ."
+  {:added "1.0"
+   :static true}
+  []
+  (if (instance? clojure.lang.LineNumberingPushbackReader *in*)
+    (.read_line ^clojure.lang.LineNumberingPushbackReader *in*)
+    (.read_line ^clojure.lang.BufferedReader *in*)))
+
+(defn read-string
+  "Reads one object from the string s. Optionally include reader
+  options, as specified in read.
+
+  Note that read-string can execute code (controlled by *read-eval*),
+  and as such should be used only with trusted sources.
+
+  For data structure interop use clojure.edn/read-string"
+  {:added "1.0"
+   :static true}
+  ([s] (clojure.lang.RT/read_string s))
+  ([opts s] (clojure.lang.RT/read_string s opts)))

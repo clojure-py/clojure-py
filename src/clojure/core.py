@@ -304,6 +304,11 @@ def _bootstrap():
                 line_parts.append(buf[start:end])
                 self._pos = end
 
+        # snake_case alias matching the rest of the interop surface and
+        # what LineNumberingPushbackReader exposes.
+        def read_line(self):
+            return self.readLine()
+
         def close(self):
             close = getattr(self._source, "close", None)
             if close is not None:
@@ -420,6 +425,44 @@ def _bootstrap():
                 arr.sort(key=_functools.cmp_to_key(_cmp))
             return arr
 
+    # clojure.lang.LispReader — JVM exposes its reader as a class with
+    # static `read` overloads. Our reader is the module-level
+    # `clojure.lang.read` function; this thin static class wraps it so
+    # the JVM source `(. clojure.lang.LispReader (read ...))` works
+    # verbatim.
+    from clojure.lang import (
+        read as _module_read,
+        IPersistentMap as _IPersistentMap,
+    )
+    class _LispReader:
+        @staticmethod
+        def read(*args):
+            # Dispatch JVM's overloads:
+            #   read(stream)
+            #   read(stream, opts)                — when 2nd arg is a map
+            #   read(stream, eof_is_error, eof_value)
+            #   read(stream, eof_is_error, eof_value, is_recursive)
+            if len(args) == 1:
+                return _module_read(args[0])
+            if len(args) == 2:
+                stream, second = args
+                if isinstance(second, _IPersistentMap):
+                    return _module_read(stream, opts=second)
+                return _module_read(stream, eof_is_error=second)
+            if len(args) == 3:
+                stream, eof_err, eof_val = args
+                return _module_read(stream,
+                                    eof_is_error=eof_err,
+                                    eof_value=eof_val)
+            if len(args) == 4:
+                stream, eof_err, eof_val, recursive = args
+                return _module_read(stream,
+                                    eof_is_error=eof_err,
+                                    eof_value=eof_val,
+                                    is_recursive=recursive)
+            raise TypeError(
+                "LispReader.read takes 1-4 args, got " + str(len(args)))
+
     # clojure.lang.System — a tiny stand-in for java.lang.System. Only
     # getProperty is implemented, since core.clj uses it just to read
     # "line.separator". Add more keys here if the translation grows new
@@ -442,6 +485,7 @@ def _bootstrap():
     setattr(_lang, "Arrays", _Arrays)
     setattr(_lang, "BufferedReader", _BufferedReader)
     setattr(_lang, "CountDownLatch", _CountDownLatch)
+    setattr(_lang, "LispReader", _LispReader)
     setattr(_lang, "System", _System)
     setattr(_lang, "TimeUnit", _TimeUnit)
 
@@ -459,6 +503,10 @@ def _bootstrap():
     core_ns.import_class(_Symbol.intern("ClassCastException"), TypeError)
     core_ns.import_class(_Symbol.intern("IllegalStateException"), RuntimeError)
     core_ns.import_class(_Symbol.intern("RuntimeException"), RuntimeError)
+    # JVM's Throwable is the root of all exceptions, including non-Exception
+    # things like Error (OutOfMemoryError, etc.). Python's BaseException is
+    # the closest equivalent.
+    core_ns.import_class(_Symbol.intern("Throwable"), BaseException)
     core_ns.import_class(_Symbol.intern("StringBuilder"), _StringBuilder)
     core_ns.import_class(_Symbol.intern("Object"), object)
     import numbers as _numbers_mod
@@ -493,6 +541,14 @@ def _bootstrap():
     _Var.intern(core_ns,
                 _Symbol.intern("*out*"),
                 _sys.stdout).set_dynamic()
+
+    # *in* — JVM uses LineNumberingPushbackReader wrapping System.in.
+    # We do the same with sys.stdin so (read-line) and (read) work
+    # against terminal input in a REPL.
+    from clojure.lang import LineNumberingPushbackReader as _LNPR
+    _Var.intern(core_ns,
+                _Symbol.intern("*in*"),
+                _LNPR(_sys.stdin)).set_dynamic()
 
     here = _os.path.dirname(_os.path.abspath(__file__))
     try:

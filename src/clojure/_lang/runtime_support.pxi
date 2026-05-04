@@ -196,6 +196,19 @@ class RT:
     def unchecked_char_cast(x): return Numbers.unchecked_char_cast(x)
 
     @staticmethod
+    def read_string(*args):
+        """JVM RT.readString — read a single form from a string. Used
+        by clojure.core/read-string."""
+        from clojure.lang import read_string as _module_read_string
+        if len(args) == 1:
+            return _module_read_string(args[0])
+        if len(args) == 2:
+            s, opts = args
+            return _module_read_string(s, opts=opts)
+        raise TypeError(
+            "RT.read_string takes 1 or 2 args, got " + str(len(args)))
+
+    @staticmethod
     def iter(coll):
         """JVM RT.iter — return a Python iterator over the collection.
         For nil returns an empty iterator."""
