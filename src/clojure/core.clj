@@ -2897,3 +2897,196 @@
   {:added "1.7"}
   [x]
   (if (reduced? x) x (reduced x)))
+
+(defn unreduced
+  "If x is reduced?, returns (deref x), else returns x"
+  {:added "1.7"}
+  [x]
+  (if (reduced? x) (deref x) x))
+
+(defn take
+  "Returns a lazy sequence of the first n items in coll, or all items if
+  there are fewer than n.  Returns a stateful transducer when
+  no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([n]
+     (fn [rf]
+       (let [nv (volatile! n)]
+         (fn
+           ([] (rf))
+           ([result] (rf result))
+           ([result input]
+              (let [n @nv
+                    nn (vswap! nv dec)
+                    result (if (pos? n)
+                             (rf result input)
+                             result)]
+                (if (not (pos? nn))
+                  (ensure-reduced result)
+                  result)))))))
+  ([n coll]
+     (lazy-seq
+      (when (pos? n)
+        (when-let [s (seq coll)]
+          (cons (first s) (take (dec n) (rest s))))))))
+
+(defn take-while
+  "Returns a lazy sequence of successive items from coll while
+  (pred item) returns logical true. pred must be free of side-effects.
+  Returns a transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([pred]
+     (fn [rf]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+            (if (pred input)
+              (rf result input)
+              (reduced result))))))
+  ([pred coll]
+     (lazy-seq
+      (when-let [s (seq coll)]
+        (when (pred (first s))
+          (cons (first s) (take-while pred (rest s))))))))
+
+(defn drop
+  "Returns a laziness-preserving sequence of all but the first n items in coll.
+  Returns a stateful transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([n]
+     (fn [rf]
+       (let [nv (volatile! n)]
+         (fn
+           ([] (rf))
+           ([result] (rf result))
+           ([result input]
+              (let [n @nv]
+                (vswap! nv dec)
+                (if (pos? n)
+                  result
+                  (rf result input))))))))
+  ([n coll]
+     (if (instance? clojure.lang.IDrop coll)
+       (or
+        (if (pos? n)
+          (.drop ^clojure.lang.IDrop coll (if (int? n) n (Math/ceil n)))
+          (seq coll))
+        ())
+       (let [step (fn [n coll]
+                    (let [s (seq coll)]
+                      (if (and (pos? n) s)
+                        (recur (dec n) (rest s))
+                        s)))]
+         (lazy-seq (step n coll))))))
+
+(defn drop-last
+  "Return a lazy sequence of all but the last n (default 1) items in coll"
+  {:added "1.0"
+   :static true}
+  ([coll] (drop-last 1 coll))
+  ([n coll] (map (fn [x _] x) coll (drop n coll))))
+
+(defn take-last
+  "Returns a seq of the last n items in coll.  Depending on the type
+  of coll may be no better than linear time.  For vectors, see also subvec."
+  {:added "1.1"
+   :static true}
+  [n coll]
+  (loop [s (seq coll), lead (seq (drop n coll))]
+    (if lead
+      (recur (next s) (next lead))
+      s)))
+
+(defn drop-while
+  "Returns a lazy sequence of the items in coll starting from the
+  first item for which (pred item) returns logical false.  Returns a
+  stateful transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([pred]
+     (fn [rf]
+       (let [dv (volatile! true)]
+         (fn
+           ([] (rf))
+           ([result] (rf result))
+           ([result input]
+              (let [drop? @dv]
+                (if (and drop? (pred input))
+                  result
+                  (do
+                    (vreset! dv nil)
+                    (rf result input)))))))))
+  ([pred coll]
+     (let [step (fn [pred coll]
+                  (let [s (seq coll)]
+                    (if (and s (pred (first s)))
+                      (recur pred (rest s))
+                      s)))]
+       (lazy-seq (step pred coll)))))
+
+(defn cycle
+  "Returns a lazy (infinite!) sequence of repetitions of the items in coll."
+  {:added "1.0"
+   :static true}
+  [coll] (clojure.lang.Cycle/create (seq coll)))
+
+(defn split-at
+  "Returns a vector of [(take n coll) (drop n coll)]"
+  {:added "1.0"
+   :static true}
+  [n coll]
+    [(take n coll) (drop n coll)])
+
+(defn split-with
+  "Returns a vector of [(take-while pred coll) (drop-while pred coll)]"
+  {:added "1.0"
+   :static true}
+  [pred coll]
+    [(take-while pred coll) (drop-while pred coll)])
+
+(defn repeat
+  "Returns a lazy (infinite!, or length n if supplied) sequence of xs."
+  {:added "1.0"
+   :static true}
+  ([x] (clojure.lang.Repeat/create x))
+  ([n x] (clojure.lang.Repeat/create n x)))
+
+(defn replicate
+  "DEPRECATED: Use 'repeat' instead.
+   Returns a lazy seq of n xs."
+  {:added "1.0"
+   :deprecated "1.3"}
+  [n x] (take n (repeat x)))
+
+(defn iterate
+  "Returns a lazy (infinite!) sequence of x, (f x), (f (f x)) etc.
+  f must be free of side-effects"
+  {:added "1.0"
+   :static true}
+  [f x] (clojure.lang.Iterate/create f x) )
+
+(defn range
+  "Returns a lazy seq of nums from start (inclusive) to end
+  (exclusive), by step, where start defaults to 0, step to 1, and end to
+  infinity. When step is equal to 0, returns an infinite sequence of
+  start. When start is equal to end, returns empty list."
+  {:added "1.0"
+   :static true}
+  ([]
+   (iterate inc' 0))
+  ([end]
+   (if (int? end)
+     (clojure.lang.LongRange/create end)
+     (clojure.lang.Range/create end)))
+  ([start end]
+   (if (and (int? start) (int? end))
+     (clojure.lang.LongRange/create start end)
+     (clojure.lang.Range/create start end)))
+  ([start end step]
+   (if (and (int? start) (int? end) (int? step))
+     (clojure.lang.LongRange/create start end step)
+     (clojure.lang.Range/create start end step))))
