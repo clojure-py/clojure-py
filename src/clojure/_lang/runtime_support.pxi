@@ -427,6 +427,33 @@ class RT:
         return out
 
     @staticmethod
+    def seq_to_typed_array(*args):
+        # JVM has typed arrays (e.g. String[]); we don't, so the result is
+        # always a Python list. The type-arg form still type-checks elements
+        # so `(into-array String [...])` rejects a non-string just like JVM.
+        # nil passes any type-check, mirroring Java's "null is assignable
+        # to any reference type".
+        if len(args) == 1:
+            return RT.to_array(args[0])
+        if len(args) == 2:
+            cls, coll = args
+            s = RT.seq(coll) if coll is not None else None
+            out = []
+            while s is not None:
+                v = s.first()
+                if v is not None and not isinstance(v, cls):
+                    raise TypeError(
+                        "into-array: element "
+                        + repr(v)
+                        + " is not an instance of "
+                        + getattr(cls, "__name__", repr(cls)))
+                out.append(v)
+                s = s.next()
+            return out
+        raise TypeError(
+            "seq_to_typed_array takes 1 or 2 args, got " + str(len(args)))
+
+    @staticmethod
     def boolean_cast(x):
         # Clojure: only false and nil are falsy; everything else is true.
         if x is None or x is False:

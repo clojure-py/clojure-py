@@ -3487,3 +3487,35 @@
   (if (instance? clojure.lang.IEditableCollection to)
     (persistent! (reduce1 conj! (transient to) from))
     (reduce1 conj to from)))
+
+(defn into-array
+  "Returns an array with components set to the values in aseq. The array's
+  component type is type if provided, or the type of the first value in
+  aseq if present, or Object. All values in aseq must be compatible with
+  the component type. Class objects for the primitive types can be obtained
+  using, e.g., Integer/TYPE."
+  {:added "1.0"
+   :static true}
+  ([aseq]
+     (clojure.lang.RT/seq_to_typed_array (seq aseq)))
+  ([type aseq]
+     (clojure.lang.RT/seq_to_typed_array type (seq aseq))))
+
+(defn ^{:private true}
+  array [& items]
+    (into-array items))
+
+(defn class
+  "Returns the Class of x"
+  {:added "1.0"
+   :static true}
+  ;; JVM body is `(. x (getClass))`; Python has no getClass method but
+  ;; every object has a __class__ field that fills the same role.
+  ^Class [^Object x] (if (nil? x) x (.-__class__ x)))
+
+(defn type
+  "Returns the :type metadata of x, or its Class if none"
+  {:added "1.0"
+   :static true}
+  [x]
+  (or (get (meta x) :type) (class x)))
