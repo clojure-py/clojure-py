@@ -9,8 +9,8 @@ doseq (macro), dotimes (macro re-def with assert-args)
 
 The IO/concurrency forms from this same JVM range — line-seq, await,
 await1, await-for — live in test_core_clj_batch12_io.py alongside the
-java.io.BufferedReader / java.util.concurrent.CountDownLatch /
-java.util.concurrent.TimeUnit shims they depend on.
+clojure.lang.BufferedReader / clojure.lang.CountDownLatch /
+clojure.lang.TimeUnit shims they depend on.
 """
 
 import pytest

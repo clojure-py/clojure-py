@@ -6,11 +6,13 @@ Forms:
   line-seq                  — JVM line 3097
   await, await1, await-for  — JVM lines 3296-3333
 
-Backend systems added under src/clojure/core.py:
-  java.io.BufferedReader              — chars-and-buffer reader that
-                                        recognizes \\n, \\r, and \\r\\n.
-  java.util.concurrent.CountDownLatch — Condition-backed countdown.
-  java.util.concurrent.TimeUnit       — constants for await(timeout, unit).
+Backend systems added under src/clojure/core.py (registered on
+clojure.lang rather than under synthetic java.* packages, since they
+are not real Java classes):
+  clojure.lang.BufferedReader  — chars-and-buffer reader that
+                                 recognizes \\n, \\r, and \\r\\n.
+  clojure.lang.CountDownLatch  — Condition-backed countdown.
+  clojure.lang.TimeUnit        — constants for await(timeout, unit).
 """
 
 import io
@@ -41,7 +43,7 @@ def _intern(name, val):
 
 # --- BufferedReader shim ------------------------------------------
 
-BufferedReader = RT.class_for_name("java.io.BufferedReader")
+BufferedReader = RT.class_for_name("clojure.lang.BufferedReader")
 
 
 def _br(text):
@@ -136,8 +138,8 @@ def test_line_seq_no_trailing_newline():
 
 # --- CountDownLatch shim ------------------------------------------
 
-CountDownLatch = RT.class_for_name("java.util.concurrent.CountDownLatch")
-TimeUnit = RT.class_for_name("java.util.concurrent.TimeUnit")
+CountDownLatch = RT.class_for_name("clojure.lang.CountDownLatch")
+TimeUnit = RT.class_for_name("clojure.lang.TimeUnit")
 
 
 def test_count_down_latch_immediate_release():

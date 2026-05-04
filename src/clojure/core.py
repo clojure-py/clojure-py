@@ -240,13 +240,14 @@ def _bootstrap():
     import math as _math_mod
     setattr(_lang, "Math", _math_mod)
 
-    # java.io.BufferedReader — wraps any object with .read() returning a
-    # str (Python text files, io.StringIO, etc.). readLine matches Java's
-    # contract: returns the next line *without* its terminator (\n, \r,
-    # or \r\n, all three recognized) and returns None at EOF. We read
-    # chars from an internal block buffer rather than relying on the
-    # source's readline() so \r-only line breaks (e.g. in StringIO with
-    # default newline) are split correctly.
+    # clojure.lang.BufferedReader — wraps any object with .read() returning
+    # a str (Python text files, io.StringIO, etc.). Named after JVM's
+    # java.io.BufferedReader and exposes the same readLine contract:
+    # returns the next line *without* its terminator (\n, \r, or \r\n,
+    # all three recognized) and returns None at EOF. We read chars from
+    # an internal block buffer rather than relying on the source's
+    # readline() so \r-only line breaks (e.g. in StringIO with default
+    # newline) are split correctly.
     class _BufferedReader:
         __slots__ = ("_source", "_buf", "_pos", "_eof")
 
@@ -315,8 +316,9 @@ def _bootstrap():
             self.close()
             return False
 
-    # java.util.concurrent.TimeUnit — only the constants are used. Each
-    # one converts a unit-quantity into seconds for Python's threading
+    # clojure.lang.TimeUnit — counterpart to JVM's
+    # java.util.concurrent.TimeUnit. Only the constants are used. Each
+    # converts a unit-quantity into seconds for Python's threading
     # primitives. Just the SI ladder; matches the JVM enum members.
     class _TimeUnit:
         __slots__ = ("_secs_per_unit", "_name")
@@ -339,8 +341,9 @@ def _bootstrap():
     _TimeUnit.HOURS        = _TimeUnit(3600.0,  "HOURS")
     _TimeUnit.DAYS         = _TimeUnit(86400.0, "DAYS")
 
-    # java.util.concurrent.CountDownLatch — backs clojure.core/await
-    # and friends. countDown decrements; await blocks until zero.
+    # clojure.lang.CountDownLatch — counterpart to JVM's
+    # java.util.concurrent.CountDownLatch. Backs clojure.core/await and
+    # friends. countDown decrements; await blocks until zero.
     # Note: Python forbids `def await(self):` at source level, but
     # bytecode-level LOAD_ATTR "await" works fine — we install via
     # setattr below.
@@ -445,10 +448,14 @@ def _bootstrap():
         return parent
 
     _ensure_pkg("java.util").Arrays = _JavaArrays
-    _ensure_pkg("java.io").BufferedReader = _BufferedReader
-    _juc = _ensure_pkg("java.util.concurrent")
-    _juc.CountDownLatch = _CountDownLatch
-    _juc.TimeUnit = _TimeUnit
+
+    # IO/concurrency shims live under clojure.lang rather than under
+    # synthesized java.io / java.util.concurrent packages. They aren't
+    # real Java classes — putting them on clojure.lang makes that
+    # explicit and keeps RT.class_for_name's lookup path short.
+    setattr(_lang, "BufferedReader", _BufferedReader)
+    setattr(_lang, "CountDownLatch", _CountDownLatch)
+    setattr(_lang, "TimeUnit", _TimeUnit)
 
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)

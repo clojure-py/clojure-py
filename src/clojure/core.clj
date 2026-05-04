@@ -3121,10 +3121,10 @@
 
 (defn line-seq
   "Returns the lines of text from rdr as a lazy sequence of strings.
-  rdr must implement java.io.BufferedReader."
+  rdr must implement clojure.lang.BufferedReader."
   {:added "1.0"
    :static true}
-  [^java.io.BufferedReader rdr]
+  [^clojure.lang.BufferedReader rdr]
   (when-let [line (.readLine rdr)]
     (cons line (lazy-seq (line-seq rdr)))))
 
@@ -3332,7 +3332,7 @@
   (io! "await in transaction"
     (when *agent*
       (throw (new Exception "Can't await in agent action")))
-    (let [latch (new java.util.concurrent.CountDownLatch (count agents))
+    (let [latch (new clojure.lang.CountDownLatch (count agents))
           count-down (fn [agent] (. latch (countDown)) agent)]
       (doseq [agent agents]
         (send agent count-down))
@@ -3354,15 +3354,16 @@
     (io! "await-for in transaction"
      (when *agent*
        (throw (new Exception "Can't await in agent action")))
-     (let [latch (new java.util.concurrent.CountDownLatch (count agents))
+     (let [latch (new clojure.lang.CountDownLatch (count agents))
            count-down (fn [agent] (. latch (countDown)) agent)]
        (doseq [agent agents]
            (send agent count-down))
        ;; JVM source: `(. java.util.concurrent.TimeUnit MILLISECONDS)`
        ;; — a static field access. Our compiler treats `(. Cls name)`
        ;; as a method call, so use the slash form per the file-header
-       ;; convention for static fields.
-       (. latch (await timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)))))
+       ;; convention for static fields. The TimeUnit shim itself lives
+       ;; on clojure.lang rather than under java.util.concurrent.
+       (. latch (await timeout-ms clojure.lang.TimeUnit/MILLISECONDS)))))
 
 (defmacro dotimes
   "bindings => name n
