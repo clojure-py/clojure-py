@@ -46,6 +46,45 @@ class System:
         return int(_time_mod.time() * 1000)
 
 
+# --- StringWriter -------------------------------------------------
+
+class StringWriter:
+    """clojure.lang.StringWriter — counterpart to java.io.StringWriter.
+    Mutable text buffer that satisfies the same surface as our other
+    Writer-like targets (.write / .append / .flush / .close) plus
+    .toString and __str__ that return the accumulated text. Used by
+    with-out-str to capture *out*."""
+
+    __slots__ = ("_parts",)
+
+    def __init__(self, s=""):
+        self._parts = [s] if s else []
+
+    def write(self, s):
+        if s is None:
+            return
+        self._parts.append(s if isinstance(s, str) else str(s))
+
+    def append(self, s):
+        self.write(s)
+        return self
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+    def getvalue(self):
+        return "".join(self._parts)
+
+    def toString(self):
+        return "".join(self._parts)
+
+    def __str__(self):
+        return "".join(self._parts)
+
+
 # --- BufferedReader -----------------------------------------------
 
 class BufferedReader:

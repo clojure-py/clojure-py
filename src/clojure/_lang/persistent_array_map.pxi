@@ -570,6 +570,9 @@ IFn.register(TransientArrayMap)
 
 cdef PersistentArrayMap _PAM_EMPTY = _make_pam([], None)
 PERSISTENT_ARRAY_MAP_EMPTY = _PAM_EMPTY
+# Cython cdef classes don't allow class-attribute assignment, so the
+# JVM-style PersistentArrayMap/EMPTY isn't reachable from clj source.
+# core.clj uses `{}` literal where JVM uses PersistentArrayMap/EMPTY.
 
 
 # ---------- HashMap spillover helper ----------

@@ -4533,3 +4533,113 @@
    :static true}
   ([sym] (ns-resolve *ns* sym))
   ([env sym] (ns-resolve *ns* env sym)))
+
+(defn array-map
+  "Constructs an array-map. If any keys are equal, they are handled as
+  if by repeated uses of assoc."
+  {:added "1.0"
+   :static true}
+  ;; JVM: `(. PersistentArrayMap EMPTY)`. Cython cdef classes don't
+  ;; allow class-attribute assignment, so the EMPTY field isn't
+  ;; reachable as a static; the singleton is exposed at the module
+  ;; level instead, where the dotted-name resolver finds it.
+  ([] clojure.lang.PERSISTENT_ARRAY_MAP_EMPTY)
+  ([& keyvals]
+     (let [ary (to-array keyvals)]
+       (if (odd? (alength ary))
+         (throw (IllegalArgumentException. (str "No value supplied for key: " (last keyvals))))
+         (clojure.lang.PersistentArrayMap/create_as_if_by_assoc ary)))))
+
+(defn seq-to-map-for-destructuring
+  "Builds a map from a seq as described in
+  https://clojure.org/reference/special_forms#keyword-arguments"
+  {:added "1.11"}
+  [s]
+  (if (next s)
+    (clojure.lang.PersistentArrayMap/create_as_if_by_assoc (to-array s))
+    (if (seq s) (first s) clojure.lang.PERSISTENT_ARRAY_MAP_EMPTY)))
+
+;; JVM defines destructure / let-redef / maybe-destructured / fn-redef /
+;; loop-redef here (lines 4431-4651). Heavy machinery — saved for the
+;; next batch; need careful work to redefine the let/fn/loop bootstrap
+;; macros without breaking the rest of core.clj.
+
+(defmacro when-first
+  "bindings => x xs
+
+  Roughly the same as (when (seq xs) (let [x (first xs)] body)) but xs is evaluated only once"
+  {:added "1.0"}
+  [bindings & body]
+  (assert-args
+     (vector? bindings) "a vector for its binding"
+     (= 2 (count bindings)) "exactly 2 forms in binding vector")
+  ;; JVM uses `(let [[x xs] bindings] ...)` — destructuring. Our `let`
+  ;; is still the bootstrap version (no destructuring); use first/second
+  ;; explicitly. The destructured form will be restored once the
+  ;; destructure / let-redef batch lands.
+  (let [x (first bindings)
+        xs (second bindings)]
+    `(when-let [xs# (seq ~xs)]
+       (let [~x (first xs#)]
+           ~@body))))
+
+(defmacro lazy-cat
+  "Expands to code which yields a lazy sequence of the concatenation
+  of the supplied colls.  Each coll expr is not evaluated until it is
+  needed.
+
+  (lazy-cat xs ys zs) === (concat (lazy-seq xs) (lazy-seq ys) (lazy-seq zs))"
+  {:added "1.0"}
+  [& colls]
+  `(concat ~@(map #(list `lazy-seq %) colls)))
+
+;; for is also deferred to the destructure batch — its body uses
+;; destructuring extensively and benefits from the redef'd let/fn.
+
+(defmacro comment
+  "Ignores body, yields nil"
+  {:added "1.0"}
+  [& body])
+
+(defmacro with-out-str
+  "Evaluates exprs in a context in which *out* is bound to a fresh
+  StringWriter.  Returns the string created by any nested printing
+  calls."
+  {:added "1.0"}
+  [& body]
+  ;; JVM source: `(new java.io.StringWriter)`. We expose
+  ;; clojure.lang.StringWriter — a small mutable text buffer that
+  ;; satisfies the same surface (write/append/toString/__str__).
+  `(let [s# (new clojure.lang.StringWriter)]
+     (binding [*out* s#]
+       ~@body
+       (str s#))))
+
+(defmacro with-in-str
+  "Evaluates body in a context in which *in* is bound to a fresh
+  StringReader initialized with the string s."
+  {:added "1.0"}
+  [s & body]
+  ;; JVM source: `(java.io.StringReader. ~s)`. Python's analog is
+  ;; io.StringIO via the py.X path.
+  `(with-open [s# (-> (py.io/StringIO ~s) clojure.lang.LineNumberingPushbackReader.)]
+     (binding [*in* s#]
+       ~@body)))
+
+(defn pr-str
+  "pr to a string, returning it"
+  {:tag String
+   :added "1.0"
+   :static true}
+  [& xs]
+    (with-out-str
+     (apply pr xs)))
+
+(defn prn-str
+  "prn to a string, returning it"
+  {:tag String
+   :added "1.0"
+   :static true}
+  [& xs]
+  (with-out-str
+   (apply prn xs)))
