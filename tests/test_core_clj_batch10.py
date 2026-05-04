@@ -115,6 +115,33 @@ def test_sequence_on_nil_yields_empty():
         assert s.seq() is None
 
 
+# --- transducer support via sequence -----------------------------
+
+def test_sequence_with_map_transducer():
+    s = E("(clojure.core/sequence (clojure.core/map clojure.core/inc) [1 2 3])")
+    assert list(s) == [2, 3, 4]
+
+def test_sequence_with_filter_transducer():
+    s = E("(clojure.core/sequence (clojure.core/filter clojure.core/pos?) [-1 1 -2 2 -3 3])")
+    assert list(s) == [1, 2, 3]
+
+def test_sequence_with_composed_transducers():
+    """((comp (map inc) (filter even?)) ...) — left-to-right composition."""
+    s = E("(clojure.core/sequence "
+          " (clojure.core/comp (clojure.core/map clojure.core/inc) "
+          "                    (clojure.core/filter clojure.core/even?)) "
+          " [1 2 3 4 5])")
+    assert list(s) == [2, 4, 6]
+
+def test_sequence_with_remove_transducer():
+    s = E("(clojure.core/sequence (clojure.core/remove clojure.core/neg?) [-1 1 -2 2])")
+    assert list(s) == [1, 2]
+
+def test_sequence_with_empty_input():
+    s = E("(clojure.core/sequence (clojure.core/map clojure.core/inc) [])")
+    assert list(s) == []
+
+
 # --- every? / some ------------------------------------------------
 
 def test_every_empty_is_true():

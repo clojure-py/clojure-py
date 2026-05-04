@@ -179,10 +179,11 @@ class RT:
 
     @staticmethod
     def chunk_iterator_seq(it):
-        """JVM RT.chunkIteratorSeq — wrap an iterator as a chunked seq.
-        Stub: just materialize via IteratorSeq for now (loses chunking
-        but preserves seq semantics). The transducer machinery that
-        relies on this isn't wired up yet."""
+        """JVM RT.chunkIteratorSeq — wrap an iterator as a (lazy) seq.
+        We currently materialize via IteratorSeq, which preserves seq
+        semantics but loses the chunking optimization. The transducer
+        callers (sequence, etc.) work correctly; only bulk-throughput
+        of long pipelines suffers."""
         if it is None:
             return None
         return IteratorSeq.from_iterable(it)
