@@ -232,6 +232,47 @@ def _bootstrap():
     setattr(_lang, "Delay", _Delay)
     setattr(_lang, "TransformerIterator", _TransformerIterator)
 
+    # JVM has separate LongRange (int-only) and Range (any numeric).
+    # Our Range covers both — alias LongRange to it.
+    setattr(_lang, "LongRange", _lang.Range)
+
+    # Math/ceil and friends — register Python's math module under "Math".
+    import math as _math_mod
+    setattr(_lang, "Math", _math_mod)
+
+    # java.util.Arrays/sort — minimal shim; sorts a list in place using a
+    # comparator that returns -1/0/1. Used by clojure.core/sort.
+    import functools as _functools
+    class _JavaArrays:
+        @staticmethod
+        def sort(arr, comparator=None):
+            if comparator is None:
+                arr.sort()
+            else:
+                arr.sort(key=_functools.cmp_to_key(comparator))
+            return arr
+    # Stash on the clojure.lang module under the dotted name. Our class
+    # resolver handles `java.util.Arrays/sort` by importing the module
+    # `java.util` and looking up Arrays — we don't have that. Easier:
+    # register `java.util.Arrays` as a class attr on a fake module or
+    # just install it where class_for_name finds it. The simplest is to
+    # create a module-level attribute on a sub-package. Since
+    # class_for_name does importlib.import_module on the leading
+    # segment, we synthesize a `java.util` package in sys.modules.
+    import types as _types_mod
+    import sys as _sys_mod
+    if "java" not in _sys_mod.modules:
+        java_pkg = _types_mod.ModuleType("java")
+        java_util_pkg = _types_mod.ModuleType("java.util")
+        java_util_pkg.Arrays = _JavaArrays
+        java_pkg.util = java_util_pkg
+        _sys_mod.modules["java"] = java_pkg
+        _sys_mod.modules["java.util"] = java_util_pkg
+    else:
+        _sys_mod.modules.setdefault("java.util",
+                                     _types_mod.ModuleType("java.util"))
+        _sys_mod.modules["java.util"].Arrays = _JavaArrays
+
     core_ns = _Namespace.find_or_create(_Symbol.intern("clojure.core"))
     _RT.CURRENT_NS.bind_root(core_ns)
 

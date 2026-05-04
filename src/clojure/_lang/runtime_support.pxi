@@ -387,13 +387,19 @@ class RT:
     @staticmethod
     def class_for_name(name):
         """Resolve a dotted Python name to a class. 'collections.Counter' →
-        the class, 'int' → builtins.int.
+        the class, 'int' → builtins.int. For non-dotted names, also
+        checks the clojure.lang module so installed shims (Math,
+        StringBuilder, LongRange etc.) resolve.
 
         Uses rfind+slice rather than str.rsplit/split — the latter
         segfault under Cython 3.2 + CPython 3.14t (free-threading
         codegen bug)."""
         cdef int dot = name.rfind(".")
         if dot < 0:
+            import clojure.lang as _lang
+            on_lang = getattr(_lang, name, None)
+            if on_lang is not None:
+                return on_lang
             return getattr(_builtins, name)
         mod_name = name[:dot]
         cls_name = name[dot + 1:]

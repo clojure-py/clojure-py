@@ -20,6 +20,10 @@ cdef class Iterate(ASeq):
         self._next_node = None
         self._lock = Lock()
 
+    @staticmethod
+    def create(f, seed):
+        return Iterate(f, seed)
+
     def first(self):
         return self._seed
 
