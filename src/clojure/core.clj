@@ -3385,3 +3385,105 @@
          (when (< ~i n#)
            ~@body
            (recur (unchecked-inc ~i)))))))
+
+#_(defn into
+  "Returns a new coll consisting of to-coll with all of the items of
+  from-coll conjoined."
+  {:added "1.0"}
+  [to from]
+    (let [ret to items (seq from)]
+      (if items
+        (recur (conj ret (first items)) (next items))
+        ret)))
+
+;;;;;;;;;;;;;;;;;;;;; editable collections ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn transient
+  "Returns a new, transient version of the collection, in constant time.
+
+  Transients support a parallel set of 'changing' operations, with similar names
+  followed by ! - assoc!, conj! etc. These do the same things as their persistent
+  counterparts except the return values are themselves transient.
+
+  Note in particular that transients are not designed to be bashed in-place. You
+  must capture and use the return value in the next call. In this way, they support
+  the same code structure as the functional persistent code they replace."
+  {:added "1.1"
+   :static true}
+  [^clojure.lang.IEditableCollection coll]
+  (.as_transient coll))
+
+(defn persistent!
+  "Returns a new, persistent version of the transient collection, in
+  constant time. The transient collection cannot be used after this
+  call, any such use will throw an exception."
+  {:added "1.1"
+   :static true}
+  [^clojure.lang.ITransientCollection coll]
+  (.persistent coll))
+
+(defn conj!
+  "Adds x to the transient collection, and return coll. The 'addition'
+  may happen at different 'places' depending on the concrete type."
+  {:added "1.1"
+   :static true}
+  ([] (transient []))
+  ([coll] coll)
+  ([^clojure.lang.ITransientCollection coll x]
+     (.conj coll x)))
+
+(defn assoc!
+  "When applied to a transient map, adds mapping of key(s) to
+  val(s). When applied to a transient vector, sets the val at index.
+  Note - index must be <= (count vector). Returns coll."
+  {:added "1.1"
+   :static true}
+  ([^clojure.lang.ITransientAssociative coll key val] (.assoc coll key val))
+  ([^clojure.lang.ITransientAssociative coll key val & kvs]
+   (let [ret (.assoc coll key val)]
+     (if kvs
+       (recur ret (first kvs) (second kvs) (nnext kvs))
+       ret))))
+
+(defn dissoc!
+  "Returns a transient map that doesn't contain a mapping for key(s)."
+  {:added "1.1"
+   :static true}
+  ([^clojure.lang.ITransientMap map key] (.without map key))
+  ([^clojure.lang.ITransientMap map key & ks]
+   (let [ret (.without map key)]
+     (if ks
+       (recur ret (first ks) (next ks))
+       ret))))
+
+(defn pop!
+  "Removes the last item from a transient vector. If
+  the collection is empty, throws an exception. Returns coll"
+  {:added "1.1"
+   :static true}
+  [^clojure.lang.ITransientVector coll]
+  (.pop coll))
+
+(defn disj!
+  "disj[oin]. Returns a transient set of the same (hashed/sorted) type, that
+  does not contain key(s)."
+  {:added "1.1"
+   :static true}
+  ([set] set)
+  ([^clojure.lang.ITransientSet set key]
+   (. set (disjoin key)))
+  ([^clojure.lang.ITransientSet set key & ks]
+   (let [ret (. set (disjoin key))]
+     (if ks
+       (recur ret (first ks) (next ks))
+       ret))))
+
+;redef into with batch support
+(defn ^:private into1
+  "Returns a new coll consisting of to-coll with all of the items of
+  from-coll conjoined."
+  {:added "1.0"
+   :static true}
+  [to from]
+  (if (instance? clojure.lang.IEditableCollection to)
+    (persistent! (reduce1 conj! (transient to) from))
+    (reduce1 conj to from)))
