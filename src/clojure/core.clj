@@ -5809,3 +5809,139 @@
    :static true}
   [fmt & args]
   (print (apply format fmt args)))
+
+;; with-loading-context (5812) and the ns macro (5821) skipped —
+;; with-loading-context uses JVM ClassLoader machinery; the ns macro
+;; uses gen-class plus hooks into require/use/load which we haven't
+;; ported yet. Will land in a focused batch.
+
+(defmacro refer-clojure
+  "Same as (refer 'clojure.core <filters>)"
+  {:added "1.0"}
+  [& filters]
+  `(clojure.core/refer '~'clojure.core ~@filters))
+
+(defmacro defonce
+  "defs name to have the root value of the expr iff the named var has no root value,
+  else expr is unevaluated"
+  {:added "1.0"}
+  [name expr]
+  `(let [v# (def ~name)]
+     ;; JVM: .hasRoot — snake_case in clojure-py.
+     (when-not (.has_root v#)
+       (def ~name ~expr))))
+
+;;;;;;;;;;; require/use/load, contributed by Stephen C. Gilardi ;;;;;;;;;;;;;;;;;;
+
+(defonce ^:dynamic
+  ^{:private true
+     :doc "A ref to a sorted set of symbols representing loaded libs"}
+  *loaded-libs* (ref (sorted-set)))
+
+(defonce ^:dynamic
+  ^{:private true
+     :doc "A stack of paths currently being loaded by this thread"}
+  *pending-paths* ())
+
+(defonce ^:dynamic
+  ^{:private true :doc
+     "True while a verbose load is pending"}
+  *loading-verbosely* false)
+
+;; throw-if (5911) skipped — it builds a CompilerException with a JVM
+;; stack-trace rewrite. Used only inside the load machinery (which we
+;; haven't ported); revisit alongside that.
+
+(defn- libspec?
+  "Returns true if x is a libspec"
+  [x]
+  (or (symbol? x)
+      (and (vector? x)
+           (or
+            (nil? (second x))
+            (keyword? (second x))))))
+
+(defn- prependss
+  "Prepends a symbol or a seq to coll"
+  [x coll]
+  (if (symbol? x)
+    (cons x coll)
+    (concat x coll)))
+
+(defn- root-resource
+  "Returns the root directory path for a lib"
+  {:tag String}
+  [lib]
+  (str \/
+       (.. (name lib)
+           (replace \- \_)
+           (replace \. \/))))
+
+(defn- root-directory
+  "Returns the root resource path for a lib"
+  [lib]
+  (let [d (root-resource lib)]
+    (subs d 0 (.lastIndexOf d "/"))))
+
+;; load-one / load-all / load-lib / load-libs / require / use /
+;; serialized-require / requiring-resolve / loaded-libs / load /
+;; compile (5958-6205) all skipped — they need:
+;;   - a Python file-system search story for finding .clj files,
+;;     analogous to JVM's classpath-relative resolution;
+;;   - throw-if, check-cyclic-dependency;
+;;   - cycle-detection via *pending-paths*.
+;; Will land in a focused require/use/load batch — substantial enough
+;; to warrant its own design pass.
+
+(defn loaded-libs
+  "Returns a sorted set of symbols naming the currently loaded libs"
+  {:added "1.0"}
+  [] @*loaded-libs*)
+
+;;;;;;;;;;;;; nested associative ops ;;;;;;;;;;;
+
+(defn get-in
+  "Returns the value in a nested associative structure,
+  where ks is a sequence of keys. Returns nil if the key
+  is not present, or the not-found value if supplied."
+  {:added "1.2"
+   :static true}
+  ([m ks]
+     (reduce1 get m ks))
+  ([m ks not-found]
+     (loop [sentinel (Object.)
+            m m
+            ks (seq ks)]
+       (if ks
+         (let [m (get m (first ks) sentinel)]
+           (if (identical? sentinel m)
+             not-found
+             (recur sentinel m (next ks))))
+         m))))
+
+(defn assoc-in
+  "Associates a value in a nested associative structure, where ks is a
+  sequence of keys and v is the new value and returns a new nested structure.
+  If any levels do not exist, hash-maps will be created."
+  {:added "1.0"
+   :static true}
+  [m [k & ks] v]
+  (if ks
+    (assoc m k (assoc-in (get m k) ks v))
+    (assoc m k v)))
+
+(defn update-in
+  "'Updates' a value in a nested associative structure, where ks is a
+  sequence of keys and f is a function that will take the old value
+  and any supplied args and return the new value, and returns a new
+  nested structure.  If any levels do not exist, hash-maps will be
+  created."
+  {:added "1.0"
+   :static true}
+  ([m ks f & args]
+     (let [up (fn up [m ks f args]
+                (let [[k & ks] ks]
+                  (if ks
+                    (assoc m k (up (get m k) ks f args))
+                    (assoc m k (apply f (get m k) args)))))]
+       (up m ks f args))))

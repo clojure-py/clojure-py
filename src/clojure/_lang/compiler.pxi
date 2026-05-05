@@ -1019,6 +1019,29 @@ _JAVA_METHOD_FALLBACKS = {
     "getCause": _fallback_get_cause,
     # JVM String.substring → Python slicing.
     "substring": _fallback_substring,
+    # JVM String.lastIndexOf(sub) → Python str.rfind(sub) (same semantics:
+    # returns -1 if not found).
+    "lastIndexOf": (lambda s, sub:
+                    s.lastIndexOf(sub) if hasattr(s, "lastIndexOf")
+                    else s.rfind(sub)),
+    # JVM String.indexOf(sub) → Python str.find(sub).
+    "indexOf": (lambda s, *args:
+                s.indexOf(*args) if hasattr(s, "indexOf")
+                else s.find(*args)),
+    # JVM String.replace(old, new) → Python str.replace.
+    # Python's replace already exists with same name and semantics, so
+    # this fallback only fires for non-str receivers; rare but keeps
+    # the JVM source verbatim where Clojure code uses (.replace s a b)
+    # with non-str inputs.
+    "replace": (lambda s, *args:
+                s.replace(*args)),
+    # JVM String.startsWith / endsWith — Python uses startswith / endswith.
+    "startsWith": (lambda s, prefix:
+                   s.startsWith(prefix) if hasattr(s, "startsWith")
+                   else s.startswith(prefix)),
+    "endsWith": (lambda s, suffix:
+                 s.endsWith(suffix) if hasattr(s, "endsWith")
+                 else s.endswith(suffix)),
 }
 
 
