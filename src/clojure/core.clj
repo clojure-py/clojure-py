@@ -7539,3 +7539,232 @@
       (if (and s (< i n))
         (recur (inc i) (next s))
         i))))
+
+;;;;;;;;;;;;;; predicate combinators / threading + redefs (JVM 7592-7806) ;;;;
+;;
+;; All pure Clojure, two snake-case Var-method adaptations
+;; (.bindRoot → .bind_root, .getRawRoot → .get_raw_root) for
+;; with-redefs-fn. realized? was already redefined in batch 37 with
+;; broader logic (handles IPending + concurrent.futures.Future), so
+;; we skip the JVM redef of it here.
+
+(defn every-pred
+  "Takes a set of predicates and returns a function f that returns true if all of its
+  composing predicates return a logical true value against all of its arguments, else it returns
+  false. Note that f is short-circuiting in that it will stop execution on the first
+  argument that triggers a logical false result against the original predicates."
+  {:added "1.3"}
+  ([p]
+   (fn ep1
+     ([] true)
+     ([x] (boolean (p x)))
+     ([x y] (boolean (and (p x) (p y))))
+     ([x y z] (boolean (and (p x) (p y) (p z))))
+     ([x y z & args] (boolean (and (ep1 x y z)
+                                   (every? p args))))))
+  ([p1 p2]
+   (fn ep2
+     ([] true)
+     ([x] (boolean (and (p1 x) (p2 x))))
+     ([x y] (boolean (and (p1 x) (p1 y) (p2 x) (p2 y))))
+     ([x y z] (boolean (and (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z))))
+     ([x y z & args] (boolean (and (ep2 x y z)
+                                   (every? #(and (p1 %) (p2 %)) args))))))
+  ([p1 p2 p3]
+   (fn ep3
+     ([] true)
+     ([x] (boolean (and (p1 x) (p2 x) (p3 x))))
+     ([x y] (boolean (and (p1 x) (p1 y) (p2 x) (p2 y) (p3 x) (p3 y))))
+     ([x y z] (boolean (and (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z) (p3 x) (p3 y) (p3 z))))
+     ([x y z & args] (boolean (and (ep3 x y z)
+                                   (every? #(and (p1 %) (p2 %) (p3 %)) args))))))
+  ([p1 p2 p3 & ps]
+   (let [ps (list* p1 p2 p3 ps)]
+     (fn epn
+       ([] true)
+       ([x] (every? #(% x) ps))
+       ([x y] (every? #(and (% x) (% y)) ps))
+       ([x y z] (every? #(and (% x) (% y) (% z)) ps))
+       ([x y z & args] (boolean (and (epn x y z)
+                                     (every? #(every? % args) ps))))))))
+
+(defn some-fn
+  "Takes a set of predicates and returns a function f that returns the first logical true value
+  returned by one of its composing predicates against any of its arguments, else it returns
+  logical false. Note that f is short-circuiting in that it will stop execution on the first
+  argument that triggers a logical true result against the original predicates."
+  {:added "1.3"}
+  ([p]
+   (fn sp1
+     ([] nil)
+     ([x] (p x))
+     ([x y] (or (p x) (p y)))
+     ([x y z] (or (p x) (p y) (p z)))
+     ([x y z & args] (or (sp1 x y z)
+                         (some p args)))))
+  ([p1 p2]
+   (fn sp2
+     ([] nil)
+     ([x] (or (p1 x) (p2 x)))
+     ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
+     ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
+     ([x y z & args] (or (sp2 x y z)
+                         (some #(or (p1 %) (p2 %)) args)))))
+  ([p1 p2 p3]
+   (fn sp3
+     ([] nil)
+     ([x] (or (p1 x) (p2 x) (p3 x)))
+     ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y) (p3 x) (p3 y)))
+     ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z) (p3 x) (p3 y) (p3 z)))
+     ([x y z & args] (or (sp3 x y z)
+                         (some #(or (p1 %) (p2 %) (p3 %)) args)))))
+  ([p1 p2 p3 & ps]
+   (let [ps (list* p1 p2 p3 ps)]
+     (fn spn
+       ([] nil)
+       ([x] (some #(% x) ps))
+       ([x y] (some #(or (% x) (% y)) ps))
+       ([x y z] (some #(or (% x) (% y) (% z)) ps))
+       ([x y z & args] (or (spn x y z)
+                           (some #(some % args) ps)))))))
+
+(defn- ^{:dynamic true} assert-valid-fdecl
+  "A good fdecl looks like (([a] ...) ([a b] ...)) near the end of defn."
+  [fdecl]
+  (when (empty? fdecl) (throw (IllegalArgumentException.
+                                "Parameter declaration missing")))
+  (let [argdecls (map
+                   #(if (seq? %)
+                      (first %)
+                      (throw (IllegalArgumentException.
+                        (if (seq? (first fdecl))
+                          (str "Invalid signature \""
+                               %
+                               "\" should be a list")
+                          (str "Parameter declaration \""
+                               %
+                               "\" should be a vector")))))
+                   fdecl)
+        bad-args (seq (remove #(vector? %) argdecls))]
+    (when bad-args
+      (throw (IllegalArgumentException. (str "Parameter declaration \"" (first bad-args)
+                                             "\" should be a vector"))))))
+
+(defn with-redefs-fn
+  "Temporarily redefines Vars during a call to func.  Each val of
+  binding-map will replace the root value of its key which must be
+  a Var.  After func is called with no args, the root values of all
+  the Vars will be set back to their old values.  These temporary
+  changes will be visible in all threads.  Useful for mocking out
+  functions during testing."
+  {:added "1.3"}
+  [binding-map func]
+  (let [root-bind (fn [m]
+                    (doseq [pair m]
+                      (let [a-var (key pair)
+                            a-val (val pair)]
+                        ;; JVM .bindRoot → snake-case .bind_root.
+                        (.bind_root a-var a-val))))
+        ;; JVM .getRawRoot → snake-case .get_raw_root.
+        old-vals (zipmap (keys binding-map)
+                         (map #(.get_raw_root %) (keys binding-map)))]
+    (try
+      (root-bind binding-map)
+      (func)
+      (finally
+        (root-bind old-vals)))))
+
+(defmacro with-redefs
+  "binding => var-symbol temp-value-expr
+
+  Temporarily redefines Vars while executing the body.  The
+  temp-value-exprs will be evaluated and each resulting value will
+  replace in parallel the root value of its Var.  After the body is
+  executed, the root values of all the Vars will be set back to their
+  old values.  These temporary changes will be visible in all threads.
+  Useful for mocking out functions during testing."
+  {:added "1.3"}
+  [bindings & body]
+  `(with-redefs-fn ~(zipmap (map #(list `var %) (take-nth 2 bindings))
+                            (take-nth 2 (next bindings)))
+                    (fn [] ~@body)))
+
+(defmacro cond->
+  "Takes an expression and a set of test/form pairs. Threads expr (via ->)
+  through each form for which the corresponding test
+  expression is true. Note that, unlike cond branching, cond-> threading does
+  not short circuit after the first true test expression."
+  {:added "1.5"}
+  [expr & clauses]
+  (assert (even? (count clauses)))
+  (let [g (gensym)
+        steps (map (fn [pair]
+                     (let [test (first pair)
+                           step (second pair)]
+                       `(if ~test (-> ~g ~step) ~g)))
+                   (partition 2 clauses))]
+    `(let [~g ~expr
+           ~@(interleave (repeat g) (butlast steps))]
+       ~(if (empty? steps)
+          g
+          (last steps)))))
+
+(defmacro cond->>
+  "Takes an expression and a set of test/form pairs. Threads expr (via ->>)
+  through each form for which the corresponding test expression
+  is true.  Note that, unlike cond branching, cond->> threading does not short circuit
+  after the first true test expression."
+  {:added "1.5"}
+  [expr & clauses]
+  (assert (even? (count clauses)))
+  (let [g (gensym)
+        steps (map (fn [pair]
+                     (let [test (first pair)
+                           step (second pair)]
+                       `(if ~test (->> ~g ~step) ~g)))
+                   (partition 2 clauses))]
+    `(let [~g ~expr
+           ~@(interleave (repeat g) (butlast steps))]
+       ~(if (empty? steps)
+          g
+          (last steps)))))
+
+(defmacro as->
+  "Binds name to expr, evaluates the first form in the lexical context
+  of that binding, then binds name to that result, repeating for each
+  successive form, returning the result of the last form."
+  {:added "1.5"}
+  [expr name & forms]
+  `(let [~name ~expr
+         ~@(interleave (repeat name) (butlast forms))]
+     ~(if (empty? forms)
+        name
+        (last forms))))
+
+(defmacro some->
+  "When expr is not nil, threads it into the first form (via ->),
+  and when that result is not nil, through the next etc."
+  {:added "1.5"}
+  [expr & forms]
+  (let [g (gensym)
+        steps (map (fn [step] `(if (nil? ~g) nil (-> ~g ~step)))
+                   forms)]
+    `(let [~g ~expr
+           ~@(interleave (repeat g) (butlast steps))]
+       ~(if (empty? steps)
+          g
+          (last steps)))))
+
+(defmacro some->>
+  "When expr is not nil, threads it into the first form (via ->>),
+  and when that result is not nil, through the next etc."
+  {:added "1.5"}
+  [expr & forms]
+  (let [g (gensym)
+        steps (map (fn [step] `(if (nil? ~g) nil (->> ~g ~step)))
+                   forms)]
+    `(let [~g ~expr
+           ~@(interleave (repeat g) (butlast steps))]
+       ~(if (empty? steps)
+          g
+          (last steps)))))
