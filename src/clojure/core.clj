@@ -6152,3 +6152,275 @@
                     (assoc m k (up (get m k) ks f args))
                     (assoc m k (apply f (get m k) args)))))]
        (up m ks f args))))
+
+(defn update
+  "'Updates' a value in an associative structure, where k is a
+  key and f is a function that will take the old value
+  and any supplied args and return the new value, and returns a new
+  structure.  If the key does not exist, nil is passed as the old value."
+  {:added "1.7"
+   :static true}
+  ([m k f]
+   (assoc m k (f (get m k))))
+  ([m k f x]
+   (assoc m k (f (get m k) x)))
+  ([m k f x y]
+   (assoc m k (f (get m k) x y)))
+  ([m k f x y z]
+   (assoc m k (f (get m k) x y z)))
+  ([m k f x y z & more]
+   (assoc m k (apply f (get m k) x y z more))))
+
+(defn coll?
+  "Returns true if x implements IPersistentCollection"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.IPersistentCollection x))
+
+(defn list?
+  "Returns true if x implements IPersistentList"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.IPersistentList x))
+
+(defn seqable?
+  "Return true if the seq function is supported for x"
+  {:added "1.9"}
+  [x] (clojure.lang.RT/can_seq x))
+
+(defn ifn?
+  "Returns true if x implements IFn. Note that many data structures
+  (e.g. sets and maps) implement IFn"
+  {:added "1.0"
+   :static true}
+  [x] (instance? clojure.lang.IFn x))
+
+(defn fn?
+  "Returns true if x implements Fn, i.e. is an object created via fn."
+  {:added "1.0"
+   :static true}
+  ;; JVM has clojure.lang.Fn — a marker tagging fn-created callables.
+  ;; In our world fn-created callables are plain callables (not type-
+  ;; tagged); approximate by checking IFn AND not "value-like" (a class,
+  ;; keyword, symbol, map, set, vector). Anything left over that's an
+  ;; IFn we treat as a fn.
+  [x] (and (instance? clojure.lang.IFn x)
+           (not (instance? Class x))
+           (not (keyword? x))
+           (not (symbol? x))
+           (not (map? x))
+           (not (set? x))
+           (not (vector? x))))
+
+
+(defn associative?
+ "Returns true if coll implements Associative"
+ {:added "1.0"
+  :static true}
+  [coll] (instance? clojure.lang.Associative coll))
+
+;; sequential? was pulled forward to batch 31 (JVM 6310). Skipping
+;; the redef here; same behavior.
+
+(defn sorted?
+ "Returns true if coll implements Sorted"
+ {:added "1.0"
+   :static true}
+  [coll] (instance? clojure.lang.Sorted coll))
+
+(defn counted?
+ "Returns true if coll implements count in constant time"
+ {:added "1.0"
+   :static true}
+  [coll] (instance? clojure.lang.Counted coll))
+
+(defn empty?
+  "Returns true if coll has no items. To check the emptiness of a seq,
+  please use the idiom (seq x) rather than (not (empty? x))"
+  {:added "1.0"
+   :static true}
+  [coll]
+  (if (counted? coll)
+    (zero? (count coll))
+    (not (seq coll))))
+
+(defn reversible?
+ "Returns true if coll implements Reversible"
+ {:added "1.0"
+   :static true}
+  [coll] (instance? clojure.lang.Reversible coll))
+
+(defn indexed?
+  "Return true if coll implements Indexed, indicating efficient lookup by index"
+  {:added "1.9"}
+  [coll] (instance? clojure.lang.Indexed coll))
+
+;; *1, *2, *3, *e, *repl* (JVM 6349-6372) skipped — REPL-state vars
+;; only meaningful inside an interactive REPL, which we haven't built.
+
+(defn trampoline
+  "trampoline can be used to convert algorithms requiring mutual
+  recursion without stack consumption. Calls f with supplied args, if
+  any. If f returns a fn, calls that fn with no arguments, and
+  continues to repeat, until the return value is not a fn, then
+  returns that non-fn value. Note that if you want to return a fn as a
+  final value, you must wrap it in some data structure and unpack it
+  after trampoline returns."
+  {:added "1.0"
+   :static true}
+  ([f]
+     (let [ret (f)]
+       (if (fn? ret)
+         (recur ret)
+         ret)))
+  ([f & args]
+     (trampoline #(apply f args))))
+
+(defn intern
+  "Finds or creates a var named by the symbol name in the namespace
+  ns (which can be a symbol or a namespace), setting its root binding
+  to val if supplied. The namespace must exist. The var will adopt any
+  metadata from the name symbol.  Returns the var."
+  {:added "1.0"
+   :static true}
+  ([ns ^clojure.lang.Symbol name]
+     (let [v (clojure.lang.Var/intern (the-ns ns) name)]
+       ;; JVM: .setMeta — snake_case in clojure-py. Our Var doesn't
+       ;; expose setMeta directly; alter_meta with a constant-fn does.
+       (when (meta name) (.alter_meta v (clojure.core/fn [_ m] m) [(meta name)]))
+       v))
+  ([ns name val]
+     (let [v (clojure.lang.Var/intern (the-ns ns) name val)]
+       (when (meta name) (.alter_meta v (clojure.core/fn [_ m] m) [(meta name)]))
+       v)))
+
+(defmacro while
+  "Repeatedly executes body while test expression is true. Presumes
+  some side-effect will cause test to become false/nil. Returns nil"
+  {:added "1.0"}
+  [test & body]
+  `(loop []
+     (when ~test
+       ~@body
+       (recur))))
+
+(defn memoize
+  "Returns a memoized version of a referentially transparent function. The
+  memoized version of the function keeps a cache of the mapping from arguments
+  to results and, when calls with the same arguments are repeated often, has
+  higher performance at the expense of higher memory use."
+  {:added "1.0"
+   :static true}
+  [f]
+  (let [mem (atom {})]
+    (fn [& args]
+      (if-let [e (find @mem args)]
+        (val e)
+        (let [ret (apply f args)]
+          (swap! mem assoc args ret)
+          ret)))))
+
+(defmacro condp
+  "Takes a binary predicate, an expression, and a set of clauses.
+  Each clause can take the form of either:
+
+  test-expr result-expr
+
+  test-expr :>> result-fn
+
+  Note :>> is an ordinary keyword.
+
+  For each clause, (pred test-expr expr) is evaluated. If it returns
+  logical true, the clause is a match. If a binary clause matches, the
+  result-expr is returned, if a ternary clause matches, its result-fn,
+  which must be a unary function, is called with the result of the
+  predicate as its argument, the result of that call being the return
+  value of condp. A single default expression can follow the clauses,
+  and its value will be returned if no clause matches. If no default
+  expression is provided and no clause matches, an
+  IllegalArgumentException is thrown."
+  {:added "1.0"}
+
+  [pred expr & clauses]
+  (let [gpred (gensym "pred__")
+        gexpr (gensym "expr__")
+        emit (fn emit [pred expr args]
+               (let [[[a b c :as clause] more]
+                       (split-at (if (= :>> (second args)) 3 2) args)
+                       n (count clause)]
+                 (cond
+                  (= 0 n) `(throw (IllegalArgumentException. (str "No matching clause: " ~expr)))
+                  (= 1 n) a
+                  (= 2 n) `(if (~pred ~a ~expr)
+                             ~b
+                             ~(emit pred expr more))
+                  :else `(if-let [p# (~pred ~a ~expr)]
+                           (~c p#)
+                           ~(emit pred expr more)))))]
+    `(let [~gpred ~pred
+           ~gexpr ~expr]
+       ~(emit gpred gexpr clauses))))
+
+;; The (alter-meta! ...) calls and add-doc-and-meta block (JVM
+;; 6477-6611) skipped — pure-documentation metadata adjustments
+;; that don't affect runtime behavior.
+
+(defn future?
+  "Returns true if x is a future"
+  {:added "1.1"
+   :static true}
+  ;; JVM uses java.util.concurrent.Future. Python has the same name in
+  ;; concurrent.futures.
+  [x] (instance? py.concurrent.futures/Future x))
+
+(defn future-done?
+  "Returns true if future f is done"
+  {:added "1.1"
+   :static true}
+  [f] (.done f))
+
+;; letfn (JVM 6626) skipped — expands to letfn*, which is registered
+;; as a special form in our SPECIAL_FORMS but isn't yet implemented in
+;; the compiler. The semantics (mutually-recursive fn bindings) need
+;; care: fn closures must capture cell slots so that forward references
+;; work, similar to JVM's mutual-fn binding mechanism. Will land in a
+;; focused follow-up batch.
+
+(defn fnil
+  "Takes a function f, and returns a function that calls f, replacing
+  a nil first argument to f with the supplied value x. Higher arity
+  versions can replace arguments in the second and third
+  positions (y, z). Note that the function f can take any number of
+  arguments, not just the one(s) being nil-patched."
+  {:added "1.2"
+   :static true}
+  ([f x]
+   (fn
+     ([a] (f (if (nil? a) x a)))
+     ([a b] (f (if (nil? a) x a) b))
+     ([a b c] (f (if (nil? a) x a) b c))
+     ([a b c & ds] (apply f (if (nil? a) x a) b c ds))))
+  ([f x y]
+   (fn
+     ([a b] (f (if (nil? a) x a) (if (nil? b) y b)))
+     ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) c))
+     ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) c ds))))
+  ([f x y z]
+   (fn
+     ([a b] (f (if (nil? a) x a) (if (nil? b) y b)))
+     ([a b c] (f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c)))
+     ([a b c & ds] (apply f (if (nil? a) x a) (if (nil? b) y b) (if (nil? c) z c) ds)))))
+
+(defn zipmap
+  "Returns a map with the keys mapped to the corresponding vals."
+  {:added "1.0"
+   :static true}
+  [keys vals]
+    (loop [map {}
+           ks (seq keys)
+           vs (seq vals)]
+      (if (and ks vs)
+        (recur (assoc map (first ks) (first vs))
+               (next ks)
+               (next vs))
+        map)))

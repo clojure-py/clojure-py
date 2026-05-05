@@ -234,6 +234,21 @@ class RT:
         return val
 
     @staticmethod
+    def can_seq(coll):
+        """JVM RT.canSeq — true if seq is supported on coll. Mirrors the
+        types our seq() can walk."""
+        if coll is None:
+            return True
+        if isinstance(coll, (ISeq, Seqable)):
+            return True
+        if isinstance(coll, (str, bytes, list, tuple, dict, set, frozenset)):
+            return True
+        # Python iterables (anything with __iter__).
+        if hasattr(coll, "__iter__"):
+            return True
+        return False
+
+    @staticmethod
     def in_ns(sym):
         """JVM RT.inNamespace — switch *ns* to the named namespace,
         creating it if needed. We bind_root since Compiler.load_file
