@@ -468,6 +468,9 @@ def _compile_form(form, ctx):
             if sname == "letfn*":
                 _compile_letfn_star(s.next(), ctx)
                 return
+            if sname == "case*":
+                _compile_case_star(s.next(), ctx)
+                return
             if sname == "fn*":
                 _compile_fn_star(s.next(), ctx)
                 return
@@ -673,6 +676,105 @@ def _compile_letfn_star(args, ctx):
         _compile_do(body, ctx)
     finally:
         ctx.locals = saved_locals
+
+
+def _case_star_dispatch(value, shift, mask, test_type, skip_check,
+                        table, default_thunk):
+    """Runtime helper invoked by case* compiled code.
+
+    Computes the bucket key from `value` (raw int for :int mode, hash
+    otherwise) optionally shifted/masked, looks it up in `table` (a
+    dict {bucket_int: (test_value, then_thunk)}), and either invokes
+    the matching thunk or falls through to default_thunk. The
+    post-switch equality check is skipped for buckets in skip_check —
+    those entries' thens dispatch internally (a condp built by
+    merge-hash-collisions on the JVM side)."""
+    if test_type == "int":
+        if not isinstance(value, int) or isinstance(value, bool):
+            return default_thunk()
+        h = value
+    else:
+        h = Util.hash(value)
+    if mask:
+        h = (h >> shift) & mask
+    entry = table.get(h)
+    if entry is None:
+        return default_thunk()
+    test_v = entry[0]
+    then_thunk = entry[1]
+    if h in skip_check:
+        return then_thunk()
+    if test_type == "hash-identity":
+        if test_v is value:
+            return then_thunk()
+    else:
+        if Util.equiv(test_v, value):
+            return then_thunk()
+    return default_thunk()
+
+
+def _compile_case_star(args, ctx):
+    """(case* expr shift mask default imap switch-type test-type [skip-check])
+
+    `imap` is a sorted-map {bucket-int [test-value then-form]}. The JVM
+    relies on tableswitch / lookupswitch for O(1) dispatch; here we
+    emit a dict at runtime — Python's dict.get is constant-time so the
+    same asymptotic guarantee holds. switch-type (:compact / :sparse)
+    is therefore informational only.
+
+    test-type is :int (raw integer dispatch), :hash-equiv (hash + =),
+    or :hash-identity (hash + identical?). Each `then` form and the
+    `default` form get wrapped in (fn* [] form) so they're compiled
+    into closures that capture the lexical environment of the call
+    site — the existing fn* machinery handles freevars."""
+    if args is None:
+        raise SyntaxError("case* requires arguments")
+    expr_form = args.first(); rest = args.next()
+    shift_v = rest.first(); rest = rest.next()
+    mask_v = rest.first(); rest = rest.next()
+    default_form = rest.first(); rest = rest.next()
+    imap = rest.first(); rest = rest.next()
+    rest = rest.next()  # switch-type — Python dict.get is O(1) anyway
+    test_type_kw = rest.first(); rest = rest.next()
+    skip_check_form = rest.first() if rest is not None else None
+
+    skip_set = frozenset()
+    if skip_check_form is not None:
+        skip_set = frozenset(iter(skip_check_form))
+
+    test_type_str = test_type_kw.get_name()
+
+    fn_sym = Symbol.intern("fn*")
+    empty_vec = PERSISTENT_VECTOR_EMPTY
+
+    def thunk_form(body):
+        return RT.list(fn_sym, empty_vec, body)
+
+    ctx.emit(_bc_Instr("LOAD_CONST", _case_star_dispatch))
+    ctx.emit(_bc_Instr("PUSH_NULL"))
+
+    _compile_form(expr_form, ctx)
+    ctx.emit(_bc_Instr("LOAD_CONST", shift_v))
+    ctx.emit(_bc_Instr("LOAD_CONST", mask_v))
+    ctx.emit(_bc_Instr("LOAD_CONST", test_type_str))
+    ctx.emit(_bc_Instr("LOAD_CONST", skip_set))
+
+    n_pairs = 0
+    for entry in imap:
+        bucket = entry.key()
+        pair = entry.val()
+        test_v = pair.nth(0)
+        then_form = pair.nth(1)
+        ctx.emit(_bc_Instr("LOAD_CONST", bucket))
+        ctx.emit(_bc_Instr("LOAD_CONST", test_v))
+        _compile_form(thunk_form(then_form), ctx)
+        ctx.emit(_bc_Instr("BUILD_TUPLE", 2))
+        n_pairs += 1
+    ctx.emit(_bc_Instr("BUILD_MAP", n_pairs))
+
+    _compile_form(thunk_form(default_form), ctx)
+
+    ctx.emit(_bc_Instr("CALL", 7))
 
 
 def _compile_loop_star(args, ctx):
