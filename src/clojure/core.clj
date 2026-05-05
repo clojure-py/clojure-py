@@ -7152,3 +7152,83 @@
    :static true}
   [& exprs]
   `(pcalls ~@(map (fn [e] `(fn [] ~e)) exprs)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; clojure version number ;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Adaptation: JVM core.clj reads version.properties via the JVM
+;; classloader. Our port hardcodes the version map. Update this when
+;; cutting a release; clojure-version (the fn) reads back through it.
+
+(def ^:dynamic *clojure-version*
+  {:major 1
+   :minor 12
+   :incremental 0
+   :qualifier nil})
+
+(add-doc-and-meta *clojure-version*
+  "The version info for Clojure core, as a map containing :major :minor
+  :incremental and :qualifier keys. Feature releases may increment
+  :minor and/or :major, bugfix releases will increment :incremental.
+  Possible values of :qualifier include \"GA\", \"SNAPSHOT\", \"RC-x\" \"BETA-x\""
+  {:added "1.0"})
+
+(defn clojure-version
+  "Returns clojure version as a printable string."
+  {:added "1.0"}
+  []
+  (str (:major *clojure-version*)
+       "."
+       (:minor *clojure-version*)
+       (when-let [i (:incremental *clojure-version*)]
+         (str "." i))
+       (when-let [q (:qualifier *clojure-version*)]
+         (when (pos? (count q)) (str "-" q)))
+       (when (:interim *clojure-version*)
+         "-SNAPSHOT")))
+
+(defn promise
+  "Returns a promise object that can be read with deref/@, and set,
+  once only, with deliver. Calls to deref/@ prior to delivery will
+  block, unless the variant of deref with timeout is used. All
+  subsequent derefs will return the same delivered value without
+  blocking. See also - realized?.
+
+  Adaptations: JVM uses a CountDownLatch (count = 1) to gate the
+  blocking deref; we use a threading.Event. JVM's IFn.invoke is
+  exposed as Python's __call__ (the dunder that makes instances
+  callable). The class is registered as IDeref / IBlockingDeref /
+  IPending / IFn so satisfies?/instance? answer correctly."
+  {:added "1.1"
+   :static true}
+  []
+  (let [d (py.threading/Event)
+        v (atom d)]
+    (reify
+      clojure.lang.IDeref
+      (deref ([_] (.wait d) @v)
+             ([_ timeout-ms timeout-val]
+              (if (.wait d (/ timeout-ms 1000.0))
+                @v
+                timeout-val)))
+
+      ;; IBlockingDeref's .deref(ms, val) is the second arity above —
+      ;; we list the ABC so satisfies?/instance? recognize it.
+      clojure.lang.IBlockingDeref
+
+      clojure.lang.IPending
+      (is_realized [_] (.is_set d))
+
+      clojure.lang.IFn
+      (__call__ [this x]
+        (when (and (not (.is_set d))
+                   (compare-and-set! v d x))
+          (.set d)
+          this)))))
+
+(defn deliver
+  "Delivers the supplied value to the promise, releasing any pending
+  derefs. A subsequent call to deliver on a promise will have no
+  effect."
+  {:added "1.1"
+   :static true}
+  [promise val] (promise val))
