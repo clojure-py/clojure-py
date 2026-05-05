@@ -7232,3 +7232,310 @@
   {:added "1.1"
    :static true}
   [promise val] (promise val))
+
+;; ;;;;;;;;;;;;;;;;;;;; sequence fns batch (JVM 7298-7590) ;;;;;;;;;;;;;;;;;;
+;;
+;; Adaptations: JVM uses java.util.ArrayList as a mutable buffer in
+;; the stateful transducer paths. We use a Python list — same
+;; semantics with .append (= JVM .add), .clear (= JVM .clear), len
+;; (= .size). java.util.Collections/shuffle becomes py.random/shuffle
+;; (in-place mutation, same contract). flatten was already pulled
+;; forward in batch 31 / hierarchy section.
+
+(defn group-by
+  "Returns a map of the elements of coll keyed by the result of
+  f on each element. The value at each key will be a vector of the
+  corresponding elements, in the order they appeared in coll."
+  {:added "1.2"
+   :static true}
+  [f coll]
+  (persistent!
+   (reduce
+    (fn [ret x]
+      (let [k (f x)]
+        (assoc! ret k (conj (get ret k []) x))))
+    (transient {}) coll)))
+
+(defn partition-by
+  "Applies f to each value in coll, splitting it each time f returns a
+   new value.  Returns a lazy seq of partitions.  Returns a stateful
+   transducer when no collection is provided."
+  {:added "1.2"
+   :static true}
+  ([f]
+   (fn [rf]
+     (let [a (py.__builtins__/list)
+           pv (volatile! ::none)]
+       (fn
+         ([] (rf))
+         ([result]
+          (let [result (if (zero? (py.__builtins__/len a))
+                         result
+                         (let [v (vec a)]
+                           ;; clear first!
+                           (.clear a)
+                           (unreduced (rf result v))))]
+            (rf result)))
+         ([result input]
+          (let [pval @pv
+                val (f input)]
+            (vreset! pv val)
+            (if (or (identical? pval ::none)
+                    (= val pval))
+              (do
+                (.append a input)
+                result)
+              (let [v (vec a)]
+                (.clear a)
+                (let [ret (rf result v)]
+                  (when-not (reduced? ret)
+                    (.append a input))
+                  ret)))))))))
+  ([f coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [fst (first s)
+            fv (f fst)
+            run (cons fst (take-while #(= fv (f %)) (next s)))]
+        (cons run (partition-by f (lazy-seq (drop (count run) s)))))))))
+
+(defn frequencies
+  "Returns a map from distinct items in coll to the number of times
+  they appear."
+  {:added "1.2"
+   :static true}
+  [coll]
+  (persistent!
+   (reduce (fn [counts x]
+             (assoc! counts x (inc (get counts x 0))))
+           (transient {}) coll)))
+
+(defn reductions
+  "Returns a lazy seq of the intermediate values of the reduction (as
+  per reduce) of coll by f, starting with init."
+  {:added "1.2"}
+  ([f coll]
+   (lazy-seq
+    (if-let [s (seq coll)]
+      (reductions f (first s) (rest s))
+      (list (f)))))
+  ([f init coll]
+   (if (reduced? init)
+     (list @init)
+     (cons init
+           (lazy-seq
+            (when-let [s (seq coll)]
+              (reductions f (f init (first s)) (rest s))))))))
+
+(defn rand-nth
+  "Return a random element of the (sequential) collection. Will have
+  the same performance characteristics as nth for the given
+  collection."
+  {:added "1.2"
+   :static true}
+  [coll]
+  (nth coll (rand-int (count coll))))
+
+(defn partition-all
+  "Returns a lazy sequence of lists like partition, but may include
+  partitions with fewer than n items at the end.  Returns a stateful
+  transducer when no collection is provided."
+  {:added "1.2"
+   :static true}
+  ([n]
+   (fn [rf]
+     (let [a (py.__builtins__/list)]
+       (fn
+         ([] (rf))
+         ([result]
+          (let [result (if (zero? (py.__builtins__/len a))
+                         result
+                         (let [v (vec a)]
+                           ;; clear first!
+                           (.clear a)
+                           (unreduced (rf result v))))]
+            (rf result)))
+         ([result input]
+          (.append a input)
+          (if (= n (py.__builtins__/len a))
+            (let [v (vec a)]
+              (.clear a)
+              (rf result v))
+            result))))))
+  ([n coll]
+   (partition-all n n coll))
+  ([n step coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [seg (doall (take n s))]
+        (cons seg (partition-all n step (nthrest s step))))))))
+
+(defn splitv-at
+  "Returns a vector of [(into [] (take n) coll) (drop n coll)]"
+  {:added "1.12"}
+  [n coll]
+  [(into [] (take n) coll) (drop n coll)])
+
+(defn partitionv
+  "Returns a lazy sequence of vectors of n items each, at offsets step
+  apart. If step is not supplied, defaults to n, i.e. the partitions
+  do not overlap. If a pad collection is supplied, use its elements as
+  necessary to complete last partition upto n items. In case there are
+  not enough padding elements, return a partition with less than n items."
+  {:added "1.12"}
+  ([n coll]
+   (partitionv n n coll))
+  ([n step coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [p (into [] (take n) s)]
+        (when (= n (count p))
+          (cons p (partitionv n step (nthrest s step))))))))
+  ([n step pad coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [p (into [] (take n) s)]
+        (if (= n (count p))
+          (cons p (partitionv n step pad (nthrest s step)))
+          (list (into [] (take n) (concat p pad)))))))))
+
+(defn partitionv-all
+  "Returns a lazy sequence of vector partitions, but may include
+  partitions with fewer than n items at the end.
+  Returns a stateful transducer when no collection is provided."
+  {:added "1.12"}
+  ([n]
+   (partition-all n))
+  ([n coll]
+   (partitionv-all n n coll))
+  ([n step coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [seg (into [] (take n) coll)]
+        (cons seg (partitionv-all n step (drop step s))))))))
+
+(defn shuffle
+  "Return a random permutation of coll.
+
+  Adaptation: JVM uses java.util.Collections/shuffle on a mutable
+  ArrayList copy. We do the equivalent with a Python list and
+  py.random/shuffle (in-place)."
+  {:added "1.2"
+   :static true}
+  [coll]
+  (let [al (py.__builtins__/list coll)]
+    (py.random/shuffle al)
+    (vec al)))
+
+(defn map-indexed
+  "Returns a lazy sequence consisting of the result of applying f to 0
+  and the first item of coll, followed by applying f to 1 and the second
+  item in coll, etc, until coll is exhausted. Thus function f should
+  accept 2 arguments, index and item. Returns a stateful transducer when
+  no collection is provided."
+  {:added "1.2"
+   :static true}
+  ([f]
+   (fn [rf]
+     (let [i (volatile! -1)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (rf result (f (vswap! i inc) input)))))))
+  ([f coll]
+   (letfn [(mapi [idx coll]
+             (lazy-seq
+              (when-let [s (seq coll)]
+                (if (chunked-seq? s)
+                  (let [c (chunk-first s)
+                        size (int (count c))
+                        b (chunk-buffer size)]
+                    (dotimes [i size]
+                      (chunk-append b (f (+ idx i) (.nth c i))))
+                    (chunk-cons (chunk b) (mapi (+ idx size) (chunk-rest s))))
+                  (cons (f idx (first s)) (mapi (inc idx) (rest s)))))))]
+     (mapi 0 coll))))
+
+(defn keep
+  "Returns a lazy sequence of the non-nil results of (f item). Note,
+  this means false return values will be included.  f must be free of
+  side-effects.  Returns a transducer when no collection is provided."
+  {:added "1.2"
+   :static true}
+  ([f]
+   (fn [rf]
+     (fn
+       ([] (rf))
+       ([result] (rf result))
+       ([result input]
+        (let [v (f input)]
+          (if (nil? v)
+            result
+            (rf result v)))))))
+  ([f coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (if (chunked-seq? s)
+        (let [c (chunk-first s)
+              size (count c)
+              b (chunk-buffer size)]
+          (dotimes [i size]
+            (let [x (f (.nth c i))]
+              (when-not (nil? x)
+                (chunk-append b x))))
+          (chunk-cons (chunk b) (keep f (chunk-rest s))))
+        (let [x (f (first s))]
+          (if (nil? x)
+            (keep f (rest s))
+            (cons x (keep f (rest s))))))))))
+
+(defn keep-indexed
+  "Returns a lazy sequence of the non-nil results of (f index item). Note,
+  this means false return values will be included.  f must be free of
+  side-effects.  Returns a stateful transducer when no collection is
+  provided."
+  {:added "1.2"
+   :static true}
+  ([f]
+   (fn [rf]
+     (let [iv (volatile! -1)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [i (vswap! iv inc)
+                v (f i input)]
+            (if (nil? v)
+              result
+              (rf result v))))))))
+  ([f coll]
+   (letfn [(keepi [idx coll]
+             (lazy-seq
+              (when-let [s (seq coll)]
+                (if (chunked-seq? s)
+                  (let [c (chunk-first s)
+                        size (count c)
+                        b (chunk-buffer size)]
+                    (dotimes [i size]
+                      (let [x (f (+ idx i) (.nth c i))]
+                        (when-not (nil? x)
+                          (chunk-append b x))))
+                    (chunk-cons (chunk b) (keepi (+ idx size) (chunk-rest s))))
+                  (let [x (f idx (first s))]
+                    (if (nil? x)
+                      (keepi (inc idx) (rest s))
+                      (cons x (keepi (inc idx) (rest s))))))))) ]
+     (keepi 0 coll))))
+
+(defn bounded-count
+  "If coll is counted? returns its count, else will count at most the first n
+  elements of coll using its seq."
+  {:added "1.9"}
+  [n coll]
+  (if (counted? coll)
+    (count coll)
+    (loop [i 0 s (seq coll)]
+      (if (and s (< i n))
+        (recur (inc i) (next s))
+        i))))
