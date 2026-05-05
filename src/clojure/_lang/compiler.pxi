@@ -465,6 +465,9 @@ def _compile_form(form, ctx):
             if sname == "let*":
                 _compile_let_star(s.next(), ctx)
                 return
+            if sname == "letfn*":
+                _compile_letfn_star(s.next(), ctx)
+                return
             if sname == "fn*":
                 _compile_fn_star(s.next(), ctx)
                 return
@@ -610,6 +613,63 @@ def _compile_let_star(args, ctx):
             _compile_form(value_form, ctx)
             ctx.emit(_bc_Instr("STORE_FAST", slot))
             ctx.locals[name_sym.name] = ("FAST", slot)
+        _compile_do(body, ctx)
+    finally:
+        ctx.locals = saved_locals
+
+
+def _compile_letfn_star(args, ctx):
+    """(letfn* [name1 fn-form1 name2 fn-form2 ...] body...)
+
+    Mutually-recursive function bindings: each fn-form may reference
+    any of the names. The trick is to allocate a CELL slot for each
+    name BEFORE compiling any of the fn-forms — that way each fn
+    closure captures the cell, not its current value, so forward
+    references resolve at call time once all cells have been filled.
+
+    Phase 1: gensym a cell slot per name, register it in ctx.cellvars
+             (so MAKE_CELL is emitted in the prologue), pre-bind the
+             name in ctx.locals as ("CELL", slot), and initialize each
+             cell to nil.
+    Phase 2: compile each fn-form (its closures see all cells in
+             scope) and STORE_DEREF the result into the matching cell.
+    Phase 3: compile the body."""
+    if args is None:
+        raise SyntaxError("letfn* requires a bindings vector")
+    bindings = args.first()
+    body = args.next()
+    if not isinstance(bindings, IPersistentVector):
+        raise SyntaxError("letfn* requires a vector for its bindings")
+    bcount = bindings.count()
+    if bcount % 2 != 0:
+        raise SyntaxError(
+            "letfn* requires an even number of forms in the binding vector")
+
+    saved_locals = dict(ctx.locals)
+    try:
+        # Phase 1: allocate cells, init to None, install in scope.
+        slots = []
+        for i in range(0, bcount, 2):
+            name_sym = bindings.nth(i)
+            if not isinstance(name_sym, Symbol) or name_sym.ns is not None:
+                raise SyntaxError(
+                    "letfn* binding names must be unqualified symbols")
+            slot = ctx.gensym(name_sym.name)
+            if slot not in ctx.cellvars:
+                ctx.cellvars.append(slot)
+            ctx.locals[name_sym.name] = ("CELL", slot)
+            slots.append((slot, bindings.nth(i + 1)))
+            ctx.emit(_bc_Instr("LOAD_CONST", None))
+            ctx.emit(_bc_Instr("STORE_DEREF", _bc_CellVar(slot)))
+        # Phase 2: compile each fn-form, store into its cell. Closures
+        # inside the fn-forms capture the cells via the existing
+        # _resolve_local_through_chain plumbing, so forward references
+        # work — each cell exists, even if its value is still None at
+        # the moment a sibling closure is being built.
+        for slot, value_form in slots:
+            _compile_form(value_form, ctx)
+            ctx.emit(_bc_Instr("STORE_DEREF", _bc_CellVar(slot)))
+        # Phase 3: body.
         _compile_do(body, ctx)
     finally:
         ctx.locals = saved_locals

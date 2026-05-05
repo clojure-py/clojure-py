@@ -6255,8 +6255,30 @@
   {:added "1.9"}
   [coll] (instance? clojure.lang.Indexed coll))
 
-;; *1, *2, *3, *e, *repl* (JVM 6349-6372) skipped — REPL-state vars
-;; only meaningful inside an interactive REPL, which we haven't built.
+(def ^:dynamic
+ ^{:doc "bound in a repl thread to the most recent value printed"
+   :added "1.0"}
+ *1)
+
+(def ^:dynamic
+ ^{:doc "bound in a repl thread to the second most recent value printed"
+   :added "1.0"}
+ *2)
+
+(def ^:dynamic
+ ^{:doc "bound in a repl thread to the third most recent value printed"
+   :added "1.0"}
+ *3)
+
+(def ^:dynamic
+ ^{:doc "bound in a repl thread to the most recent exception caught by the repl"
+   :added "1.0"}
+ *e)
+
+(def ^:dynamic
+  ^{:doc "Bound to true in a repl thread"
+    :added "1.12"}
+  *repl* false)
 
 (defn trampoline
   "trampoline can be used to convert algorithms requiring mutual
@@ -6361,9 +6383,165 @@
            ~gexpr ~expr]
        ~(emit gpred gexpr clauses))))
 
-;; The (alter-meta! ...) calls and add-doc-and-meta block (JVM
-;; 6477-6611) skipped — pure-documentation metadata adjustments
-;; that don't affect runtime behavior.
+;; load-file is a thin wrapper around Compiler.load_file. JVM has
+;; clojure.lang.Compiler/loadFile; we expose the snake_case version.
+(defn load-file
+  "Sequentially read and evaluate the set of forms contained in the file"
+  {:added "1.0"
+   :static true}
+  [name]
+  (clojure.lang.Compiler/load_file name))
+
+;; Dynamic vars that JVM defines elsewhere (or in the Compiler) but
+;; which we need to declare so the alter-meta! / add-doc-and-meta
+;; block below can attach metadata. Each gets a sensible Python-side
+;; default; users binding any of these get the JVM-compatible
+;; thread-local override behavior.
+(def ^:dynamic *file* "")
+(def ^:dynamic *err* py.sys/stderr)
+(def ^:dynamic *command-line-args* nil)
+(def ^:dynamic *warn-on-reflection* false)
+(def ^:dynamic *compile-path* "classes")
+(def ^:dynamic *compile-files* false)
+(def ^:dynamic *compiler-options* {})
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; var documentation ;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(alter-meta! #'*agent* assoc :added "1.0")
+(alter-meta! #'in-ns assoc :added "1.0")
+(alter-meta! #'load-file assoc :added "1.0")
+
+(defmacro add-doc-and-meta {:private true} [name docstring meta]
+  `(alter-meta! (var ~name) merge (assoc ~meta :doc ~docstring)))
+
+(add-doc-and-meta *file*
+  "The path of the file being evaluated, as a String.
+
+  When there is no file, e.g. in the REPL, the value is not defined."
+  {:added "1.0"})
+
+(add-doc-and-meta *command-line-args*
+  "A sequence of the supplied command line arguments, or nil if
+  none were supplied"
+  {:added "1.0"})
+
+(add-doc-and-meta *warn-on-reflection*
+  "When set to true, the compiler will emit warnings when reflection is
+  needed to resolve Java method calls or field accesses.
+
+  Defaults to false."
+  {:added "1.0"})
+
+(add-doc-and-meta *compile-path*
+  "Specifies the directory where 'compile' will write out .class
+  files. This directory must be in the classpath for 'compile' to
+  work.
+
+  Defaults to \"classes\""
+  {:added "1.0"})
+
+(add-doc-and-meta *compile-files*
+  "Set to true when compiling files, false otherwise."
+  {:added "1.0"})
+
+(add-doc-and-meta *unchecked-math*
+  "While bound to true, compilations of +, -, *, inc, dec and the
+  coercions will be done without overflow checks. While bound
+  to :warn-on-boxed, same behavior as true, and a warning is emitted
+  when compilation uses boxed math. Default: false."
+  {:added "1.3"})
+
+(add-doc-and-meta *compiler-options*
+  "A map of keys to options.
+  Note, when binding dynamically make sure to merge with previous value.
+  Supported options:
+  :elide-meta - a collection of metadata keys to elide during compilation.
+  :disable-locals-clearing - set to true to disable clearing, useful for using a debugger
+  :direct-linking - set to true to use direct static invocation of functions, rather than vars
+    Note that call sites compiled with direct linking will not be affected by var redefinition.
+    Use ^:redef (or ^:dynamic) on a var to prevent direct linking and allow redefinition.
+  See https://clojure.org/reference/compilation for more information."
+  {:added "1.4"})
+
+(add-doc-and-meta *ns*
+  "A clojure.lang.Namespace object representing the current namespace."
+  {:added "1.0"})
+
+(add-doc-and-meta *in*
+  "A java.io.Reader object representing standard input for read operations.
+
+  Defaults to System/in, wrapped in a LineNumberingPushbackReader"
+  {:added "1.0"})
+
+(add-doc-and-meta *out*
+  "A java.io.Writer object representing standard output for print operations.
+
+  Defaults to System/out, wrapped in an OutputStreamWriter"
+  {:added "1.0"})
+
+(add-doc-and-meta *err*
+  "A java.io.Writer object representing standard error for print operations.
+
+  Defaults to System/err, wrapped in a PrintWriter"
+  {:added "1.0"})
+
+(add-doc-and-meta *flush-on-newline*
+  "When set to true, output will be flushed whenever a newline is printed.
+
+  Defaults to true."
+  {:added "1.0"})
+
+(add-doc-and-meta *print-meta*
+  "If set to logical true, when printing an object, its metadata will also
+  be printed in a form that can be read back by the reader.
+
+  Defaults to false."
+  {:added "1.0"})
+
+(add-doc-and-meta *print-dup*
+  "When set to logical true, objects will be printed in a way that preserves
+  their type when read in later.
+
+  Defaults to false."
+  {:added "1.0"})
+
+(add-doc-and-meta *print-readably*
+  "When set to logical false, strings and characters will be printed with
+  non-alphanumeric characters converted to the appropriate escape sequences.
+
+  Defaults to true"
+  {:added "1.0"})
+
+(add-doc-and-meta *read-eval*
+ "Defaults to true (or value specified by system property, see below)
+  ***This setting implies that the full power of the reader is in play,
+  including syntax that can cause code to execute. It should never be
+  used with untrusted sources. See also: clojure.edn/read.***
+
+  When set to logical false in the thread-local binding,
+  the eval reader (#=) and record/type literal syntax are disabled in read/load.
+  Example (will fail): (binding [*read-eval* false] (read-string \"#=(* 2 21)\"))
+
+  The default binding can be controlled by the system property
+  'clojure.read.eval' System properties can be set on the command line
+  like this:
+
+  java -Dclojure.read.eval=false ...
+
+  The system property can also be set to 'unknown' via
+  -Dclojure.read.eval=unknown, in which case the default binding
+  is :unknown and all reads will fail in contexts where *read-eval*
+  has not been explicitly bound to either true or false. This setting
+  can be a useful diagnostic tool to ensure that all of your reads
+  occur in considered contexts. You can also accomplish this in a
+  particular scope by binding *read-eval* to :unknown
+  "
+  {:added "1.0"})
+
+(add-doc-and-meta *assert*
+  "When set to logical false, 'assert' will omit assertion checks in
+  compiled code. Defaults to true."
+  {:added "1.0"})
 
 (defn future?
   "Returns true if x is a future"
@@ -6379,12 +6557,18 @@
    :static true}
   [f] (.done f))
 
-;; letfn (JVM 6626) skipped — expands to letfn*, which is registered
-;; as a special form in our SPECIAL_FORMS but isn't yet implemented in
-;; the compiler. The semantics (mutually-recursive fn bindings) need
-;; care: fn closures must capture cell slots so that forward references
-;; work, similar to JVM's mutual-fn binding mechanism. Will land in a
-;; focused follow-up batch.
+(defmacro letfn
+  "fnspec ==> (fname [params*] exprs) or (fname ([params*] exprs)+)
+
+  Takes a vector of function specs and a body, and generates a set of
+  bindings of functions to their names. All of the names are available
+  in all of the definitions of the functions, as well as the body."
+  {:added "1.0", :forms '[(letfn [fnspecs*] exprs*)],
+   :special-form true, :url nil}
+  [fnspecs & body]
+  `(letfn* ~(vec (interleave (map first fnspecs)
+                             (map #(cons `fn %) fnspecs)))
+           ~@body))
 
 (defn fnil
   "Takes a function f, and returns a function that calls f, replacing
