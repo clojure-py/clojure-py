@@ -344,3 +344,179 @@
                    [(keyword (str mname)) `(var ~mname)])
                  method-syms)))
        (var ~proto-name))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;; reify / deftype ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; JVM core_deftype.clj 38-507. reify generates an anonymous one-shot
+;; class; deftype generates a named class with explicit fields. Both
+;; can implement protocols.
+;;
+;; In Python we lean on the `type(name, bases, attrs)` builtin to build
+;; classes at runtime. Each method body is a Clojure fn that takes
+;; `this` as its first argument. Methods are attached as class
+;; attributes (so `(.method inst args)` and Python's bound-method
+;; mechanics work) AND registered as protocol impls via extend (so
+;; `(proto-method inst args)` works through the dispatch cache).
+;;
+;; Adaptations from JVM:
+;;   - No Java interface generation. Method dispatch for protocols
+;;     goes through the :impls map; `.method` is a plain Python attr
+;;     lookup.
+;;   - definterface skipped (JVM-only — Python uses ABCs).
+;;   - defrecord skipped for now — needs IPersistentMap implementation
+;;     plus value equality / hash; coming in a follow-up slice.
+;;   - Type hints / primitive args ignored (Python is fully dynamic).
+;;
+;; Field-name binding: deftype auto-wraps each method body in a
+;; (let [field1 (.-field1 this) ...] body) so users can refer to
+;; fields directly by name. JVM does this via compiler magic; we do
+;; it via macroexpansion.
+
+(defn -build-type
+  "Runtime helper: build a Python class with the given name, base
+  classes, and attribute map (a Clojure map of attr-name strings →
+  values). Returns the new class."
+  {:added "1.2"}
+  [tname bases attrs-map]
+  (let [pydict (py.__builtins__/dict)]
+    (doseq [pair attrs-map]
+      (.__setitem__ pydict (key pair) (val pair)))
+    (py.__builtins__/type tname (py.__builtins__/tuple bases) pydict)))
+
+(defn- -wrap-arity-with-field-let
+  "Given an arity form ([args*] body*) and a field-symbol vector,
+  rewrite to ([args*] (let [field1 (.-field1 this) ...] body*)).
+  `this` is the first param of the arglist."
+  [field-syms arity-form]
+  (let [args (first arity-form)
+        body (next arity-form)
+        this-sym (first args)
+        bindings (mapcat (fn [f]
+                           [f (list '. this-sym (symbol (str "-" f)))])
+                         field-syms)]
+    (if (seq field-syms)
+      `(~args (let [~@bindings] ~@body))
+      `(~args ~@body))))
+
+(defn- -rewrite-method-for-deftype
+  "Rewrite (mname [args*] body*) or (mname ([args] body)+) so each
+  arity binds the deftype's field names to instance attribute lookups."
+  [field-syms method-form]
+  (let [mname (first method-form)
+        rest-of (next method-form)]
+    (cond
+      ;; Single arity: (mname [args] body...)
+      (vector? (first rest-of))
+      (cons mname (-wrap-arity-with-field-let field-syms rest-of))
+      ;; Multi-arity: (mname ([args] body) ([args] body) ...)
+      :else
+      (cons mname
+            (map (fn [arity] (-wrap-arity-with-field-let field-syms arity))
+                 rest-of)))))
+
+(defn- -emit-method-attrs
+  "From parsed protocol-method specs, build a flat seq of [attr-name
+  fn-form] pairs that go into the class's attribute dict. `field-syms`
+  optionally bind field names inside each method body."
+  [parsed field-syms]
+  (mapcat
+    (fn [pair]
+      (mapcat
+        (fn [m]
+          (let [rewritten (if (seq field-syms)
+                            (-rewrite-method-for-deftype field-syms m)
+                            m)]
+            [(str (first m)) `(fn ~@(next rewritten))]))
+        (second pair)))
+    parsed))
+
+(defn- -emit-extend-form
+  "Build an (extend cls Proto1 {:m1 (fn ...)} Proto2 {:m2 ...}) form
+  from parsed specs. Reuses field-syms-rewriting for deftype."
+  [cls-form parsed field-syms]
+  `(extend ~cls-form
+     ~@(mapcat
+         (fn [pair]
+           (let [proto-sym (first pair)
+                 method-defs (second pair)]
+             [proto-sym
+              (apply hash-map
+                (mapcat (fn [m]
+                          (let [rewritten (if (seq field-syms)
+                                            (-rewrite-method-for-deftype field-syms m)
+                                            m)]
+                            [(keyword (str (first m)))
+                             `(fn ~@(next rewritten))]))
+                        method-defs))]))
+         parsed)))
+
+(defmacro reify
+  "Creates an anonymous instance of a new type that satisfies the given
+  protocols.
+
+  (reify
+    IFoo
+    (foo [this] :foo)
+    IBar
+    (bar [this x] (* x 2)))
+
+  Method bodies close over the surrounding lexical environment. Each
+  method takes `this` as its first parameter explicitly."
+  {:added "1.2"}
+  [& specs]
+  (let [parsed (parse-extend-type-specs specs)
+        gname (str (gensym "reify_"))
+        cls-sym (gensym "cls_")
+        method-attr-pairs (-emit-method-attrs parsed nil)
+        extend-form (when (seq parsed)
+                      (-emit-extend-form cls-sym parsed nil))]
+    `(let [~cls-sym (-build-type ~gname
+                                  [py.__builtins__/object]
+                                  ~(if (seq method-attr-pairs)
+                                     `(hash-map ~@method-attr-pairs)
+                                     '{}))]
+       ~@(when extend-form [extend-form])
+       (~cls-sym))))
+
+(defmacro deftype
+  "Creates a new type with the given name and fields, optionally
+  satisfying the given protocols.
+
+  (deftype Point [x y]
+    IPoint
+    (mag [this] (Math/sqrt (+ (* x x) (* y y)))))
+
+  Field names are auto-bound inside method bodies, so `x` and `y`
+  refer to the instance's attributes. To create instances use the
+  constructor (Point. 3 4) or the factory (->Point 3 4).
+
+  Adaptations: JVM type hints on fields are accepted but ignored;
+  Python's class system is fully dynamic. The :volatile-mutable /
+  :unsynchronized-mutable field flags are also accepted but no-ops
+  (Python attrs are always mutable)."
+  {:added "1.2"}
+  [Name fields & specs]
+  (let [parsed (parse-extend-type-specs specs)
+        ;; Strip metadata from field symbols (JVM uses ^type hints we ignore).
+        field-syms (vec (map #(with-meta % nil) fields))
+        method-attr-pairs (-emit-method-attrs parsed field-syms)
+        ;; __init__ assigns each constructor arg to the matching attr.
+        init-fn `(fn [~'this ~@field-syms]
+                   ~@(map (fn [f]
+                            `(py.__builtins__/setattr ~'this ~(str f) ~f))
+                          field-syms)
+                   nil)
+        attrs `(hash-map "__init__" ~init-fn ~@method-attr-pairs)
+        factory-name (symbol (str "->" Name))]
+    `(do
+       (def ~Name (-build-type ~(str Name)
+                                [py.__builtins__/object]
+                                ~attrs))
+       ~(when (seq parsed)
+          (-emit-extend-form Name parsed field-syms))
+       (defn ~factory-name
+         ~(str "Positional factory for class " Name ".")
+         ~field-syms
+         (~Name ~@field-syms))
+       (var ~Name))))
