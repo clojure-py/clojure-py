@@ -6802,3 +6802,4 @@
 (alter-meta! (find-ns 'clojure.core) assoc :doc "Fundamental library of the Clojure language")
 (load "core_print")
 (load "core_deftype")
+(load "core/protocols")

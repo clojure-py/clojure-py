@@ -253,31 +253,51 @@ def test_late_extend_visible_after_failed_call():
     assert E("(m 5)") == K("now")
 
 
-# --- :extend-via-meta -----------------------------------------
+# --- :extend-via-metadata --------------------------------------
+#
+# Per JVM contract, the metadata key is namespace-qualified
+# `:proto-ns/method-name`. These tests run from the user namespace, so
+# the key looks like `:user/method-name`.
 
-def test_extend_via_meta_basic():
+def test_extend_via_metadata_basic():
     name = fresh_proto()
-    E(f"(defprotocol {name} :extend-via-meta true (m [x]))")
-    out = E(f"(m (with-meta {{}} {{:m (fn [_] :from-meta)}}))")
+    E(f"(defprotocol {name} :extend-via-metadata true (m [x]))")
+    out = E(f"(m (with-meta {{}} {{:user/m (fn [_] :from-meta)}}))")
     assert out == K("from-meta")
 
-def test_extend_via_meta_class_takes_precedence():
-    """When both class-based extend AND meta-fn are present, class wins.
+def test_extend_via_metadata_overrides_class():
+    """When both class-based extend AND meta-fn are present, meta wins.
 
-    Our impl tries class-based first; meta only kicks in when the class
-    has no extension."""
+    Matches JVM: :extend-via-metadata is a per-instance escape hatch
+    that overrides the protocol's regular dispatch."""
     name = fresh_proto()
-    E(f"(defprotocol {name} :extend-via-meta true (m [x]))")
+    E(f"(defprotocol {name} :extend-via-metadata true (m [x]))")
     E(f"(extend-type clojure.lang.IPersistentMap {name} (m [x] :class-impl))")
-    out = E(f"(m (with-meta {{}} {{:m (fn [_] :meta-impl)}}))")
-    assert out == K("class-impl")
+    out = E(f"(m (with-meta {{}} {{:user/m (fn [_] :meta-impl)}}))")
+    assert out == K("meta-impl")
 
-def test_extend_via_meta_default_off():
-    """Without :extend-via-meta true, metadata-based dispatch is ignored."""
+def test_extend_via_metadata_falls_through_when_no_meta():
+    """When :extend-via-metadata is on but x has no relevant metadata,
+    fall through to class-based dispatch."""
+    name = fresh_proto()
+    E(f"(defprotocol {name} :extend-via-metadata true (m [x]))")
+    E(f"(extend-type clojure.lang.IPersistentMap {name} (m [x] :class-impl))")
+    assert E(f"(m {{}})") == K("class-impl")
+
+def test_extend_via_metadata_default_off():
+    """Without :extend-via-metadata true, metadata-based dispatch is ignored."""
     name = fresh_proto()
     E(f"(defprotocol {name} (m [x]))")
     with pytest.raises(Exception, match="No implementation"):
-        E(f"(m (with-meta {{}} {{:m (fn [_] :ignored)}}))")
+        E(f"(m (with-meta {{}} {{:user/m (fn [_] :ignored)}}))")
+
+def test_extend_via_metadata_uses_qualified_key():
+    """The unqualified key is ignored — only the namespace-qualified
+    `:proto-ns/method-name` key triggers meta-dispatch."""
+    name = fresh_proto()
+    E(f"(defprotocol {name} :extend-via-metadata true (m [x]))")
+    with pytest.raises(Exception, match="No implementation"):
+        E(f"(m (with-meta {{}} {{:m (fn [_] :unqualified-ignored)}}))")
 
 
 # --- defprotocol redefinition ----------------------------------

@@ -40,7 +40,7 @@
 ;;    :sigs        {method-kw {:name 'mname :arglists '([this x] ...) :doc d}}
 ;;    :method-map  {method-kw #'method-dispatch-fn}
 ;;    :impls       {AClass {method-kw impl-fn ...} ...}
-;;    :extend-via-meta  bool}
+;;    :extend-via-metadata  bool}
 
 (defn- protocol? [maybe-p]
   (and (map? maybe-p) (boolean (:method-map maybe-p))))
@@ -69,19 +69,24 @@
 
 (defn find-protocol-impl
   "Returns the implementation map for protocol implemented by x's type
-  (or by x via :extend-via-meta if enabled), or nil."
+  (or by x via :extend-via-metadata if enabled), or nil."
   {:added "1.2"}
   [protocol x]
   (or (when-let [hit (find-impl-for-class protocol (class x))]
         (second hit))
-      (when (:extend-via-meta protocol)
+      (when (:extend-via-metadata protocol)
         (when-let [m (meta x)]
-          (loop [acc {}, ks (seq (keys (:method-map protocol)))]
-            (if (nil? ks)
-              acc
-              (if-let [f (get m (first ks))]
-                (recur (assoc acc (first ks) f) (next ks))
-                nil)))))))
+          (let [proto-ns (str (:ns protocol))]
+            (loop [acc {}, ks (seq (keys (:method-map protocol)))]
+              (if (nil? ks)
+                acc
+                ;; Meta-extension keys are namespace-qualified
+                ;; `:proto-ns/method-name`, matching JVM contract.
+                (let [bare-kw (first ks)
+                      meta-kw (keyword proto-ns (name bare-kw))]
+                  (if-let [f (get m meta-kw)]
+                    (recur (assoc acc bare-kw f) (next ks))
+                    nil)))))))))
 
 (defn find-protocol-method
   "Returns the implementation function for method-key on x, or nil."
@@ -126,37 +131,42 @@
   nil)
 
 (defn -dispatch-protocol-method
-  "Runtime helper: look up the impl for `method-kw` on `(class x)` via the
-  protocol value at `proto-var`, calling it with x and the rest-args.
-  Caches (class x) → impl-fn in `cache` (a Python dict). On a miss,
-  walks the impls map; if no impl found, throws."
+  "Runtime helper for protocol method dispatch.
+
+  Priority:
+    1. If protocol is :extend-via-metadata, check x's metadata under
+       meta-kw (a namespace-qualified `:proto-ns/method-name`
+       keyword). Per-instance, so not cached. JVM behavior: meta
+       extension overrides class-based extension.
+    2. Otherwise, look up `(class x)` in the protocol's :impls map
+       (with class-hierarchy walk) and cache the result in `cache`
+       (a Python dict)."
   {:added "1.2"}
-  [proto-var method-kw method-name cache x rest-args]
-  ;; Sentinel for cache miss — we use cache itself as the sentinel since
-  ;; no key in the cache is ever the cache dict.
-  (let [cls (class x)
-        cached (.get cache cls cache)
-        impl (if (identical? cached cache)
-               (let [proto @proto-var
-                     hit (find-impl-for-class proto cls)
-                     m (when hit (second hit))
-                     f (when m (get m method-kw))
-                     ;; If no class-based impl and protocol has
-                     ;; :extend-via-meta, look on x's metadata.
-                     f (or f
-                           (when (:extend-via-meta proto)
-                             (when-let [mm (meta x)]
-                               (get mm method-kw))))]
-                 (.__setitem__ cache cls f)
-                 f)
-               cached)]
+  [proto-var method-kw meta-kw method-name cache x rest-args]
+  (let [proto @proto-var
+        ;; Step 1: meta-extension wins if present.
+        meta-impl (when (:extend-via-metadata proto)
+                    (when-let [mm (meta x)]
+                      (get mm meta-kw)))
+        impl (or meta-impl
+                 ;; Step 2: class-based dispatch with cache.
+                 (let [cls (class x)
+                       cached (.get cache cls cache)]
+                   (if (identical? cached cache)
+                     (let [hit (find-impl-for-class proto cls)
+                           m (when hit (second hit))
+                           f (when m (get m method-kw))]
+                       (.__setitem__ cache cls f)
+                       f)
+                     cached)))]
     (if impl
       (apply impl x rest-args)
       (throw (IllegalArgumentException.
               (str "No implementation of method: " method-name
-                   " of protocol: " (:name @proto-var)
+                   " of protocol: " (:name proto)
                    " found for class: "
-                   (if cls (.-__name__ cls) "nil")))))))
+                   (let [cls (class x)]
+                     (if cls (.-__name__ cls) "nil"))))))))
 
 ;;; --- extend / extend-type / extend-protocol -----------------------------
 
@@ -183,25 +193,39 @@
       (alter-var-root (:var proto) assoc-in [:impls atype] mmap)
       (-reset-methods @(:var proto)))))
 
+(defn- -extend-target?
+  "True if x is a target slot in extend-type / extend-protocol — that
+  is, a class/protocol-naming Symbol, or the literal nil (which means
+  'extend over the nil case')."
+  [x]
+  (or (nil? x) (symbol? x)))
+
 (defn- parse-extend-type-specs
   "Walk a flat list like (Proto1 (m1 [...] body) (m2 [...] body) Proto2 ...)
-  and return ([Proto1 ((m1 ...) (m2 ...))] [Proto2 (...)])."
+  and return ([Proto1 ((m1 ...) (m2 ...))] [Proto2 (...)]).
+
+  Targets can be a symbol (named class/protocol) or literal nil."
   [specs]
-  (loop [out [], current-proto nil, current-impls [], specs (seq specs)]
-    (cond
-      (nil? specs)
-      (if current-proto
-        (conj out [current-proto current-impls])
-        out)
+  ;; Use a sentinel to distinguish 'no current target yet' from 'current
+  ;; target is nil' — both are otherwise None.
+  (let [no-target ::no-target]
+    (loop [out [], current-proto no-target, current-impls [], specs (seq specs)]
+      (cond
+        (nil? specs)
+        (if (identical? current-proto no-target)
+          out
+          (conj out [current-proto current-impls]))
 
-      (symbol? (first specs))
-      (recur (if current-proto (conj out [current-proto current-impls]) out)
-             (first specs)
-             []
-             (next specs))
+        (-extend-target? (first specs))
+        (recur (if (identical? current-proto no-target)
+                 out
+                 (conj out [current-proto current-impls]))
+               (first specs)
+               []
+               (next specs))
 
-      :else
-      (recur out current-proto (conj current-impls (first specs)) (next specs)))))
+        :else
+        (recur out current-proto (conj current-impls (first specs)) (next specs))))))
 
 (defmacro extend-type
   "Implements protocol(s) for the given type via extend.
@@ -240,14 +264,19 @@
     (foo [this] :b))"
   {:added "1.2"}
   [proto & specs]
-  (let [type-impls
-        (loop [out [], current-type nil, current-impls [], specs (seq specs)]
+  (let [no-target ::no-target
+        type-impls
+        (loop [out [], current-type no-target, current-impls [], specs (seq specs)]
           (cond
             (nil? specs)
-            (if current-type (conj out [current-type current-impls]) out)
+            (if (identical? current-type no-target)
+              out
+              (conj out [current-type current-impls]))
 
-            (symbol? (first specs))
-            (recur (if current-type (conj out [current-type current-impls]) out)
+            (-extend-target? (first specs))
+            (recur (if (identical? current-type no-target)
+                     out
+                     (conj out [current-type current-impls]))
                    (first specs)
                    []
                    (next specs))
@@ -301,7 +330,7 @@
   first argument. Use extend / extend-type / extend-protocol to add
   implementations.
 
-  Supported opt: :extend-via-meta — when true, dispatch falls back to
+  Supported opt: :extend-via-metadata — when true, dispatch falls back to
   metadata on the value if the class isn't extended."
   {:added "1.2"}
   [proto-name & opts+sigs]
@@ -321,20 +350,24 @@
          (constantly
            {:name '~proto-name
             :var (var ~proto-name)
+            :ns '~(ns-name *ns*)
             :doc ~doc
             :sigs ~sig-map
             :method-map {}
             :impls {}
-            :extend-via-meta ~(:extend-via-meta opts false)}))
+            :extend-via-metadata ~(:extend-via-metadata opts false)}))
        ~@(map (fn [mname]
                 (let [mkw (keyword (str mname))
+                      ;; Qualified keyword for :extend-via-metadata lookups.
+                      ;; Matches JVM's `:protocol-ns/method-name` convention.
+                      meta-kw (keyword (str (ns-name *ns*)) (str mname))
                       mstr (str mname)]
                   `(let [cache# (py.__builtins__/dict)]
                      (defn ~mname
                        ([x#] (-dispatch-protocol-method (var ~proto-name)
-                                                       ~mkw ~mstr cache# x# nil))
+                                                       ~mkw ~meta-kw ~mstr cache# x# nil))
                        ([x# & rest#] (-dispatch-protocol-method (var ~proto-name)
-                                                                 ~mkw ~mstr cache# x# rest#)))
+                                                                 ~mkw ~meta-kw ~mstr cache# x# rest#)))
                      (alter-meta! (var ~mname) assoc ::method-cache cache#))))
               method-syms)
        (alter-var-root (var ~proto-name)
