@@ -42,11 +42,16 @@ cdef class Atom(ARef):
     @staticmethod
     cdef tuple _splat_trailing_seq(tuple args):
         # JVM IAtom has overloads (f), (f a), (f a b), (f a b seq).
-        # clojure.core/swap! routes 4+-arg calls into the seq-tail
-        # overload; in Python we collapse all overloads onto one
-        # varargs `swap(self, f, *args)` and detect the trailing seq.
+        # clojure.core/swap!'s 4+-arity is the only one that routes a
+        # rest-seq as the trailing arg — its body is `(.swap atom f x
+        # y args)`, where `args` is the &-collected seq.
+        # 1-, 2-, and 3-arg forms pass values positionally and we
+        # must NOT splat them, even if the last value happens to be a
+        # Seqable (e.g. a vector being conj'd by swap!). So the splat
+        # only fires when args has length >= 3 (== JVM's f, x, y, seq
+        # overload).
         cdef object last
-        if not args:
+        if len(args) < 3:
             return args
         last = args[len(args) - 1]
         if (isinstance(last, (Seqable, ISeq))

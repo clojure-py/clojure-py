@@ -7934,3 +7934,144 @@
                 (recur acc (step k))
                 acc)))
           acc)))))
+
+;;;;;;;;;;;;;;;;;;;;; tagged literal / reader conditional ;;;;;;;;;;;;;;;;;;
+;;
+;; clojure.lang.TaggedLiteral and ReaderConditional are already
+;; defined as Cython classes in _lang/lisp_reader.pxi (the reader
+;; produces them when *suppress-read* / *read-cond* is :preserve). We
+;; just expose the predicates and constructors.
+
+(defn tagged-literal?
+  "Return true if the value is the data representation of a tagged literal."
+  {:added "1.7"}
+  [value]
+  (instance? clojure.lang.TaggedLiteral value))
+
+(defn tagged-literal
+  "Construct a data representation of a tagged literal from a
+  tag symbol and a form."
+  {:added "1.7"}
+  [tag form]
+  (clojure.lang.TaggedLiteral/create tag form))
+
+(defn reader-conditional?
+  "Return true if the value is the data representation of a reader conditional."
+  {:added "1.7"}
+  [value]
+  (instance? clojure.lang.ReaderConditional value))
+
+(defn reader-conditional
+  "Construct a data representation of a reader conditional.
+  If true, splicing? indicates read-cond-splicing."
+  {:added "1.7"}
+  [form splicing?]
+  (clojure.lang.ReaderConditional/create form splicing?))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; data readers ;;;;;;;;;;;;;;;;;;
+;;
+;; Adaptations from JVM:
+;;   - JVM scans the classloader for `data_readers.clj`/`.cljc` at
+;;     boot. We could scan sys.path for the same, but no user code
+;;     in our port currently ships such files, so the loader is
+;;     omitted. *data-readers* defaults to {}; users can rebind.
+;;   - default-data-readers is empty for now: JVM's `'uuid →
+;;     #'clojure.uuid/default-uuid-reader` and `'inst → ...` would
+;;     need clojure.uuid / clojure.instant ports, which we'll add
+;;     when we port those namespaces.
+
+(def ^{:added "1.4"} default-data-readers
+  "Default map of data reader functions provided by Clojure. May be
+  overridden by binding *data-readers*."
+  {})
+
+(def ^{:added "1.4" :dynamic true} *data-readers*
+  "Map from reader tag symbols to data reader Vars.
+
+  Default reader tags are defined in clojure.core/default-data-readers
+  but may be overridden by rebinding this Var.
+
+  Adaptation: JVM also scans the classloader for data_readers.clj /
+  data_readers.cljc files at boot; that scan is omitted in our port."
+  {})
+
+(def ^{:added "1.5" :dynamic true} *default-data-reader-fn*
+  "When no data reader is found for a tag and *default-data-reader-fn*
+  is non-nil, it will be called with two arguments,
+  the tag and the value.  If *default-data-reader-fn* is nil (the
+  default), an exception will be thrown for the unknown tag."
+  nil)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; uri? + tap ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Adaptations:
+;;   - uri? checks for urllib.parse.ParseResult (the closest Python
+;;     analog of java.net.URI). It's a NamedTuple, not a class with
+;;     methods, but isinstance works for the predicate.
+;;   - JVM's java.util.concurrent.ArrayBlockingQueue → queue.Queue
+;;     with maxsize=1024. .offer (non-blocking, returns bool) maps to
+;;     .put_nowait (raises queue.Full); we wrap in try/catch.
+;;   - JVM Thread.setDaemon(true) → threading.Thread(daemon=True).
+
+(defn uri?
+  "Return true if x is a URI (Python urllib.parse.ParseResult).
+
+  Adaptation: JVM checks java.net.URI. Python doesn't have a built-in
+  URI class proper; ParseResult is what urllib.parse.urlparse returns
+  and is the closest analog."
+  {:added "1.9"}
+  [x] (instance? py.urllib.parse/ParseResult x))
+
+(defonce ^:private tapset (atom #{}))
+(defonce ^:private tapq (py.queue/Queue 1024))
+
+(defonce ^:private tap-loop
+  (delay
+    (let [loop-fn (fn []
+                    (loop []
+                      (let [t (.get tapq)
+                            x (if (identical? ::tap-nil t) nil t)
+                            taps @tapset]
+                        (doseq [tap taps]
+                          (try
+                            (tap x)
+                            (catch Throwable _ nil))))
+                      (recur)))
+          ;; Python Thread signature: Thread(group=None, target=...).
+      ;; Pass nil for group, loop-fn as target, "tap-loop" name.
+      th (py.threading/Thread nil loop-fn "clojure.core/tap-loop")]
+      (py.__builtins__/setattr th "daemon" true)
+      (.start th)
+      th)))
+
+(defn add-tap
+  "Adds f, a fn of one argument, to the tap set. This function will
+  be called with anything sent via tap>. This function may (briefly)
+  block (e.g. for streams), and will never impede calls to tap>, but
+  blocking indefinitely may cause tap values to be dropped. Remember
+  f in order to remove-tap."
+  {:added "1.10"}
+  [f]
+  (force tap-loop)
+  (swap! tapset conj f)
+  nil)
+
+(defn remove-tap
+  "Remove f from the tap set."
+  {:added "1.10"}
+  [f]
+  (swap! tapset disj f)
+  nil)
+
+(defn tap>
+  "Sends x to any taps. Will not block. Returns true if there was room
+  in the queue, false if not (dropped)."
+  {:added "1.10"}
+  [x]
+  (force tap-loop)
+  (try
+    (.put_nowait tapq (if (nil? x) ::tap-nil x))
+    true
+    (catch py.queue/Full _ false)))
