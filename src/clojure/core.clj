@@ -7768,3 +7768,169 @@
        ~(if (empty? steps)
           g
           (last steps)))))
+
+;;;;;;;;;;;;;;;;;;;;;; transducer fns batch (JVM 7808-7960) ;;;;;;;;;;;;;;;;;
+;;
+;; Adaptations from JVM:
+;;   - Iterable / .iterator → py.collections.abc/Iterable / __iter__
+;;     (Python iteration protocol). For deftype (Eduction here),
+;;     we register the class with the Iterable ABC and attach
+;;     __iter__ as the class method.
+;;   - clojure.lang.RT/iter → (py.__builtins__/iter coll). Same
+;;     contract: produce a fresh iterator over the collection.
+;;   - Eduction is a deftype (not defrecord) — it doesn't need
+;;     map-like behavior, just iterability + reducibility.
+
+(defn ^:private preserving-reduced
+  [rf]
+  #(let [ret (rf %1 %2)]
+     (if (reduced? ret)
+       (reduced ret)
+       ret)))
+
+(defn cat
+  "A transducer which concatenates the contents of each input, which must be a
+  collection, into the reduction."
+  {:added "1.7"}
+  [rf]
+  (let [rrf (preserving-reduced rf)]
+    (fn
+      ([] (rf))
+      ([result] (rf result))
+      ([result input]
+       (reduce rrf result input)))))
+
+(defn halt-when
+  "Returns a transducer that ends transduction when pred returns true
+  for an input. When retf is supplied it must be a fn of 2 arguments -
+  it will be passed the (completed) result so far and the input that
+  triggered the predicate, and its return value (if it does not throw
+  an exception) will be the return value of the transducer. If retf
+  is not supplied, the input that triggered the predicate will be
+  returned. If the predicate never returns true the transduction is
+  unaffected."
+  {:added "1.9"}
+  ([pred] (halt-when pred nil))
+  ([pred retf]
+   (fn [rf]
+     (fn
+       ([] (rf))
+       ([result]
+        (if (and (map? result) (contains? result ::halt))
+          (::halt result)
+          (rf result)))
+       ([result input]
+        (if (pred input)
+          (reduced {::halt (if retf (retf (rf result) input) input)})
+          (rf result input)))))))
+
+(defn dedupe
+  "Returns a lazy sequence removing consecutive duplicates in coll.
+  Returns a transducer when no collection is provided."
+  {:added "1.7"}
+  ([]
+   (fn [rf]
+     (let [pv (volatile! ::none)]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (let [prior @pv]
+            (vreset! pv input)
+            (if (= prior input)
+              result
+              (rf result input))))))))
+  ([coll] (sequence (dedupe) coll)))
+
+(defn random-sample
+  "Returns items from coll with random probability of prob (0.0 -
+  1.0).  Returns a transducer when no collection is provided."
+  {:added "1.7"}
+  ([prob]
+   (filter (fn [_] (< (rand) prob))))
+  ([prob coll]
+   (filter (fn [_] (< (rand) prob)) coll)))
+
+(deftype Eduction [xform coll]
+  py.collections.abc/Iterable
+  ;; JVM .iterator → Python __iter__. Python iter() and `for x in ...`
+  ;; both call __iter__ on the class.
+  (__iter__ [_]
+    (clojure.lang.TransformerIterator/create xform (py.__builtins__/iter coll)))
+
+  clojure.lang.IReduceInit
+  (reduce [_ f init]
+    ;; NB (completing f) isolates completion of inner rf from outer rf
+    (transduce xform (completing f) init coll))
+
+  clojure.lang.Sequential)
+
+(defn eduction
+  "Returns a reducible/iterable application of the transducers
+  to the items in coll. Transducers are applied in order as if
+  combined with comp. Note that these applications will be
+  performed every time reduce/iterator is called."
+  {:arglists '([xform* coll])
+   :added "1.7"}
+  [& xforms]
+  (Eduction. (apply comp (butlast xforms)) (last xforms)))
+
+(defmethod print-method Eduction [c w]
+  (if *print-readably*
+    (print-sequential "(" pr-on " " ")" c w)
+    (print-object c w)))
+
+(defn run!
+  "Runs the supplied procedure (via reduce), for purposes of side
+  effects, on successive items in the collection. Returns nil."
+  {:added "1.7"}
+  [proc coll]
+  (reduce #(proc %2) nil coll)
+  nil)
+
+(defn iteration
+  "Creates a seqable/reducible via repeated calls to step,
+  a function of some (continuation token) 'k'. The first call to step
+  will be passed initk, returning 'ret'. Iff (somef ret) is true,
+  (vf ret) will be included in the iteration, else iteration will
+  terminate and vf/kf will not be called. If (kf ret) is non-nil it
+  will be passed to the next step call, else iteration will terminate.
+
+  This can be used e.g. to consume APIs that return paginated or batched data.
+
+   step - (possibly impure) fn of 'k' -> 'ret'
+
+   :somef - fn of 'ret' -> logical true/false, default 'some?'
+   :vf - fn of 'ret' -> 'v', a value produced by the iteration, default 'identity'
+   :kf - fn of 'ret' -> 'next-k' or nil (signaling 'do not continue'), default 'identity'
+   :initk - the first value passed to step, default 'nil'
+
+  It is presumed that step with non-initk is unreproducible/non-idempotent.
+  If step with initk is unreproducible it is on the consumer to not consume twice."
+  {:added "1.11"}
+  [step & {:keys [somef vf kf initk]
+           :or {vf identity
+                kf identity
+                somef some?
+                initk nil}}]
+  (reify
+    clojure.lang.Seqable
+    (seq [_]
+      ((fn next [ret]
+         (when (somef ret)
+           (cons (vf ret)
+                 (when-some [k (kf ret)]
+                   (lazy-seq (next (step k)))))))
+       (step initk)))
+    clojure.lang.IReduceInit
+    (reduce [_ rf init]
+      (loop [acc init
+             ret (step initk)]
+        (if (somef ret)
+          (let [acc (rf acc (vf ret))]
+            (if (reduced? acc)
+              @acc
+              (if-some [k (kf ret)]
+                (recur acc (step k))
+                acc)))
+          acc)))))
