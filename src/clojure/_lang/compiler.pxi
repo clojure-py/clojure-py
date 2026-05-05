@@ -1204,6 +1204,20 @@ _JAVA_METHOD_FALLBACKS = {
     "endsWith": (lambda s, suffix:
                  s.endsWith(suffix) if hasattr(s, "endsWith")
                  else s.endswith(suffix)),
+    # JVM Class.getName / Class.getSimpleName / Class.isArray — Python `type`
+    # exposes the same data via __name__ / __qualname__ / no-array. The
+    # fallbacks let core_print etc. keep JVM verbatim.
+    "getName": (lambda c:
+                c.getName() if hasattr(c, "getName") else c.__name__),
+    "getSimpleName": (lambda c:
+                      c.getSimpleName() if hasattr(c, "getSimpleName")
+                      else c.__name__),
+    "isArray": (lambda c:
+                c.isArray() if hasattr(c, "isArray") else False),
+    # JVM String.charAt(n) → Python str[n]. Returns a 1-char str — there's
+    # no separate Character type in Python.
+    "charAt": (lambda s, n:
+               s.charAt(n) if hasattr(s, "charAt") else s[n]),
 }
 
 

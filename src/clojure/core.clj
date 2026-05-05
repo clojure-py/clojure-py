@@ -6791,3 +6791,13 @@
           :identity
           (let [[shift mask imap switch-type skip-check] (prep-hashes ge default tests thens)]
             `(let [~ge ~e] (case* ~ge ~shift ~mask ~default ~imap ~switch-type :hash-identity ~skip-check))))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; helper files ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; JVM core.clj loads core_proxy / core_print / genclass / core_deftype /
+;; core/protocols / gvec here. We've ported core_print so far; the others
+;; come in subsequent batches. core_proxy / genclass are JVM-specific (no
+;; Python equivalent of Java reflection-based proxying / gen-class) so
+;; they'll get pared-down or stubbed adaptations.
+(alter-meta! (find-ns 'clojure.core) assoc :doc "Fundamental library of the Clojure language")
+(load "core_print")

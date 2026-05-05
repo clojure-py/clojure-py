@@ -222,8 +222,10 @@ def test_pr_on_dispatches_to_print_method_by_default():
     assert _capture_out("(clojure.core/pr 1)") == "1"
 
 def test_pr_on_dispatches_to_print_dup_when_print_dup_set():
-    """When *print-dup* is bound true, pr-on uses print-dup. Our :default
-    print-dup forwards to print-method, so output should match pr."""
+    """When *print-dup* is bound true, pr-on uses print-dup. Once
+    core_print loads, print-dup for collections emits the JVM-style
+    `#=(Class/create [...])` reader form so the output round-trips back
+    to the same value via *read-eval*."""
     core_ns = Namespace.find(Symbol.intern("clojure.core"))
     out_var = core_ns.find_interned_var(Symbol.intern("*out*"))
     print_dup_var = core_ns.find_interned_var(Symbol.intern("*print-dup*"))
@@ -234,7 +236,12 @@ def test_pr_on_dispatches_to_print_dup_when_print_dup_set():
         E("(clojure.core/pr [1 2 3])")
     finally:
         Var.pop_thread_bindings()
-    assert buf.getvalue() == "[1 2 3]"
+    out = buf.getvalue()
+    assert out.startswith("#=(PersistentVector/create [")
+    assert out.endswith("])")
+    # Each element should print as #=(int. "N")
+    for n in (1, 2, 3):
+        assert ('#=(int. "%d")' % n) in out
 
 
 # --- *flush-on-newline* observance --------------------------------

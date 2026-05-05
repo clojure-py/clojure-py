@@ -45,6 +45,14 @@ class System:
     def currentTimeMillis():
         return int(_time_mod.time() * 1000)
 
+    @staticmethod
+    def identityHashCode(o):
+        """JVM System.identityHashCode → Python id(). Used by
+        print-tagged-object to render the #object[Type 0xHEX repr] form."""
+        if o is None:
+            return 0
+        return id(o)
+
 
 # --- JavaMatcher --------------------------------------------------
 
