@@ -5810,10 +5810,75 @@
   [fmt & args]
   (print (apply format fmt args)))
 
-;; with-loading-context (5812) and the ns macro (5821) skipped —
-;; with-loading-context uses JVM ClassLoader machinery; the ns macro
-;; uses gen-class plus hooks into require/use/load which we haven't
-;; ported yet. Will land in a focused batch.
+(declare gen-class)
+
+;; with-loading-context (JVM 5812) skipped — pushes a JVM ClassLoader
+;; binding around the body. Python imports work differently; we just
+;; emit the body inline in the ns macro instead of wrapping.
+
+;; in-ns is a thin wrapper around RT.in_ns. JVM exposes it as a
+;; built-in (Compiler-level); we make it a regular fn since RT.in_ns
+;; handles the *ns* mutation (thread-binding-aware).
+(defn in-ns
+  "Sets *ns* to the namespace named by sym, creating it if needed."
+  {:added "1.0"}
+  [sym] (clojure.lang.RT/in_ns sym))
+
+;; gen-class is a no-op stub. JVM uses it to compile a Java class
+;; backed by a Clojure namespace; that doesn't apply in Python. The
+;; ns macro emits a (gen-class …) call when :gen-class is in the
+;; references; the stub eats it.
+(defmacro gen-class
+  "No-op in clojure-py. JVM's gen-class generates a Java class for
+  AOT compilation; Python's import machinery doesn't need this."
+  {:added "1.0"}
+  [& opts] nil)
+
+(defmacro ns
+  "Sets *ns* to the namespace named by name (unevaluated), creating it
+  if needed.  references can be zero or more of: (:refer-clojure ...)
+  (:require ...) (:use ...) (:import ...) (:load ...) (:gen-class)
+  with the syntax of refer-clojure/require/use/import/load/gen-class
+  respectively, except the arguments are unevaluated and need not be
+  quoted."
+  {:arglists '([name docstring? attr-map? references*])
+   :added "1.0"}
+  [name & references]
+  (let [process-reference
+        (fn [[kname & args]]
+          `(~(symbol "clojure.core" (clojure.core/name kname))
+             ~@(map #(list 'quote %) args)))
+        docstring  (when (string? (first references)) (first references))
+        references (if docstring (next references) references)
+        name (if docstring
+               (vary-meta name assoc :doc docstring)
+               name)
+        metadata   (when (map? (first references)) (first references))
+        references (if metadata (next references) references)
+        name (if metadata
+               (vary-meta name merge metadata)
+               name)
+        gen-class-clause (first (filter #(= :gen-class (first %)) references))
+        gen-class-call
+          (when gen-class-clause
+            (list* `gen-class :name (.replace (str name) \- \_) :impl-ns name :main true (next gen-class-clause)))
+        references (remove #(= :gen-class (first %)) references)
+        name-metadata (meta name)]
+    `(do
+       (clojure.core/in-ns '~name)
+       ~@(when name-metadata
+           ;; JVM: .resetMeta — snake_case in clojure-py.
+           `((.reset_meta (clojure.lang.Namespace/find '~name) ~name-metadata)))
+       ;; with-loading-context elided — see comment above the ns macro.
+       ~@(when gen-class-call (list gen-class-call))
+       ~@(when (and (not= name 'clojure.core) (not-any? #(= :refer-clojure (first %)) references))
+           `((clojure.core/refer '~'clojure.core)))
+       ~@(map process-reference references)
+       ;; JVM uses (.equals 'name 'clojure.core) — Python objects use
+       ;; ==, exposed in Clojure as `=`. Same semantics.
+       (if (= '~name 'clojure.core)
+         nil
+         (do (dosync (commute @#'*loaded-libs* conj '~name)) nil)))))
 
 (defmacro refer-clojure
   "Same as (refer 'clojure.core <filters>)"
@@ -5848,9 +5913,13 @@
      "True while a verbose load is pending"}
   *loading-verbosely* false)
 
-;; throw-if (5911) skipped — it builds a CompilerException with a JVM
-;; stack-trace rewrite. Used only inside the load machinery (which we
-;; haven't ported); revisit alongside that.
+(defn- throw-if
+  "Throws an Exception with a formatted message if pred is true."
+  [pred fmt & args]
+  ;; JVM builds a CompilerException with rewritten stack trace; we
+  ;; just throw plain Exception with the formatted message.
+  (when pred
+    (throw (Exception. (apply format fmt args)))))
 
 (defn- libspec?
   "Returns true if x is a libspec"
@@ -5883,20 +5952,158 @@
   (let [d (root-resource lib)]
     (subs d 0 (.lastIndexOf d "/"))))
 
-;; load-one / load-all / load-lib / load-libs / require / use /
-;; serialized-require / requiring-resolve / loaded-libs / load /
-;; compile (5958-6205) all skipped — they need:
-;;   - a Python file-system search story for finding .clj files,
-;;     analogous to JVM's classpath-relative resolution;
-;;   - throw-if, check-cyclic-dependency;
-;;   - cycle-detection via *pending-paths*.
-;; Will land in a focused require/use/load batch — substantial enough
-;; to warrant its own design pass.
+(def ^:declared ^:redef load)
+
+(defn- load-one
+  "Loads a lib given its name. If need-ns, ensures that the associated
+  namespace exists after loading. If require, records the load so any
+  duplicate loads can be skipped."
+  [lib need-ns require]
+  (load (root-resource lib))
+  (throw-if (and need-ns (not (find-ns lib)))
+            "namespace '%s' not found after loading '%s'"
+            lib (root-resource lib))
+  (when require
+    (dosync
+     (commute *loaded-libs* conj lib))))
+
+(defn- load-all
+  "Loads a lib given its name and forces a load of any libs it directly or
+  indirectly loads. If need-ns, ensures that the associated namespace
+  exists after loading. If require, records the load so any duplicate loads
+  can be skipped."
+  [lib need-ns require]
+  (dosync
+   (commute *loaded-libs* #(reduce1 conj %1 %2)
+            (binding [*loaded-libs* (ref (sorted-set))]
+              (load-one lib need-ns require)
+              @*loaded-libs*))))
+
+(defn- check-cyclic-dependency
+  "Detects and rejects non-trivial cyclic load dependencies. The
+  exception message shows the dependency chain with the cycle
+  highlighted. Ignores the trivial case of a file attempting to load
+  itself because that can occur when a gen-class'd class loads its
+  implementation."
+  [path]
+  (when (some #{path} (rest *pending-paths*))
+    (let [pending (map #(if (= % path) (str "[ " % " ]") %)
+                       (cons path *pending-paths*))
+          chain (apply str (interpose "->" pending))]
+      (throw-if true "Cyclic load dependency: %s" chain))))
+
+(defn- load-lib
+  "Loads a lib with options"
+  [prefix lib & options]
+  (throw-if (and prefix (pos? (.indexOf (name lib) (int \.))))
+            "Found lib name '%s' containing period with prefix '%s'.  lib names inside prefix lists must not contain periods"
+            (name lib) prefix)
+  (let [lib (if prefix (symbol (str prefix \. lib)) lib)
+        opts (apply hash-map options)
+        {:keys [as reload reload-all require use verbose as-alias]} opts
+        loaded (contains? @*loaded-libs* lib)
+        need-ns (or as use)
+        load (cond reload-all load-all
+                   reload load-one
+                   (not loaded) (cond need-ns load-one
+                                      as-alias (fn [lib _need _require] (create-ns lib))
+                                      :else load-one))
+
+        filter-opts (select-keys opts '(:exclude :only :rename :refer))
+        undefined-on-entry (not (find-ns lib))]
+    (binding [*loading-verbosely* (or *loading-verbosely* verbose)]
+      (if load
+        (try
+          (load lib need-ns require)
+          (catch Exception e
+            (when undefined-on-entry
+              (remove-ns lib))
+            (throw e)))
+        (throw-if (and need-ns (not (find-ns lib)))
+          "namespace '%s' not found" lib))
+      (when (and need-ns *loading-verbosely*)
+        (printf "(clojure.core/in-ns '%s)\n" (ns-name *ns*)))
+      (when as
+        (when *loading-verbosely*
+          (printf "(clojure.core/alias '%s '%s)\n" as lib))
+        (alias as lib))
+      (when as-alias
+        (when *loading-verbosely*
+          (printf "(clojure.core/alias '%s '%s)\n" as-alias lib))
+        (alias as-alias lib))
+      (when (or use (:refer filter-opts))
+        (when *loading-verbosely*
+          (printf "(clojure.core/refer '%s" lib)
+          (doseq [opt filter-opts]
+            (printf " %s '%s" (key opt) (print-str (val opt))))
+          (printf ")\n"))
+        (apply refer lib (mapcat seq filter-opts))))))
+
+(defn- load-libs
+  "Loads libs, interpreting libspecs, prefix lists, and flags for
+  forwarding to load-lib"
+  [& args]
+  (let [flags (filter keyword? args)
+        opts (interleave flags (repeat true))
+        args (filter (complement keyword?) args)]
+    ; check for unsupported options
+    (let [supported #{:as :reload :reload-all :require :use :verbose :refer :as-alias}
+          unsupported (seq (remove supported flags))]
+      (throw-if unsupported
+                (apply str "Unsupported option(s) supplied: "
+                     (interpose \, unsupported))))
+    ; check a load target was specified
+    (throw-if (not (seq args)) "Nothing specified to load")
+    (doseq [arg args]
+      (if (libspec? arg)
+        (apply load-lib nil (prependss arg opts))
+        (let [[prefix & args] arg]
+          (throw-if (nil? prefix) "prefix cannot be nil")
+          (doseq [arg args]
+            (apply load-lib prefix (prependss arg opts))))))))
+
+;; Public
+
+(defn require
+  "Loads libs, skipping any that are already loaded. Each argument is
+  either a libspec that identifies a lib, a prefix list that identifies
+  multiple libs whose names share a common prefix, or a flag that modifies
+  how all the identified libs are loaded. Use :require in the ns macro
+  in preference to calling this directly."
+  {:added "1.0"}
+  [& args]
+  (apply load-libs :require args))
+
+(defn use
+  "Like 'require, but also refers to each lib's namespace using
+  clojure.core/refer. Use :use in the ns macro in preference to calling
+  this directly."
+  {:added "1.0"}
+  [& args] (apply load-libs :require :use args))
 
 (defn loaded-libs
   "Returns a sorted set of symbols naming the currently loaded libs"
   {:added "1.0"}
   [] @*loaded-libs*)
+
+(defn load
+  "Loads Clojure code from resources in classpath. A path is interpreted as
+  classpath-relative if it begins with a slash or relative to the root
+  directory for the current namespace otherwise."
+  {:redef true
+   :added "1.0"}
+  [& paths]
+  (doseq [^String path paths]
+    (let [^String path (if (.startsWith path "/")
+                          path
+                          (str (root-directory (ns-name *ns*)) \/ path))]
+      (when *loading-verbosely*
+        (printf "(clojure.core/load \"%s\")\n" path)
+        (flush))
+      (check-cyclic-dependency path)
+      (when-not (= path (first *pending-paths*))
+        (binding [*pending-paths* (conj *pending-paths* path)]
+          (clojure.lang.RT/load (.substring path 1)))))))
 
 ;;;;;;;;;;;;; nested associative ops ;;;;;;;;;;;
 

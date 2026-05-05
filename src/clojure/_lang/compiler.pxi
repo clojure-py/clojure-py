@@ -1635,10 +1635,21 @@ def _load_string(source, source_name="<load-string>"):
 
 
 def _load_file(path):
-    """Load a .clj file: read each form and eval in sequence."""
+    """Load a .clj file: read each form and eval in sequence.
+
+    Pushes a thread-local binding for *ns* so that any (in-ns ...) /
+    (ns ...) inside the file (or inside a transitively-loaded file)
+    only affects the duration of that file's evaluation. Without this,
+    a nested require would leak the inner file's ns over the outer
+    file's remaining forms."""
     with open(path, "r") as f:
         source = f.read()
-    return _load_string(source, source_name=path)
+    bindings = PersistentArrayMap.create(RT.CURRENT_NS, RT.CURRENT_NS.deref())
+    Var.push_thread_bindings(bindings)
+    try:
+        return _load_string(source, source_name=path)
+    finally:
+        Var.pop_thread_bindings()
 
 
 def _load_reader(rdr):

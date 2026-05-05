@@ -9,6 +9,7 @@
 import importlib as _importlib
 import builtins as _builtins
 import itertools as _runtime_itertools
+import os as _os
 
 
 cdef object _RT_ID_COUNTER = _runtime_itertools.count(1)
@@ -231,6 +232,46 @@ class RT:
     def aset(arr, idx, val):
         arr[idx] = val
         return val
+
+    @staticmethod
+    def in_ns(sym):
+        """JVM RT.inNamespace — switch *ns* to the named namespace,
+        creating it if needed. We bind_root since Compiler.load_file
+        doesn't push a thread binding for *ns*; this matches JVM's
+        global-binding semantics."""
+        ns = Namespace.find_or_create(sym)
+        # If thread-bound, set thread; else change root binding.
+        if RT.CURRENT_NS.get_thread_binding() is not None:
+            RT.CURRENT_NS.set(ns)
+        else:
+            RT.CURRENT_NS.bind_root(ns)
+        return ns
+
+    @staticmethod
+    def load(path):
+        """JVM RT.load — find a .clj/.cljc resource matching `path` on
+        sys.path and evaluate every form in it.
+
+        Path is forward-slash-separated, no leading slash, no .clj
+        suffix (e.g. 'foo/bar' for the 'foo.bar' lib).
+        """
+        import sys as _sys
+        # Strip leading slash if present (clojure.core/load passes it
+        # via .substring(1), but be defensive).
+        if path.startswith("/"):
+            path = path[1:]
+        # Replace forward slashes with the platform separator and try
+        # each search root.
+        rel_clj  = path.replace("/", _os.sep) + ".clj"
+        rel_cljc = path.replace("/", _os.sep) + ".cljc"
+        for entry in _sys.path:
+            for rel in (rel_clj, rel_cljc):
+                candidate = _os.path.join(entry, rel)
+                if _os.path.isfile(candidate):
+                    return Compiler.load_file(candidate)
+        raise FileNotFoundError(
+            "Could not locate " + path + ".clj or " + path
+            + ".cljc on sys.path")
 
     @staticmethod
     def format(fmt, args):
