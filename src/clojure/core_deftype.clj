@@ -46,26 +46,44 @@
   (and (map? maybe-p) (boolean (:method-map maybe-p))))
 
 (defn- find-impl-for-class
-  "Returns [matched-class impl-map] or nil. Looks up cls directly,
-  then walks cls.__mro__, then scans impls for any virtual base that
-  matches via isa?."
+  "Returns [matched-class impl-map] or nil for protocol dispatch.
+
+  Walks impls in priority order matching JVM (super-chain + pref):
+    1. Direct hit on cls (covers cls=nil for (extend-type nil ...)).
+    2. Walk cls.__mro__ excluding the universal `object` root.
+       Concrete inheritance.
+    3. Virtual bases: scan registered impl classes via isa?,
+       excluding `object`. Picks any matching ABC.
+    4. Final fallback: `object` if extended.
+
+  Excluding `object` from steps 2-3 ensures a more specific match
+  (like IKVReduce on a PersistentVector) wins over the universal
+  Object fallback."
   [proto cls]
-  (let [impls (:impls proto)]
+  (let [impls (:impls proto)
+        obj-cls py.__builtins__/object]
     (or
-      ;; Direct hit (also covers cls=nil when (extend-type nil ...)).
+      ;; 1. Direct hit.
       (when-let [m (get impls cls)] [cls m])
-      ;; Concrete inheritance via __mro__.
       (when cls
-        (some (fn [c] (when-let [m (get impls c)] [c m]))
-              (seq (.-__mro__ cls))))
-      ;; Virtual bases: scan each registered impl class.
-      (when cls
-        (some (fn [pair]
-                (let [ext-cls (first pair)
-                      m (second pair)]
-                  (when (and (class? ext-cls) (isa? cls ext-cls))
-                    [ext-cls m])))
-              impls)))))
+        (or
+          ;; 2. Concrete inheritance via __mro__ (excluding `object`).
+          (some (fn [c]
+                  (when (and (not (identical? c obj-cls))
+                             (contains? impls c))
+                    [c (get impls c)]))
+                (seq (.-__mro__ cls)))
+          ;; 3. Virtual bases via isa? (excluding `object`).
+          (some (fn [pair]
+                  (let [ext-cls (first pair)
+                        m (second pair)]
+                    (when (and (class? ext-cls)
+                               (not (identical? ext-cls obj-cls))
+                               (isa? cls ext-cls))
+                      [ext-cls m])))
+                impls)
+          ;; 4. Final fallback: Object impl, if any.
+          (when-let [m (get impls obj-cls)] [obj-cls m]))))))
 
 (defn find-protocol-impl
   "Returns the implementation map for protocol implemented by x's type

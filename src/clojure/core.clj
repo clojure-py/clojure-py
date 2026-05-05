@@ -6803,3 +6803,219 @@
 (load "core_print")
 (load "core_deftype")
 (load "core/protocols")
+
+;; --- Skipped: stream-reduce! / stream-seq! / stream-transduce! /
+;; stream-into! (JVM 6865-6902) — they wrap java.util.stream.BaseStream
+;; which has no Python equivalent. Python iterators already work via
+;; the existing reduce / transduce path.
+
+;; --- Skipped: when-class macro + (load "instant") (JVM 6904-6911) —
+;; java.sql.Timestamp printer/reader is JVM-only.
+
+(defprotocol Inst
+  "Protocol for things that act like an instant in time."
+  (inst-ms* [inst]
+    "Milliseconds since the epoch (1970-01-01 UTC)."))
+
+(extend-protocol Inst
+  ;; Python's datetime.datetime is the closest analog of JVM Date /
+  ;; java.time.Instant. .timestamp() returns seconds-since-epoch as a
+  ;; float; multiply by 1000 for ms.
+  py.datetime/datetime
+  (inst-ms* [inst] (long (* 1000 (.timestamp inst)))))
+
+(defn inst-ms
+  "Return the number of milliseconds since January 1, 1970, 00:00:00 GMT."
+  {:added "1.9"}
+  [inst]
+  (inst-ms* inst))
+
+(defn inst?
+  "Return true if x satisfies Inst."
+  {:added "1.9"}
+  [x]
+  (satisfies? Inst x))
+
+;; --- Skipped: (load "uuid") — JVM reader/printer setup. We use Python's
+;; uuid module directly in the predicates below.
+
+(defn uuid?
+  "Return true if x is a UUID."
+  {:added "1.9"}
+  [x] (instance? py.uuid/UUID x))
+
+(defn random-uuid
+  "Returns a pseudo-randomly generated UUID instance (i.e. type 4)."
+  {:added "1.11"}
+  []
+  (py.uuid/uuid4))
+
+;; redefine reduce with internal-reduce
+(defn reduce
+  "f should be a function of 2 arguments. If val is not supplied,
+  returns the result of applying f to the first 2 items in coll, then
+  applying f to that result and the 3rd item, etc. If coll contains no
+  items, f must accept no arguments as well, and reduce returns the
+  result of calling f with no arguments. If coll has only 1 item, it
+  is returned and f is not called. If val is supplied, returns the
+  result of applying f to val and the first item in coll, then
+  applying f to that result and the 2nd item, etc. If coll contains no
+  items, returns val and f is not called."
+  {:added "1.0"}
+  ([f coll]
+   (if (instance? clojure.lang.IReduce coll)
+     (.reduce coll f)
+     (clojure.core.protocols/coll-reduce coll f)))
+  ([f val coll]
+   (if (instance? clojure.lang.IReduceInit coll)
+     (.reduce coll f val)
+     (clojure.core.protocols/coll-reduce coll f val))))
+
+(extend-protocol clojure.core.protocols/IKVReduce
+  nil
+  (kv-reduce [_ f init] init)
+
+  ;; Slow-path default: iterate the map's entries. Works for any
+  ;; coll (sequence of MapEntry-likes), so this catches Python dicts
+  ;; once they're seq'd, etc.
+  clojure.core/Object
+  (kv-reduce [amap f init]
+    (reduce (fn [ret me]
+              (f ret (key me) (val me)))
+            init amap))
+
+  ;; Fast path: persistent maps and vectors implement clojure.lang.IKVReduce
+  ;; with a snake_case .kv_reduce method (mirroring JVM .kvreduce).
+  clojure.lang.IKVReduce
+  (kv-reduce [amap f init] (.kv_reduce amap f init)))
+
+(defn reduce-kv
+  "Reduces an associative collection. f should be a function of 3
+  arguments. Returns the result of applying f to init, the first key
+  and the first value in coll, then applying f to that result and the
+  2nd key and value, etc. If coll contains no entries, returns init
+  and f is not called. Note that reduce-kv is supported on vectors,
+  where the keys will be the ordinals."
+  {:added "1.4"}
+  ([f init coll]
+   (clojure.core.protocols/kv-reduce coll f init)))
+
+(defn completing
+  "Takes a reducing function f of 2 args and returns a fn suitable for
+  transduce by adding an arity-1 signature that calls cf (default -
+  identity) on the result argument."
+  {:added "1.7"}
+  ([f] (completing f identity))
+  ([f cf]
+   (fn
+     ([] (f))
+     ([x] (cf x))
+     ([x y] (f x y)))))
+
+(defn transduce
+  "reduce with a transformation of f (xf). If init is not
+  supplied, (f) will be called to produce it. f should be a reducing
+  step function that accepts both 1 and 2 arguments, if it accepts
+  only 2 you can add the arity-1 with 'completing'. Returns the result
+  of applying (the transformed) xf to init and the first item in coll,
+  then applying xf to that result and the 2nd item, etc. If coll
+  contains no items, returns init and f is not called. Note that
+  certain transforms may inject or skip items."
+  {:added "1.7"}
+  ([xform f coll] (transduce xform f (f) coll))
+  ([xform f init coll]
+   (let [f (xform f)
+         ret (if (instance? clojure.lang.IReduceInit coll)
+               (.reduce coll f init)
+               (clojure.core.protocols/coll-reduce coll f init))]
+     (f ret))))
+
+(defn into
+  "Returns a new coll consisting of to with all of the items of
+  from conjoined. A transducer may be supplied.
+  (into x) returns x. (into) returns []."
+  {:added "1.0"}
+  ([] [])
+  ([to] to)
+  ([to from]
+   (if (instance? clojure.lang.IEditableCollection to)
+     (with-meta (persistent! (reduce conj! (transient to) from)) (meta to))
+     (reduce conj to from)))
+  ([to xform from]
+   (if (instance? clojure.lang.IEditableCollection to)
+     (let [tm (meta to)
+           rf (fn
+                ([coll] (-> (persistent! coll) (with-meta tm)))
+                ([coll v] (conj! coll v)))]
+       (transduce xform rf (transient to) from))
+     (transduce xform conj to from))))
+
+(defn mapv
+  "Returns a vector consisting of the result of applying f to the
+  set of first items of each coll, followed by applying f to the set
+  of second items in each coll, until any one of the colls is
+  exhausted. Any remaining items in other colls are ignored. Function
+  f should accept number-of-colls arguments."
+  {:added "1.4"}
+  ([f coll]
+   (-> (reduce (fn [v o] (conj! v (f o))) (transient []) coll)
+       persistent!))
+  ([f c1 c2]
+   (into [] (map f c1 c2)))
+  ([f c1 c2 c3]
+   (into [] (map f c1 c2 c3)))
+  ([f c1 c2 c3 & colls]
+   (into [] (apply map f c1 c2 c3 colls))))
+
+(defn filterv
+  "Returns a vector of the items in coll for which
+  (pred item) returns logical true. pred must be free of side-effects."
+  {:added "1.4"}
+  [pred coll]
+  (-> (reduce (fn [v o] (if (pred o) (conj! v o) v))
+              (transient [])
+              coll)
+      persistent!))
+
+;; --- slurp / spit (JVM 7083-7111) -------------------------------
+;;
+;; JVM uses (clojure.java.io/reader f opts) to handle file paths,
+;; URLs, InputStreams, etc. We don't have clojure.java.io ported, so
+;; we adapt to Python's open() for path strings and pass file-like
+;; objects through directly.
+
+(defn slurp
+  "Opens a reader on f and reads all its contents, returning a
+  string. f may be a path string or any object with a `.read` method
+  (a file-like).
+
+  Adaptation: JVM accepts InputStream / Reader / URL / URI / Socket /
+  File. We accept str (path) or any object with .read."
+  {:added "1.0"
+   :tag clojure.core/String}
+  [f & opts]
+  (let [opts (apply hash-map opts)
+        encoding (or (:encoding opts) "UTF-8")]
+    (if (string? f)
+      (with-open [r (py.__builtins__/open f "r" -1 encoding)]
+        (.read r))
+      (.read f))))
+
+(defn spit
+  "Opposite of slurp. Opens f with a writer, writes content, then
+  closes f. f may be a path string or any object with a `.write`
+  method.
+
+  Adaptation: JVM accepts the same wide range as slurp via
+  clojure.java.io/writer. We accept str (path) or any object with
+  .write."
+  {:added "1.2"}
+  [f content & opts]
+  (let [opts (apply hash-map opts)
+        encoding (or (:encoding opts) "UTF-8")
+        append? (boolean (:append opts))
+        mode (if append? "a" "w")]
+    (if (string? f)
+      (with-open [w (py.__builtins__/open f mode -1 encoding)]
+        (.write w (str content)))
+      (.write f (str content)))))
