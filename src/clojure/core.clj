@@ -7019,3 +7019,136 @@
       (with-open [w (py.__builtins__/open f mode -1 encoding)]
         (.write w (str content)))
       (.write f (str content)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; futures (no proxy needed) ;;;;;;;;;;;;;;;;;;;;
+;;
+;; JVM `future-call` uses `proxy` to make a single object that
+;; implements clojure.lang.IDeref, IBlockingDeref, IPending, AND
+;; java.util.concurrent.Future at once — a Java necessity since each
+;; method overload binds at the interface level. We don't need that:
+;; future-call returns the raw concurrent.futures.Future from the
+;; agent solo-executor pool, and `deref` / `realized?` are taught to
+;; recognize plain Futures alongside IDeref / IPending.
+
+(defn ^:private deref-future
+  ([fut] (.result fut))
+  ([fut timeout-ms timeout-val]
+   (try (.result fut (/ timeout-ms 1000.0))
+        (catch py.concurrent.futures/TimeoutError _ timeout-val))))
+
+;; Redefine deref with multi-arity + Future fallback (was bootstrap 1-arg).
+(defn deref
+  "Also reader macro: @ref/@agent/@var/@atom/@delay/@future/@promise.
+  Within a transaction, returns the in-transaction-value of ref, else
+  returns the most-recently-committed value of ref. When applied to a
+  var, agent or atom, returns its current state. When applied to a
+  delay, forces it if not already forced. When applied to a future,
+  will block if computation not complete. When applied to a promise,
+  will block until a value is delivered. The variant taking a timeout
+  can be used for blocking references (futures and promises), and
+  will return timeout-val if the timeout (in milliseconds) is reached
+  before a value is available. See also - realized?."
+  {:added "1.0"}
+  ([ref]
+   (if (instance? clojure.lang.IDeref ref)
+     (.deref ref)
+     (deref-future ref)))
+  ([ref timeout-ms timeout-val]
+   (if (instance? clojure.lang.IBlockingDeref ref)
+     (.deref ref timeout-ms timeout-val)
+     (deref-future ref timeout-ms timeout-val))))
+
+(defn realized?
+  "Returns true if a value has been produced for a promise, delay,
+  future or lazy sequence."
+  {:added "1.3"}
+  [x]
+  (cond
+    (instance? clojure.lang.IPending x) (.is_realized x)
+    ;; Raw concurrent.futures.Future — JVM's java.util.concurrent.Future.
+    (instance? py.concurrent.futures/Future x) (.done x)
+    :else (throw (IllegalArgumentException.
+                  (str "realized? not supported on " (class x))))))
+
+(defn future-call
+  "Takes a function of no args and yields a future object that will
+  invoke the function in another thread, and will cache the result and
+  return it on all subsequent calls to deref/@. If the computation has
+  not yet finished, calls to deref/@ will block, unless the variant of
+  deref with timeout is used. See also - realized?.
+
+  Adaptation: returns the raw concurrent.futures.Future from the
+  shared agent solo-executor (clojure.lang.Agent/soloExecutor on JVM).
+  No proxy needed — Python's Future already exposes the surface our
+  deref / realized? / future-cancel / future-cancelled? / future-done?
+  call into."
+  {:added "1.1"
+   :static true}
+  [f]
+  (let [f (binding-conveyor-fn f)]
+    (.submit (clojure.lang.Agent/get_solo_executor) f)))
+
+(defmacro future
+  "Takes a body of expressions and yields a future object that will
+  invoke the body in another thread, and will cache the result and
+  return it on all subsequent calls to deref/@. If the computation has
+  not yet finished, calls to deref/@ will block, unless the variant of
+  deref with timeout is used. See also - realized?."
+  {:added "1.1"}
+  [& body] `(future-call (^{:once true} fn* [] ~@body)))
+
+(defn future-cancel
+  "Cancels the future, if possible.
+
+  Adaptation: Python Future.cancel takes no `mayInterruptIfRunning`
+  arg — it can only cancel scheduled (not yet running) futures.
+  Returns True if the future was cancelled."
+  {:added "1.1"
+   :static true}
+  [f] (.cancel f))
+
+(defn future-cancelled?
+  "Returns true if future f is cancelled."
+  {:added "1.1"
+   :static true}
+  [f] (.cancelled f))
+
+(defn pmap
+  "Like map, except f is applied in parallel. Semi-lazy in that the
+  parallel computation stays ahead of the consumption, but doesn't
+  realize the entire result unless required. Only useful for
+  computationally intensive functions where the time of f dominates
+  the coordination overhead."
+  {:added "1.0"
+   :static true}
+  ([f coll]
+   (let [n (+ 2 (or (py.os/cpu_count) 1))
+         rets (map #(future (f %)) coll)
+         step (fn step [[x & xs :as vs] fs]
+                (lazy-seq
+                 (if-let [s (seq fs)]
+                   (cons (deref x) (step xs (rest s)))
+                   (map deref vs))))]
+     (step rets (drop n rets))))
+  ([f coll & colls]
+   (let [step (fn step [cs]
+                (lazy-seq
+                 (let [ss (map seq cs)]
+                   (when (every? identity ss)
+                     (cons (map first ss) (step (map rest ss)))))))]
+     (pmap #(apply f %) (step (cons coll colls))))))
+
+(defn pcalls
+  "Executes the no-arg fns in parallel, returning a lazy sequence of
+  their values."
+  {:added "1.0"
+   :static true}
+  [& fns] (pmap #(%) fns))
+
+(defmacro pvalues
+  "Returns a lazy sequence of the values of the exprs, which are
+  evaluated in parallel."
+  {:added "1.0"
+   :static true}
+  [& exprs]
+  `(pcalls ~@(map (fn [e] `(fn [] ~e)) exprs)))

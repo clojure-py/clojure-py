@@ -40,3 +40,7 @@ class Delay:
 
     def is_realized(self):
         return self._evaluated
+
+
+IDeref.register(Delay)
+IPending.register(Delay)

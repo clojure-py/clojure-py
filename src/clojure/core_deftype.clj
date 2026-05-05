@@ -188,12 +188,31 @@
 
 ;;; --- extend / extend-type / extend-protocol -----------------------------
 
+(defn -register-as-abc
+  "Register `cls` as a virtual subclass of `abc-cls` (a Python ABC or
+  any class). Used by reify/deftype when a spec resolves to a class
+  rather than a Clojure protocol — e.g. clojure.lang.IDeref, which is
+  a Cython ABC, not a defprotocol-defined map. Methods are already
+  attached to cls (via -build-type) at this point, so registration is
+  the only thing left."
+  {:added "1.2"}
+  [abc-cls cls]
+  (.register abc-cls cls)
+  cls)
+
 (defn extend
   "Implements one or more protocols for the given type.
 
   (extend AType
     AProtocol  {:method1 (fn [this & args] ...) :method2 ...}
     BProtocol  {...})
+
+  Each spec arg can be a Clojure protocol (a map produced by
+  defprotocol) or a Python ABC / Java interface class. For
+  protocols we install impls in :impls; for ABCs we register the
+  type via .register (the methods are expected to already be
+  present on the class as Python attributes — typically via reify
+  or deftype).
 
   After registration, dispatch caches are reset on each affected
   protocol so future calls see the new impls."
@@ -205,11 +224,21 @@
   (doseq [pair (partition 2 proto+mmaps)]
     (let [proto (first pair)
           mmap (second pair)]
-      (when-not (protocol? proto)
+      (cond
+        ;; ABC / Java interface — register, ignore mmap (methods come
+        ;; from elsewhere, typically deftype/reify class attrs).
+        (class? proto)
+        (-register-as-abc proto atype)
+
+        (protocol? proto)
+        (do
+          (alter-var-root (:var proto) assoc-in [:impls atype] mmap)
+          (-reset-methods @(:var proto)))
+
+        :else
         (throw (IllegalArgumentException.
-                (str "extend's even args must be protocols, got: " proto))))
-      (alter-var-root (:var proto) assoc-in [:impls atype] mmap)
-      (-reset-methods @(:var proto)))))
+                (str "extend's even args must be protocols or classes, got: "
+                     proto)))))))
 
 (defn- -extend-target?
   "True if x is a target slot in extend-type / extend-protocol — that
