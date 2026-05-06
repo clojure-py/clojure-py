@@ -8075,3 +8075,111 @@
     (.put_nowait tapq (if (nil? x) ::tap-nil x))
     true
     (catch py.queue/Full _ false)))
+
+;;;;;;;;;;;;;;;;;;;;;;;; update-vals / update-keys / parse-* ;;;;;;;;;;;;;;;;
+;;
+;; Adaptations from JVM:
+;;   - Long/valueOf → (py.__builtins__/int s) (raises ValueError on
+;;     bad parse, like JVM NumberFormatException).
+;;   - Double/valueOf → (py.__builtins__/float s) (likewise ValueError).
+;;   - java.util.UUID/fromString → (py.uuid/UUID s) (ValueError on bad
+;;     format).
+;;   - Double/isNaN → (py.math/isnan num).
+;;   - Double/isInfinite → (py.math/isinf num).
+;;   - NumberFormatException / IllegalArgumentException catches all
+;;     collapse to ValueError on the Python side.
+
+(defn update-vals
+  "m f => {k (f v) ...}
+
+  Given a map m and a function f of 1-argument, returns a new map where the keys of m
+  are mapped to result of applying f to the corresponding values of m."
+  {:added "1.11"}
+  [m f]
+  (with-meta
+    (persistent!
+     (reduce-kv (fn [acc k v] (assoc! acc k (f v)))
+                (if (instance? clojure.lang.IEditableCollection m)
+                  (transient m)
+                  (transient {}))
+                m))
+    (meta m)))
+
+(defn update-keys
+  "m f => {(f k) v ...}
+
+  Given a map m and a function f of 1-argument, returns a new map whose
+  keys are the result of applying f to the keys of m, mapped to the
+  corresponding values of m.
+  f must return a unique key for each key of m, else the behavior is undefined."
+  {:added "1.11"}
+  [m f]
+  (let [ret (persistent!
+             (reduce-kv (fn [acc k v] (assoc! acc (f k) v))
+                        (transient {})
+                        m))]
+    (with-meta ret (meta m))))
+
+(defn- parsing-err
+  "Construct message for parsing for non-string parsing error"
+  [val]
+  (str "Expected string, got " (if (nil? val) "nil" (.-__name__ (class val)))))
+
+(defn parse-long
+  "Parse string of decimal digits with optional leading -/+ and return a
+  Long value, or nil if parse fails."
+  {:added "1.11"}
+  [s]
+  (if (string? s)
+    (try
+      ;; Adaptation: JVM Long/valueOf only accepts ints; Python int()
+      ;; would also accept "1.5" no — actually it doesn't. int("1.5")
+      ;; raises. Floats like "1.0" also raise. So semantics align.
+      (py.__builtins__/int s)
+      (catch ValueError _ nil))
+    (throw (IllegalArgumentException. (parsing-err s)))))
+
+(defn parse-double
+  "Parse string with floating point components and return a Double
+  value, or nil if parse fails."
+  {:added "1.11"}
+  [s]
+  (if (string? s)
+    (try
+      (py.__builtins__/float s)
+      (catch ValueError _ nil))
+    (throw (IllegalArgumentException. (parsing-err s)))))
+
+(defn parse-uuid
+  "Parse a string representing a UUID and return a UUID instance,
+  or nil if parse fails."
+  {:added "1.11"}
+  [s]
+  (if (string? s)
+    (try
+      (py.uuid/UUID s)
+      (catch ValueError _ nil))
+    (throw (IllegalArgumentException. (parsing-err s)))))
+
+(defn parse-boolean
+  "Parse strings \"true\" or \"false\" and return a boolean, or nil if invalid."
+  {:added "1.11"}
+  [s]
+  (if (string? s)
+    (case s
+      "true" true
+      "false" false
+      nil)
+    (throw (IllegalArgumentException. (parsing-err s)))))
+
+(defn NaN?
+  "Returns true if num is NaN, else false."
+  {:added "1.11"}
+  [num]
+  (py.math/isnan num))
+
+(defn infinite?
+  "Returns true if num is negative or positive infinity, else false."
+  {:added "1.11"}
+  [num]
+  (py.math/isinf num))
