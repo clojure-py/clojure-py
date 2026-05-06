@@ -130,17 +130,31 @@ cdef class Keyword:
             raise TypeError(f"cannot compare Keyword to {type(other).__name__}")
         return self.sym._compare((<Keyword>other).sym)
 
-    def __call__(self, obj, not_found=NOT_FOUND):
-        if obj is None:
-            return None if not_found is NOT_FOUND else not_found
-        if isinstance(obj, ILookup):
-            if not_found is NOT_FOUND:
-                return obj.val_at(self)
-            return obj.val_at(self, not_found)
-        try:
-            return obj[self]
-        except (KeyError, TypeError):
-            return None if not_found is NOT_FOUND else not_found
+    def __call__(self, *args):
+        # JVM keywords are callable with 1 or 2 args (key, [not-found]).
+        # Any other arity raises IllegalArgumentException with the message
+        # `Wrong number of args (N) passed to: :kw`. JVM caps the
+        # reported count at 20; > 20 collapses to "(> 20)".
+        cdef int n = len(args)
+        if n == 1 or n == 2:
+            obj = args[0]
+            not_found = args[1] if n == 2 else NOT_FOUND
+            if obj is None:
+                return None if not_found is NOT_FOUND else not_found
+            if isinstance(obj, ILookup):
+                if not_found is NOT_FOUND:
+                    return obj.val_at(self)
+                return obj.val_at(self, not_found)
+            try:
+                return obj[self]
+            except (KeyError, TypeError):
+                return None if not_found is NOT_FOUND else not_found
+        if n > 20:
+            count_str = "> 20"
+        else:
+            count_str = str(n)
+        raise ValueError(
+            f"Wrong number of args ({count_str}) passed to: {self}")
 
 
 IFn.register(Keyword)
