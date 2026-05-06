@@ -8183,3 +8183,11 @@
   {:added "1.11"}
   [num]
   (py.math/isinf num))
+
+;; clojure.core is loaded via Python's import system, not through
+;; Clojure's require/load. Mark it as loaded so subsequent
+;; `(require 'clojure.core)` / `(use 'clojure.core)` calls (e.g.
+;; from temp-ns helpers used in tests) no-op instead of trying to
+;; re-load core.clj from scratch.
+(dosync
+  (commute *loaded-libs* conj 'clojure.core))

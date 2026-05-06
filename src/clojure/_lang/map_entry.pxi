@@ -118,6 +118,42 @@ cdef class MapEntry:
     def __call__(self, int i):
         return self.nth(i)
 
+    # --- Associative / IPersistentVector ergonomics ---
+    #
+    # JVM AMapEntry extends APersistentVector, so a MapEntry behaves
+    # as a 2-element vector for indexed access AND assoc/cons. Our
+    # MapEntry deliberately doesn't claim full IPersistentVector (the
+    # backing data isn't a vector), but assoc / contains_key /
+    # entry_at / cons mirror JVM's vector-of-2 semantics so update-in
+    # on a map's entries works.
+
+    def _as_vector(self):
+        return PersistentVector.from_iterable([self._key, self._val])
+
+    def assoc(self, key, val):
+        if isinstance(key, int) and not isinstance(key, bool):
+            return self._as_vector().assoc(key, val)
+        raise IndexError("MapEntry assoc key must be 0 or 1")
+
+    def assoc_n(self, int i, val):
+        return self._as_vector().assoc_n(i, val)
+
+    def contains_key(self, key):
+        return isinstance(key, int) and not isinstance(key, bool) and 0 <= key < 2
+
+    def entry_at(self, key):
+        if isinstance(key, int) and not isinstance(key, bool) and 0 <= key < 2:
+            return MapEntry(key, self.nth(key))
+        return None
+
+    def val_at(self, key, not_found=None):
+        if isinstance(key, int) and not isinstance(key, bool) and 0 <= key < 2:
+            return self.nth(key)
+        return not_found
+
+    def cons(self, x):
+        return self._as_vector().cons(x)
+
     def __contains__(self, x):
         # Vector semantics: contains? checks key range, not value.
         return isinstance(x, int) and not isinstance(x, bool) and 0 <= x < 2
@@ -177,3 +213,5 @@ IFn.register(MapEntry)
 IHashEq.register(MapEntry)
 IMeta.register(MapEntry)
 IObj.register(MapEntry)
+ILookup.register(MapEntry)
+Associative.register(MapEntry)

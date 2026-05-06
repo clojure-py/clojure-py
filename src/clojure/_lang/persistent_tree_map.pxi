@@ -298,7 +298,18 @@ cdef class PersistentTreeMap:
         return self._count
 
     cdef int _do_compare(self, a, b) except? -2:
-        return self._comp(a, b)
+        # JVM AFunction.compare auto-coerces boolean results from the
+        # predicate into a 3-way ordering: (pred a b) true → -1;
+        # else (pred b a) true → 1; else 0. Lets users pass raw
+        # boolean predicates like > or < as comparators (the most
+        # common sorted-map-by / sorted-set-by usage). If the fn
+        # returns a number we use it directly.
+        cdef object r = self._comp(a, b)
+        if isinstance(r, bool):
+            if r:
+                return -1
+            return 1 if self._comp(b, a) else 0
+        return r
 
     def comparator(self):
         return self._comp
