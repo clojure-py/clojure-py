@@ -600,3 +600,107 @@
          ~field-syms
          (~Name ~@field-syms))
        (var ~Name))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; defrecord ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; defrecord generates a Python class that subclasses
+;; clojure.lang.RecordBase, which centralizes the IPersistentMap
+;; surface (val_at / assoc / without / count / seq / equiv / cons /
+;; entry_at / contains_key / meta / with_meta / hasheq, plus Python
+;; __eq__ / __hash__ / __iter__ / __len__ / __contains__ /
+;; __getitem__).
+;;
+;; The defrecord-generated class:
+;;   - sets `_record_fields` to the tuple of field-name strings
+;;   - has __init__ that takes positional fields and calls
+;;     RecordBase.__record_init__ to wire field attrs + meta + extmap
+;;   - registers Bool/Numeric ABC interfaces transitively via
+;;     RecordBase
+;;   - additional protocol/ABC specs in opts+specs are wired via the
+;;     usual extend / extend-class machinery
+;;
+;; Two factories: ->Name (positional) and map->Name (from a map).
+;;
+;; Adaptations from JVM:
+;;   - No __hash / __hasheq mutable cache fields. RecordBase keeps a
+;;     simple _hash_cache instance attr.
+;;   - Records can't have nil fields per JVM. (dissoc rec :field)
+;;     converts to a plain map; we follow that behavior.
+;;   - Equality includes the _extmap, matching JVM behavior where
+;;     extmap entries participate in =.
+
+(defn -record-init-fn
+  "Returns a Python __init__ fn that takes positional field values and
+  installs them on the instance via RecordBase's __record_init__."
+  [field-strs]
+  (fn [this & vals]
+    (let [vc (count vals)
+          fc (count field-strs)]
+      (when (not= vc fc)
+        (throw (IllegalArgumentException.
+                 (str (.-__name__ (class this))
+                      " takes " fc " field args, got " vc)))))
+    (.__record_init__ this vals)
+    nil))
+
+(defmacro defrecord
+  "(defrecord name [fields*] options* specs*)
+
+  Creates a new class implementing IPersistentMap, IRecord, and the
+  other map ABCs. Field access uses keyword lookup: (:field-name rec).
+  Two factories are generated: (->Name a b c) and (map->Name {:a 1 :b 2}).
+
+  Records compare by class+field+extmap value equality. assoc on a
+  field key returns a new record of the same type; assoc on a
+  non-field key adds an extmap entry. dissoc on a field key returns
+  a plain map (records can't have missing fields)."
+  {:added "1.2"
+   :arglists '([name [& fields] & opts+specs])}
+  [Name fields & specs]
+  (let [parsed (parse-extend-type-specs specs)
+        field-syms (vec (map #(with-meta % nil) fields))
+        field-strs (vec (map str field-syms))
+        method-attr-pairs (-emit-method-attrs parsed field-syms)
+        attrs `(hash-map "__init__"
+                         (-record-init-fn ~field-strs)
+                         "_record_fields"
+                         (py.__builtins__/tuple ~field-strs)
+                         ~@method-attr-pairs)
+        factory-name (symbol (str "->" Name))
+        map-factory-name (symbol (str "map->" Name))
+        fields-kw-set (set (map #(keyword (str %)) field-syms))
+        ;; Plain gensyms (not autosyms) so they're shared across the
+        ;; nested syntax-quotes inside the map factory.
+        m-sym (gensym "m_")
+        acc-sym (gensym "acc_")
+        k-sym (gensym "k_")
+        v-sym (gensym "v_")
+        base-sym (gensym "base_")
+        leftover-sym (gensym "leftover_")]
+    `(do
+       (def ~Name (-build-type ~(str Name)
+                                [clojure.lang.RecordBase]
+                                ~attrs))
+       ~(when (seq parsed)
+          (-emit-extend-form Name parsed field-syms))
+       (defn ~factory-name
+         ~(str "Positional factory for class " Name ".")
+         ~field-syms
+         (~Name ~@field-syms))
+       (defn ~map-factory-name
+         ~(str "Map factory for class " Name ".")
+         [~m-sym]
+         (let [~m-sym (if (map? ~m-sym) ~m-sym (into {} ~m-sym))
+               ~base-sym (~Name ~@(map (fn [f]
+                                         `(get ~m-sym ~(keyword (str f))))
+                                       field-syms))
+               ~leftover-sym (reduce-kv
+                               (fn [~acc-sym ~k-sym ~v-sym]
+                                 (if (contains? ~fields-kw-set ~k-sym)
+                                   ~acc-sym
+                                   (assoc ~acc-sym ~k-sym ~v-sym)))
+                               {} ~m-sym)]
+           (if (empty? ~leftover-sym)
+             ~base-sym
+             (reduce-kv assoc ~base-sym ~leftover-sym))))
+       (var ~Name))))
