@@ -854,19 +854,18 @@ class Compiler:
             return Symbol.intern(v.ns.name.name, v.sym.name)
         if isinstance(v, type):
             return Symbol.intern(None, v.__module__ + "." + v.__name__)
-        # Dotted name (`clojure.lang.MultiFn`) — try class lookup before
-        # falling back to ns-qualifying. Skip names that aren't shaped
-        # like Java FQNs (`.`, `..`, `.method`, `Class.`, etc.).
+        # Dotted names (`java.lang.String`, `clojure.lang.MultiFn`,
+        # `clojure.test-clojure.evaluation`) are treated as already
+        # qualified and left as-is. Mirrors JVM SyntaxQuoteReader.
+        # resolveSymbol's `if(sym.name.indexOf('.') > 0) return sym;`
+        # short-circuit. Skips names shaped as `.method` / `Class.` /
+        # `..` / unrelated dot patterns.
         n = sym.name
         if ("." in n
                 and not n.startswith(".")
                 and not n.endswith(".")
                 and ".." not in n):
-            try:
-                RT.class_for_name(n)
-                return sym  # resolves as a class — leave as-is
-            except (ImportError, AttributeError, ValueError):
-                pass
+            return sym
         return Symbol.intern(ns.name.name, sym.name)
 
 

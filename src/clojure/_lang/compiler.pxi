@@ -522,8 +522,12 @@ def _compile_form(form, ctx):
         _compile_call(s, ctx)
         return
 
-    raise NotImplementedError(
-        "compile: form not yet supported: " + repr(form))
+    # Fallback: an arbitrary already-evaluated value (e.g. a function
+    # object as the head of a list passed to `eval`). JVM Clojure
+    # treats unknown objects as Object literals; we mirror by
+    # emitting LOAD_CONST. Lets `(eval (list + 1 2 3))` work, where
+    # `+` is the actual function value rather than the symbol.
+    ctx.emit(_bc_Instr("LOAD_CONST", form))
 
 
 # --- if / do / function-call -------------------------------------------
