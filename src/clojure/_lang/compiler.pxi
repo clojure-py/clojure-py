@@ -692,7 +692,13 @@ def _case_star_dispatch(value, shift, mask, test_type, skip_check,
     if test_type == "int":
         if not isinstance(value, int) or isinstance(value, bool):
             return default_thunk()
-        h = value
+        # Coerce BigInt (and any int subclass) to plain int so the
+        # table-key dict-lookup matches by value-equality. Our BigInt
+        # overrides __eq__ to require BigInt-on-both-sides, which would
+        # otherwise miss when value is BigInt and the key was interned
+        # as plain int (or vice versa). Mirrors JVM `(int value)`
+        # coercion the JVM dispatch does.
+        h = int(value) if type(value) is not int else value
     else:
         h = Util.hash(value)
     if mask:
