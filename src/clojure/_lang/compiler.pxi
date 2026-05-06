@@ -1799,7 +1799,28 @@ def _compile_to_thunk(form):
 
 
 def _compiler_eval(form):
-    return _compile_to_thunk(form)()
+    # Top-level (do ...) is special: each sub-form is eval'd
+    # independently so a macro / def in one sub-form is visible to
+    # subsequent sub-forms in the same `do`. Otherwise the whole
+    # `do` would be compiled together and macro lookups in later
+    # sub-forms would see only macros that existed before the eval
+    # started.
+    #
+    # Mirrors JVM Compiler.eval: macroexpand at the top, then if
+    # the head is `do`, recursively eval each child.
+    cdef object expanded = _macroexpand(form)
+    if (isinstance(expanded, ISeq)
+            and expanded is not None
+            and isinstance(expanded.first(), Symbol)
+            and (<Symbol>expanded.first()).ns is None
+            and (<Symbol>expanded.first()).name == "do"):
+        last = None
+        s = expanded.next()
+        while s is not None:
+            last = _compiler_eval(s.first())
+            s = s.next()
+        return last
+    return _compile_to_thunk(expanded)()
 
 
 def _load_string(source, source_name="<load-string>"):

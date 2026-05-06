@@ -63,12 +63,17 @@
     ;; arity-list incorrectly without raising.
     ))
 
-;; dynamic-redefinition test removed — exposes a real limitation in
-;; our compiler:  it compiles all sub-forms of a top-level (do ...)
-;; together, so a macro redefinition within that `do` doesn't take
-;; effect for later sub-forms in the same `do`. JVM compiles each
-;; top-level form sequentially with fresh macro lookup. Until our
-;; compiler matches that behavior, the test asserting it is moot.
+(deftest dynamic-redefinition
+  ;; too many contextual things for this kind of caching to work...
+  (testing "classes are never cached, even if their bodies are the same"
+    (is (= :b
+           (eval
+            '(do
+               (defmacro my-macro [] :a)
+               (defn do-macro [] (my-macro))
+               (defmacro my-macro [] :b)
+               (defn do-macro [] (my-macro))
+               (do-macro)))))))
 
 (deftest nested-dynamic-declaration
   (testing "vars :dynamic meta data is applied immediately to vars declared anywhere"
