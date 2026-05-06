@@ -8,10 +8,9 @@
 
 ;;Author: Frantisek Sodomka
 
-;; Port of clojure/test/clojure/test_clojure/atoms.clj. Renamed to
-;; atoms_test.clj for the pytest plugin's *_test.clj convention.
+;; Port of clojure/test/clojure/test_clojure/atoms.clj.
 
-(ns clojure.test-clojure.atoms-test
+(ns clojure.test-clojure.atoms
   (:use clojure.test))
 
 ; http://clojure.org/atoms

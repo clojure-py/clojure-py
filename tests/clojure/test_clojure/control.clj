@@ -11,20 +11,11 @@
 ;;
 ;;  Test "flow control" constructs.
 ;;
-;; Port of clojure/test/clojure/test_clojure/control.clj. See top of
-;; the file for adaptations from JVM.
+;; Port of clojure/test/clojure/test_clojure/control.clj.
 
-(ns clojure.test-clojure.control-test
-  (:use clojure.test))
-
-;; Inline replacement for clojure.test-helper/exception. JVM tests
-;; pull this from a shared test-helper namespace; we keep it local
-;; to avoid the require/sys.path dance for one fn.
-(defn exception
-  "Use this function to ensure that execution of a program doesn't
-  reach certain point."
-  []
-  (throw (Exception. "Exception which should never occur")))
+(ns clojure.test-clojure.control
+  (:use clojure.test
+        clojure.test-helper))
 
 ;; *** Helper functions ***
 

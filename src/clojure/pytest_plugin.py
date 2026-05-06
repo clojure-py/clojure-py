@@ -211,7 +211,11 @@ def _format_event(event):
 
 
 def pytest_collect_file(parent, file_path):
-    if file_path.suffix == ".clj" and file_path.name.endswith("_test.clj"):
+    # Match any .clj file in the test tree. Files without deftests
+    # (like a shared test_helper.clj) load cleanly but yield zero
+    # ClojureTestItems — they contribute their namespace + helper
+    # defs and that's it.
+    if file_path.suffix == ".clj":
         return ClojureTestFile.from_parent(parent, path=file_path)
     return None
 

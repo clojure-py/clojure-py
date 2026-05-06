@@ -6,17 +6,14 @@
 ;   the terms of this license.
 ;   You must not remove this notice, or any other, from this software.
 ;
-; Port of clojure/test/clojure/test_clojure/keywords.clj. The pytest plugin
-; recognizes *_test.clj files, so the JVM `keywords.clj` was renamed to
-; `keywords_test.clj` to keep the same content.
+; Port of clojure/test/clojure/test_clojure/keywords.clj.
 
-(ns clojure.test-clojure.keywords-test
+(ns clojure.test-clojure.keywords
   (:use clojure.test))
 
 ;; Adaptation: JVM Namespace has both `.name()` method and a getName
 ;; alias. Our Namespace exposes `name` as a readonly attribute (Symbol).
-;; Use field access (`.-name`) instead of method invocation, or
-;; (ns-name *ns*).
+;; Use (ns-name *ns*) which works on both sides.
 (let [this-ns (str (ns-name *ns*))]
   (deftest test-find-keyword
     :foo
